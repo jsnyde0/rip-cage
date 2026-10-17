@@ -439,7 +439,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # (c) declare -F reachability: after sourcing the shim (exposing functions
 #     only -- no dispatch, since rc is sourced not executed here), every one
-#     of the 113 currently rc-reachable functions must be `declare -F`-
+#     of the functions defined in rc + cli/*.sh + cli/lib/*.sh (EXPECTED_FN_COUNT) must be `declare -F`-
 #     reachable. rip-cage-rj68 (S6): cli/lib/msb_flags.sh is now in rc's
 #     source list (previously it was not -- see (b)'s comment), so the
 #     stale "151 reachable out of 156 on disk" gap is closed; on-disk count
@@ -447,9 +447,26 @@ echo ""
 #     drop) from here on. A loud, per-name failure (not just a count) so a
 #     reviewer can see exactly which module dropped/misfiled a function.
 # ---------------------------------------------------------------------------
-echo "=== (c) declare -F reachability: all 121 rc-reachable functions defined after sourcing rc ==="
+echo "=== (c) declare -F reachability: every function defined in rc + cli/*.sh + cli/lib/*.sh is defined after sourcing rc ==="
 
-ALL_193_NAMES="_auth_cctok_check _auth_cctok_fail_message _auth_cctok_file _auth_file_mode _bd_dolt_port_inject_arg _bd_host_preflight _beads_redirect_refusal _build_cage_config_paths _build_dockerfile_outside_cage_mounts _build_msb_load _build_reject_arg _build_warn_stale_containers _cage_claude_projects_host_bound _check_lfs_stubs _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _container_multiplexer _container_mux_hook_cmd _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_host_auth_probe _doctor_format_posture_probe _doctor_format_transcript_persistence_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _image_is_current _mount_src_exposes_secrets_dir _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_image_drift_status _msb_image_layer_drift_status _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_secret_violations_from_trace_log _msb_short_image_id _msb_start _msb_stop_graceful _msb_volume_remove _msb_warn_image_layer_drift _prereq_error _probe_tcp _protected_paths_breadcrumb _protected_paths_check_deps _protected_paths_conf_bind_mounts _protected_paths_conf_outside_mounts _protected_paths_conf_secrets_dir_mount _protected_paths_enforce _protected_paths_load _protected_paths_path_match _protected_paths_resolve _protected_paths_secrets_dir _pull_or_build _pull_or_build_local _rc_destroy_refuse _rc_managed_cage_names _rc_source_path_missing_hint _rc_uptime_from_state _resolve_script_dir _run_with_timeout _seed_claude_home_dirs _symlink_follow_fingerprint _up_build_egress_config_json _up_build_msb_create_argv _up_cage_conf_sha _up_check_cctok_secret _up_check_multiplexer_available _up_check_network_policy _up_converge_needed _up_detect_worktree _up_init_container _up_json_output _up_prepare_conf_secret_env _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_conf _up_resolve_effective_credential_mounts_for_tool _up_resolve_mount_source_path _up_resolve_placeholder_env_file _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_start_container _up_translate_docker_args_to_msb _up_warn_claude_home_mounts _up_warn_transcript_loss check_docker check_jq check_msb cmd_auth cmd_build cmd_destroy cmd_doctor cmd_test cmd_up container_name json_error log resolve_name resolve_name_for_destroy usage validate_path verify_rc_container"
+ALL_193_NAMES="_auth_cctok_check _auth_cctok_fail_message _auth_cctok_file _auth_file_mode _bd_dolt_port_inject_arg _bd_host_preflight _beads_redirect_refusal _build_cage_config_paths _build_dockerfile_outside_cage_mounts _build_msb_load _build_reject_arg _build_warn_stale_containers _cage_claude_projects_host_bound _check_lfs_stubs _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _container_multiplexer _container_mux_hook_cmd _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_host_auth_probe _doctor_format_posture_probe _doctor_format_transcript_persistence_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _git_exec_covers _git_exec_covers_one _git_exec_ro_covers _git_under_ro_target _image_is_current _mount_src_exposes_secrets_dir _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_image_drift_status _msb_image_layer_drift_status _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_secret_violations_from_trace_log _msb_short_image_id _msb_start _msb_stop_graceful _msb_version_verdict _msb_volume_remove _msb_warn_image_layer_drift _prereq_error _probe_tcp _protected_paths_breadcrumb _protected_paths_check_deps _protected_paths_conf_bind_mounts _protected_paths_conf_outside_mounts _protected_paths_conf_secrets_dir_mount _protected_paths_enforce _protected_paths_load _protected_paths_path_match _protected_paths_resolve _protected_paths_secrets_dir _pull_or_build _pull_or_build_local _rc_destroy_refuse _rc_managed_cage_names _rc_source_path_missing_hint _rc_uptime_from_state _resolve_script_dir _run_with_timeout _seed_claude_home_dirs _symlink_follow_fingerprint _test_floor_probe_missing_line _up_build_egress_config_json _up_build_msb_create_argv _up_cage_conf_sha _up_check_cctok_secret _up_check_multiplexer_available _up_check_network_policy _up_conf_image _up_converge_needed _up_default_multiplexer _up_detect_worktree _up_drift_describe _up_expected_image _up_init_container _up_json_output _up_prepare_conf_secret_env _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_read_boot_descriptor _up_resolve_conf _up_resolve_effective_credential_mounts_for_tool _up_resolve_mount_source_path _up_resolve_placeholder_env_file _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_sandbox_image_ref _up_start_container _up_translate_docker_args_to_msb _up_warn_claude_home_mounts _up_warn_transcript_loss check_docker check_jq check_msb check_msb_floor cmd_auth cmd_build cmd_destroy cmd_doctor cmd_test cmd_up container_name json_error log resolve_name resolve_name_for_destroy usage validate_path verify_rc_container"
+
+# The list is hand-maintained ON PURPOSE: deriving it from the same files'
+# definitions would follow a rename and never notice it. Its size must equal
+# EXPECTED_FN_COUNT, the independent count from (b), so a function added or
+# dropped without updating this list fails here instead of going unchecked.
+read -ra _listed_arr <<<"$ALL_193_NAMES"; _listed_count=${#_listed_arr[@]}
+if [[ "$_listed_count" -ne "$EXPECTED_FN_COUNT" ]]; then
+  fail "(c0)" "(c)'s name list does not cover every defined function" "list has ${_listed_count} names, EXPECTED_FN_COUNT=${EXPECTED_FN_COUNT}"
+fi
+# Every name defined on disk must be on the list (names the list lacks are skipped by declare -F).
+_unlisted=""
+while IFS= read -r _defd; do
+  [[ " $ALL_193_NAMES " == *" ${_defd} "* ]] || _unlisted="${_unlisted} ${_defd}"
+done < <(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh | sed 's/()$//')
+if [[ -n "$_unlisted" ]]; then
+  fail "(c0)" "function(s) defined on disk but absent from (c)'s name list" "unlisted:${_unlisted}"
+fi
 
 _missing=""
 _missing_count=0
@@ -463,7 +480,7 @@ for _fn in $ALL_193_NAMES; do
 done
 
 if [[ "$_missing_count" -eq 0 ]]; then
-  pass "(c)" "all 121 rc-reachable functions are declare -F reachable after sourcing rc"
+  pass "(c)" "all ${EXPECTED_FN_COUNT} functions defined in rc + cli/*.sh + cli/lib/*.sh are declare -F reachable after sourcing rc"
 else
   fail "(c)" "${_missing_count} function(s) NOT reachable after sourcing rc" "missing:${_missing}"
 fi
@@ -571,12 +588,12 @@ for _libfile in "${REPO_ROOT}"/cli/lib/*.sh; do
     if [[ "$_lib_extra" -ge 1 ]]; then
       continue  # reachable from within lib/ itself (closure member)
     fi
+    # Rule (f): exactly one calling module and no lib-internal caller means the
+    # function belongs with that module, not in lib/. Record it; the header
+    # forbids it. (A grep -\b substring artifact is fixed by renaming, not by
+    # waiving the rule.)
     if [[ "$_module_hits" -eq 1 ]]; then
-      # single-module caller AND not reached from lib -- still acceptable
-      # only if that caller module itself has no other legitimate module home
-      # (rare; flag for manual review rather than hard-failing the suite,
-      # since a false positive here is a grep-\b substring artifact, not
-      # necessarily a real boundary violation)
+      _boundary_violations="${_boundary_violations} ${_fn}(in $(basename "$_libfile"), single caller module: $(basename "$(grep -l "\b${_fn}\b" "${REPO_ROOT}"/cli/*.sh | head -1)"))"
       continue
     fi
     _boundary_violations="${_boundary_violations} ${_fn}(in $(basename "$_libfile"))"
@@ -1098,6 +1115,9 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "=== (l) no TTY-guarded read under rc + cli/ (the one shape that can block an agent) ==="
 
+# ONE definition of the bare-`read` matcher: the live detector below and both
+# negative controls all use it, so breaking it turns the controls red.
+_L_READ_RE='(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'
 _l_files=("$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh)
 _l_window=10
 _l_offenders=""
@@ -1108,7 +1128,7 @@ for _l_file in "${_l_files[@]}"; do
     [[ -n "$_l_lineno" ]] || continue
     _l_body=$(sed -n "${_l_lineno},$(( _l_lineno + _l_window ))p" "$_l_file")
     # A bare `read` call, not a `... | read` pipe-loop header.
-    if printf '%s\n' "$_l_body" | grep -qE '(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'; then
+    if printf '%s\n' "$_l_body" | grep -qE "$_L_READ_RE"; then
       _l_offenders="${_l_offenders} $(basename "$_l_file"):${_l_lineno}"
     fi
   done < <(grep -nE '\[\[[^]]*-t[[:space:]]+[01]' "$_l_file" || true)
@@ -1138,7 +1158,7 @@ _l_canary_hit=0
 while IFS=: read -r _l_lineno _l_text; do
   [[ -n "$_l_lineno" ]] || continue
   _l_body=$(sed -n "${_l_lineno},$(( _l_lineno + _l_window ))p" "${_l_canary_dir}/canary.sh")
-  if printf '%s\n' "$_l_body" | grep -qE '(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'; then
+  if printf '%s\n' "$_l_body" | grep -qE "$_L_READ_RE"; then
     _l_canary_hit=1
   fi
 done < <(grep -nE '\[\[[^]]*-t[[:space:]]+[01]' "${_l_canary_dir}/canary.sh" || true)
@@ -1166,7 +1186,7 @@ _l_pipe_hit=0
 while IFS=: read -r _l_lineno _l_text; do
   [[ -n "$_l_lineno" ]] || continue
   _l_body=$(sed -n "${_l_lineno},$(( _l_lineno + _l_window ))p" "${_l_pipe_dir}/pipe.sh")
-  if printf '%s\n' "$_l_body" | grep -qE '(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'; then
+  if printf '%s\n' "$_l_body" | grep -qE "$_L_READ_RE"; then
     _l_pipe_hit=1
   fi
 done < <(grep -nE '\[\[[^]]*-t[[:space:]]+[01]' "${_l_pipe_dir}/pipe.sh" || true)
