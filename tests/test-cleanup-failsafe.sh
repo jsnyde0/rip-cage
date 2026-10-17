@@ -76,6 +76,30 @@ else
   fail "empty-registry CLEANUP invoked destroy $(wc -l < "$DESTROY_LOG" | tr -d ' ') time(s): $(cat "$DESTROY_LOG")"
 fi
 
+# ----------------------------------------------------------------------------
+# Case: positive control for the above. One REGISTERED name, then the shell
+# exits -- the EXIT trap scratch_cage_register armed must destroy exactly that
+# name, once. A cleanup that did nothing leaves DESTROY_LOG empty and fails
+# here, so the zero-invocation case above cannot be green merely because the
+# cleanup is a no-op. RC_TEST_CAGE_REGISTRY points at a throwaway file so the
+# register/remove bookkeeping never touches the real registry and a failing
+# stub destroy leaves no phantom line (.claude/verification.md, rip-cage-aqww).
+# ----------------------------------------------------------------------------
+REG_NAME="rc-t-failsafe-positive"
+: > "$DESTROY_LOG"
+RC_TEST_CAGE_REGISTRY="${STUB_DIR}/registry" bash -c "
+  set -u
+  SCRIPT_DIR='${STUB_DIR}/nested'
+  source '${REAL_LIB}'
+  scratch_cage_register '${REG_NAME}'
+" >/dev/null 2>&1
+
+if [[ "$(cat "$DESTROY_LOG")" == "destroy ${REG_NAME}" ]]; then
+  pass "registered-name CLEANUP destroys exactly that name, once"
+else
+  fail "registered-name CLEANUP: want exactly 'destroy ${REG_NAME}' got: '$(cat "$DESTROY_LOG")'"
+fi
+
 rm -rf "$STUB_DIR"
 
 echo ""

@@ -47,7 +47,9 @@ echo ""
 echo "=== S1: helper returns a dir under the short root ==="
 S1_DIR=$(_host_scratch_mktemp_d s1)
 _CLEANUP_DIRS+=("$S1_DIR")
-if [[ -d "$S1_DIR" && "$S1_DIR" == "${_HOST_SCRATCH_ROOT}/"* ]]; then
+# An empty root makes the prefix "/"* -- true for any absolute path -- so
+# assert the root is set before the prefix match can mean anything.
+if [[ -n "${_HOST_SCRATCH_ROOT:-}" && -d "$S1_DIR" && "$S1_DIR" == "${_HOST_SCRATCH_ROOT}/"* ]]; then
   pass "S1: created under \$_HOST_SCRATCH_ROOT -- $S1_DIR"
 else
   fail "S1: not under the short root" "root='${_HOST_SCRATCH_ROOT}' got='$S1_DIR'"
