@@ -65,13 +65,32 @@ cd "$TEST_ALLOWED_DIR"
 # shellcheck source=tests/_fake-runtime-lib.sh
 source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
 _T7_FAKE_RT=$(fake_runtime_bin)
+# Report the image present and current in both stores, so rc up takes the
+# branch whose JSON comes from _up_json_output and carries source_path. (The
+# image-absent branch emits no source_path, so a wrong default directory would
+# pass unseen.)
+_T7_VER=$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")
+cat > "${_T7_FAKE_RT}/docker" <<FAKE
+#!/usr/bin/env bash
+[[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]] && echo '${_T7_VER}'
+exit 0
+FAKE
+cat > "${_T7_FAKE_RT}/msb" <<'FAKE'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && echo "msb ${FAKE_MSB_VERSION:-0.7.4}"
+[[ "${1:-}" == "image" && "${2:-}" == "list" ]] && echo '[{"reference":"rip-cage:latest"}]'
+exit 0
+FAKE
+chmod +x "${_T7_FAKE_RT}/docker" "${_T7_FAKE_RT}/msb"
 up_default=$(PATH="${_T7_FAKE_RT}:${PATH}" RC_CAGE_CONF="$TEST_CAGE_CONF" "$RC" --dry-run --output json up 2>/dev/null) || true
 rm -rf "$_T7_FAKE_RT"
 up_action=$(echo "$up_default" | jq -r '.action // empty' 2>/dev/null || true)
-if [[ "$up_action" == would_* ]]; then
-  pass "--output json up with no path defaults to '.' (dry_run action=$up_action)"
+up_source=$(echo "$up_default" | jq -r '.source_path // empty' 2>/dev/null || true)
+_t7_expected=$(cd "$TEST_ALLOWED_DIR" && pwd -P)
+if [[ "$up_action" == would_* && "$up_source" == "$_t7_expected" ]]; then
+  pass "--output json up with no path defaults to '.' (dry_run action=$up_action, source_path=$up_source)"
 else
-  fail "--output json up with no path did not default to '.'. Got: $up_default"
+  fail "--output json up with no path did not default to '.' (want would_* and source_path=$_t7_expected). Got: $up_default"
 fi
 rm -rf "$TEST_ALLOWED_DIR" "$TEST_GLOBAL_CFG_DIR"
 cd "$SCRIPT_DIR"
