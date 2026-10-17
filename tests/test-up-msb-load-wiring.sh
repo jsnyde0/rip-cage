@@ -359,7 +359,11 @@ run_present_block() {
     echo '_rc_test_present_block() {'
     echo "$_block"
     echo '}'
+    # Record the BLOCK's own status before the trailing flag echo (whose own
+    # exit 0 would otherwise be what the caller's $? reflects).
     echo '_rc_test_present_block'
+    # shellcheck disable=SC2016  # literal text for the INNER bash
+    echo 'echo "RC_TEST_BLOCK_EXIT=$?"'
     # shellcheck disable=SC2016  # intentional: literal text for the INNER
     # bash to expand later, not this outer echo. _RC_MSB_LOAD_SUCCEEDED is
     # set by _build_msb_load WITHOUT `local` (global by design -- see the
@@ -367,8 +371,11 @@ run_present_block() {
     # return just like it survives cmd_up's own scope in the real file.
     echo 'echo "RC_TEST_FLAG_AFTER=${_RC_MSB_LOAD_SUCCEEDED:-unset}"'
   } > "$_script"
-  _out=$(PATH="$_fake_bin:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" bash "$_script" 2>&1)
-  echo "RC_TEST_BLOCK_EXIT=$?"
+  local _bash_ec=0
+  _out=$(PATH="$_fake_bin:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" bash "$_script" 2>&1) || _bash_ec=$?
+  # The inner marker is the block's own status; the outer one is only the
+  # fallback for a block that exits the shell before the marker prints.
+  grep -q '^RC_TEST_BLOCK_EXIT=' <<<"$_out" || echo "RC_TEST_BLOCK_EXIT=${_bash_ec}"
   echo "$_out"
   rm -f "$_script"
 }

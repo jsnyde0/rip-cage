@@ -169,10 +169,14 @@ case "${1:-}" in
     # resolution -- e.g. R7's status-2/3 exits actually happen even earlier,
     # at the running-gate, so they don't need this to be a real directory --
     # gets a directory that genuinely exists).
+    # DRIFT_CONF_SHA (set per-invocation by run_rc_up to the sha256 of the
+    # cage config it hands rc) stamps rc.cage-conf-sha so the cage reads as
+    # "config unchanged". Without the label cli/up.sh's _up_converge_needed
+    # converges (stop+remove) BEFORE reaching the drift refusal.
     # rip-cage-i3wv: DRIFT_STORED_REF, when set, is the tag msb recorded at
     # create (.config.image.Oci.reference) -- the drift messages name it.
-    jq -nc --arg status "$_status" --arg digest "${DRIFT_STORED_IMAGE:-}" --arg ws "${DRIFT_WORKSPACE:-}" --arg ref "${DRIFT_STORED_REF:-}" \
-      '{status: $status, config: ({manifest_digest: $digest, labels: {"rc.source.path": $ws}} + (if $ref == "" then {} else {image: {Oci: {reference: $ref}}} end))}'
+    jq -nc --arg status "$_status" --arg digest "${DRIFT_STORED_IMAGE:-}" --arg ws "${DRIFT_WORKSPACE:-}" --arg ref "${DRIFT_STORED_REF:-}" --arg sha "${DRIFT_CONF_SHA:-}" \
+      '{status: $status, config: ({manifest_digest: $digest, labels: ({"rc.source.path": $ws} + (if $sha == "" then {} else {"rc.cage-conf-sha": $sha} end))} + (if $ref == "" then {} else {image: {Oci: {reference: $ref}}} end))}'
     exit 0
     ;;
   image)
@@ -316,10 +320,17 @@ run_rc_up() {
   [[ "$_fmt" == "json" ]] && _flags+=(--output json)
   [[ "$_dry" == "true" ]] && _flags+=(--dry-run)
 
+  local _conf _conf_sha
+  _conf=$(cage_conf_for "$TEST_WS" "${DRIFT_CONF_IMAGE:-}")
+  _conf_sha=$(shasum -a 256 "$_conf" | awk '{print $1}')
+  # DRIFT_NO_CONF_SHA=1: model a cage that predates the label (T6 needs it --
+  # the converge preview is exactly that path).
+  [[ -n "${DRIFT_NO_CONF_SHA:-}" ]] && _conf_sha=""
+
   set +e
   PATH="${STUB_DIR}:${PATH}" \
     HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_CAGE_CONF="$(cage_conf_for "$TEST_WS" "${DRIFT_CONF_IMAGE:-}")" \
+    RC_CAGE_CONF="$_conf" DRIFT_CONF_SHA="$_conf_sha" \
     DRIFT_LOG="$RC_LOG" DRIFT_STATE="$_state" \
     DRIFT_STORED_IMAGE="$_stored" DRIFT_CURRENT_IMAGE="$_current" \
     DRIFT_CONTAINER_INSPECT_FAIL="$_inspect_fail" \
@@ -364,6 +375,9 @@ if [[ "$RC_EXIT" -eq 0 ]]; then
 fi
 if grep -qx "start" "$RC_LOG"; then
   _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }msb start WAS reached (shim log contains 'start') — abort must happen BEFORE msb start"
+fi
+if grep -qxE "stop|remove" "$RC_LOG"; then
+  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }msb stop/remove ran before the refusal (shim log: $(tr '\n' ',' < "$RC_LOG")) — a drift refusal must leave the stopped cage untouched"
 fi
 if ! echo "$RC_ERR" | grep -qF "$_t1_name"; then
   _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message did not name the container ($_t1_name)"
@@ -643,7 +657,7 @@ teardown_sandbox
 # touch anything. No `msb start`, no stop, no remove under --dry-run.
 # ===========================================================================
 setup_sandbox
-run_rc_up "exited" "$IMG_A" "$IMG_B" "json" "true"
+DRIFT_NO_CONF_SHA=1 run_rc_up "exited" "$IMG_A" "$IMG_B" "json" "true"
 
 _t6_ok=true _t6_reason=""
 if [[ "$RC_EXIT" -ne 0 ]]; then
