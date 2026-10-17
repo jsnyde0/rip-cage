@@ -715,7 +715,10 @@ fi
 echo ""
 echo "=== T4: cmd_build calls _build_msb_load (wiring) ==="
 _t4_cmd_build_body=$(awk '/^cmd_build\(\)/{flag=1} flag && /^}/{print; exit} flag' "${REPO_ROOT}/cli/build.sh")
-if grep -q '_build_msb_load' <<<"$_t4_cmd_build_body"; then
+# Comment lines are dropped first: cmd_build's comments name _build_msb_load,
+# so matching the raw body stays green with every executable call deleted.
+_t4_code_lines=$(grep -v '^[[:space:]]*#' <<<"$_t4_cmd_build_body")
+if grep -q '_build_msb_load' <<<"$_t4_code_lines"; then
   pass "T4: cmd_build's body calls _build_msb_load"
 else
   fail "T4: _build_msb_load call not found inside cmd_build()" "$(grep -n 'cmd_build' "${REPO_ROOT}/cli/build.sh")"

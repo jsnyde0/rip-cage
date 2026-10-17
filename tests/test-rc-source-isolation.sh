@@ -79,7 +79,8 @@ echo ""
 echo "=== (b) Executed-strict: direct execution and static checks ==="
 
 # (b1) Verify the guarded set -euo pipefail line is present in rc.
-if grep -q 'set -euo pipefail' "$RC"; then
+# Anchored to an executable line: rc's comment near :84 also contains the phrase.
+if grep -Eq '^[[:space:]]*set -euo pipefail' "$RC"; then
   pass "(b1)" "set -euo pipefail line present in rc"
 else
   fail "(b1)" "set -euo pipefail line missing from rc" "check rc header"
