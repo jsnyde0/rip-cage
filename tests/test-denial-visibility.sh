@@ -198,10 +198,11 @@ if echo "$D1_OUT" | grep -qi "WARN"; then
 else
   fail "D1c: posture probe marks the secret-violation clause as a WARNING" "got: $D1_OUT"
 fi
-if [[ "$D1_OUT" != *"allowlist add secret-violated.example.invalid"* ]]; then
-  pass "D1d: posture probe NEVER suggests 'rc allowlist add' for the secret-violation host"
+if [[ "$D1_OUT" != *"secret-violated.example.invalid:tcp:443"* \
+   && "$D1_OUT" != *"allowlist add secret-violated.example.invalid"* ]]; then
+  pass "D1d: posture probe NEVER suggests allowing the secret-violation host (no 'secret-violated.example.invalid:tcp:443' network.allow line, no retired 'allowlist add' wording)"
 else
-  fail "D1d: posture probe NEVER suggests 'rc allowlist add' for the secret-violation host" "got: $D1_OUT"
+  fail "D1d: posture probe NEVER suggests allowing the secret-violation host (no 'secret-violated.example.invalid:tcp:443' network.allow line, no retired 'allowlist add' wording)" "got: $D1_OUT"
 fi
 
 # D2 (rip-cage-ffmc): the posture probe always carries a static note that
