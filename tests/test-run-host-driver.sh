@@ -392,6 +392,43 @@ else
   fail "G1 basename collision: same file appearing twice is counted once, latest row wins" "output=$coll_out"
 fi
 
+# --- S1/S2/S3: ledger rows of the two rh-*-skip fixtures (rip-cage-b8kd.18.2).
+# Each fixture exists to prove run-host.sh ledgers a self-skip as SKIP; nothing
+# else reads their rows, so a classifier regression to PASS would fail nothing.
+# Ledger row shape: base|STATUS|duration|reason|timestamp.
+_ledger_row() { grep -v '^#' "$1" | grep "^$2|" | head -1; }
+
+# S1: colon form ("SKIP: ...") -> SKIP, exit 0
+bash "$RUN_HOST" --only 'test-rh-expected-skip-fixture.sh' --ledger "$WORKDIR/s1.ledger" >/dev/null 2>&1
+s1_rc=$?
+s1_row="$(_ledger_row "$WORKDIR/s1.ledger" test-rh-expected-skip-fixture.sh)"
+if [[ "$s1_rc" -eq 0 && "$s1_row" == test-rh-expected-skip-fixture.sh\|SKIP\|* ]]; then
+  pass "S1 expected-skip fixture (colon form) ledgers SKIP, exit 0 (row=$s1_row)"
+else
+  fail "S1 expected-skip fixture (colon form) ledgers SKIP, exit 0" "rc=$s1_rc row=[$s1_row]"
+fi
+
+# S2: non-colon form ("SKIP (NEEDS_CONTAINER / RC_E2E): ...") -> SKIP, exit 0
+bash "$RUN_HOST" --only 'test-rh-non-colon-skip-fixture.sh' --ledger "$WORKDIR/s2.ledger" >/dev/null 2>&1
+s2_rc=$?
+s2_row="$(_ledger_row "$WORKDIR/s2.ledger" test-rh-non-colon-skip-fixture.sh)"
+if [[ "$s2_rc" -eq 0 && "$s2_row" == test-rh-non-colon-skip-fixture.sh\|SKIP\|* ]]; then
+  pass "S2 non-colon skip fixture ledgers SKIP, exit 0 (row=$s2_row)"
+else
+  fail "S2 non-colon skip fixture ledgers SKIP, exit 0" "rc=$s2_rc row=[$s2_row]"
+fi
+
+# S3: the expected-skip fixture under --expect-no-skip -> FAIL with its reason, non-zero exit
+bash "$RUN_HOST" --only 'test-rh-expected-skip-fixture.sh' \
+  --expect-no-skip 'test-rh-expected-skip-fixture.sh' --ledger "$WORKDIR/s3.ledger" >/dev/null 2>&1
+s3_rc=$?
+s3_row="$(_ledger_row "$WORKDIR/s3.ledger" test-rh-expected-skip-fixture.sh)"
+if [[ "$s3_rc" -ne 0 && "$s3_row" == test-rh-expected-skip-fixture.sh\|FAIL\|*\|expected-no-skip\|* ]]; then
+  pass "S3 expected-skip fixture under --expect-no-skip ledgers FAIL (expected-no-skip), non-zero exit (rc=$s3_rc)"
+else
+  fail "S3 expected-skip fixture under --expect-no-skip ledgers FAIL (expected-no-skip), non-zero exit" "rc=$s3_rc row=[$s3_row]"
+fi
+
 # --- F1: run_test's FAIL branch, exercised via the REAL extracted function
 # bodies (same idiom as test-doctor-version-skew.sh) against a genuine
 # throwaway always-fails fixture. Proves the FAIL row + FAILED_TESTS
