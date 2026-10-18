@@ -167,12 +167,21 @@ check "git_hooks_ro set to true when wt_detected is true" \
 check "Worktree JSON helper includes git_hooks_ro arg" \
   "$(grep_check 'git_hooks_ro.*wt_name.*wt_main_git')"
 
-# Test 23: All worktree JSON goes through _up_json_output (6 call sites use it)
+# Test 23: every dry_run JSON emitter in cli/up.sh goes through _up_json_output,
+# EXCEPT the two named legacy emitters (would_pull / would_build). Those are kept
+# on purpose: cli/up.sh emits them in the old format so tests/test-pull-first.sh
+# stays green, and _up_json_output cannot carry would_pull/would_build/image/message.
+# A literal `dry_run: true` in a non-comment line is a direct emitter (the helper
+# builds its dry_run field from $dry_run, so it never matches); the exception list is
+# pinned at exactly those two, so a third bypass goes red.
 wt_json_calls=$(grep -c '_up_json_output' "$RC_FILE" 2>/dev/null) || wt_json_calls=0
-if [[ "$wt_json_calls" -ge 6 ]]; then
-  check "All JSON output goes through _up_json_output helper (${wt_json_calls} calls)" "true"
+wt_direct_src=$(grep -E 'dry_run:[[:space:]]*true' "$RC_FILE" 2>/dev/null | grep -vE '^[[:space:]]*#')
+wt_direct_dry=$(printf '%s\n' "$wt_direct_src" | grep -c .) || wt_direct_dry=0
+wt_legacy_dry=$(printf '%s\n' "$wt_direct_src" | grep -cE 'would_pull|would_build') || wt_legacy_dry=0
+if [[ "$wt_json_calls" -ge 6 && "$wt_direct_dry" -eq 2 && "$wt_legacy_dry" -eq 2 ]]; then
+  check "Every dry_run JSON emitter goes through _up_json_output except the 2 named legacy would_pull/would_build emitters (${wt_json_calls} helper calls)" "true"
 else
-  check "All JSON output goes through _up_json_output helper (found ${wt_json_calls}/6)" "false"
+  check "Every dry_run JSON emitter goes through _up_json_output except the 2 named legacy emitters (helper calls ${wt_json_calls}/6+, direct dry_run emitters ${wt_direct_dry}/2, legacy-named ${wt_legacy_dry}/2)" "false"
 fi
 
 # Test 24: _up_json_output handles non-worktree git_hooks_ro too

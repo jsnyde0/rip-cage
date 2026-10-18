@@ -18,7 +18,8 @@
 #       exists to prevent.
 #
 # Usage: bash tests/golden-master/self-check.sh
-# Exits 0 only if BOTH directions behave correctly.
+# Exits 0 only if BOTH directions behave correctly AND both recordings ran
+# (exit 0, same non-zero file count).
 set -uo pipefail
 
 GM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,8 +54,21 @@ mkdir -p "$SNAP_A" "$SNAP_B"
 
 GM_ROOT_OVERRIDE="${WORK_A}/gm-root" GM_SNAPSHOT_DIR_OVERRIDE="$SNAP_A" \
   bash "${GM_DIR}/capture.sh" --record >/dev/null
+RECORD_A_EXIT=$?
 GM_ROOT_OVERRIDE="${WORK_B}/gm-root" GM_SNAPSHOT_DIR_OVERRIDE="$SNAP_B" \
   bash "${GM_DIR}/capture.sh" --record >/dev/null
+RECORD_B_EXIT=$?
+
+# Two failed, empty recordings are byte-identical, so the diff below would pass
+# on them (rip-cage-b8kd.18.5): require both --record runs to exit 0 and to have
+# recorded the same NON-ZERO number of files before the diff means anything.
+COUNT_A=$(find "$SNAP_A" -type f | wc -l | tr -d ' ')
+COUNT_B=$(find "$SNAP_B" -type f | wc -l | tr -d ' ')
+if [[ "$RECORD_A_EXIT" -eq 0 && "$RECORD_B_EXIT" -eq 0 && "$COUNT_A" -gt 0 && "$COUNT_A" -eq "$COUNT_B" ]]; then
+  pass "recordings sane: both --record runs exited 0 and recorded ${COUNT_A} files each"
+else
+  fail "recordings sane" "--record exits A=${RECORD_A_EXIT} B=${RECORD_B_EXIT}, file counts A=${COUNT_A} B=${COUNT_B} (need exit 0 on both and equal non-zero counts)"
+fi
 
 UNDERSCRUB_DIFF=$(mktemp "${TMPDIR:-/tmp}/rc-gm-selfcheck-underscrub-diff-XXXXXX")
 if diff -rq "$SNAP_A" "$SNAP_B" >"$UNDERSCRUB_DIFF" 2>&1; then
