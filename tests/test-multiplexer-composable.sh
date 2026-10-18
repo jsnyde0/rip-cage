@@ -55,12 +55,12 @@
 # =============================================================================
 #
 #   G1  (grep-guard, always / host-only):
-#     G1a — 'fakemux' appears NOWHERE in rc or init-rip-cage.sh (name is novel)
-#     G1b — 'tmux|herdr' returns ZERO hits in rc + init-rip-cage.sh (full D12
+#     G1a — 'fakemux' appears NOWHERE in rc, cli/ or init-rip-cage.sh (name is novel)
+#     G1b — 'tmux|herdr' returns ZERO hits in rc + cli/ + init-rip-cage.sh (full D12
 #             scope: dispatch, schema enum, comments, function names, check_tmux
 #             preflight — all gone; ADR-005 D12 FIRM regression guard).
 #     G1c — the historically-leaky 'none,tmux,herdr' comma-enum string is absent
-#     G1d — no case-arm matching tmux or herdr literals in rc or init-rip-cage.sh
+#     G1d — no case-arm matching tmux or herdr literals in rc, cli/ or init-rip-cage.sh
 #
 #   E1  (e2e, NEEDS_CONTAINER / RC_E2E=1):
 #     E1a — the built image's boot descriptor declares fakemux, with the
@@ -73,7 +73,8 @@
 #             cage's descriptor, and fail-louds on ghost-mux
 #     E1f — running that attach command inside the cage emits the marker and
 #             writes /tmp/fakemux-attached
-#     E1g — ALL of the above happen with ZERO edits to rc/init
+#   (the zero-core-edit claim is carried by G1a: the novel name 'fakemux' is
+#    absent from every core source file, rc + cli/ + cli/lib/ + init)
 #
 # =============================================================================
 # Conventions (load-bearing repo lessons):
@@ -111,52 +112,64 @@ echo "=== test-multiplexer-composable.sh ==="
 echo ""
 echo "--- G1: grep-guards (host-only, always) ---"
 
-# G1a — 'fakemux' appears NOWHERE in rc or init-rip-cage.sh.
+# Core source scanned by every G1 guard: rc is a dispatcher shim; its code lives in
+# cli/*.sh and cli/lib/*.sh; the in-cage side is cage/init/init-rip-cage.sh.
+# A missing/unmatched path would make a grep vacuously clean, so assert each exists.
+G1_FILES=("${REPO_ROOT}/rc" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh "${REPO_ROOT}/cage/init/init-rip-cage.sh")
+_g1_missing=""
+for _f in "${G1_FILES[@]}"; do [[ -f "$_f" ]] || _g1_missing+=" $_f"; done
+if [[ -z "$_g1_missing" && ${#G1_FILES[@]} -ge 4 ]]; then
+  pass "G1 scan set resolves: ${#G1_FILES[@]} core source files (rc, cli/*.sh, cli/lib/*.sh, init-rip-cage.sh)"
+else
+  fail "G1 scan set has unresolved paths — guards below would be vacuous" "missing:${_g1_missing}"
+fi
+
+# G1a — 'fakemux' appears NOWHERE in rc, cli/ or init-rip-cage.sh.
 # This is the load-bearing precondition: if 'fakemux' were already in rc/init,
 # the test would prove nothing (it would just be testing a known special-case).
-FAKEMUX_HITS=$(grep -n 'fakemux' "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null || true)
+FAKEMUX_HITS=$(grep -n 'fakemux' "${G1_FILES[@]}" 2>/dev/null || true)
 if [[ -z "$FAKEMUX_HITS" ]]; then
-  pass "G1a 'fakemux' appears NOWHERE in rc or init-rip-cage.sh (name is novel — precondition holds)"
+  pass "G1a 'fakemux' appears NOWHERE in rc, cli/ or init-rip-cage.sh (name is novel — precondition holds)"
 else
-  fail "G1a 'fakemux' found in rc or init-rip-cage.sh — the test name is NOT novel; composability claim is weakened" \
+  fail "G1a 'fakemux' found in rc, cli/ or init-rip-cage.sh — the test name is NOT novel; composability claim is weakened" \
     "hits: ${FAKEMUX_HITS}"
 fi
 
-# G1b — Full ADR-005 D12 scope: 'tmux|herdr' returns ZERO hits in rc + init-rip-cage.sh.
+# G1b — Full ADR-005 D12 scope: 'tmux|herdr' returns ZERO hits in rc + cli/ + init-rip-cage.sh.
 # This guard enforces the D12 invariant repo-wide: rc's code never names a specific
 # optional tool — not in dispatch, not in schema enum, not in comments, not in function
 # names, not in the check_tmux preflight. A broad grep catches every shape.
 # After rip-cage-61al (all children closed), expected count = 0.
-GREP_GUARD_OUT=$(grep -n 'tmux\|herdr' "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null || true)
+GREP_GUARD_OUT=$(grep -n 'tmux\|herdr' "${G1_FILES[@]}" 2>/dev/null || true)
 if [[ -z "$GREP_GUARD_OUT" ]]; then
-  pass "G1b zero tmux|herdr hits in rc + init-rip-cage.sh (ADR-005 D12 FIRM invariant holds)"
+  pass "G1b zero tmux|herdr hits in rc + cli/ + init-rip-cage.sh (ADR-005 D12 FIRM invariant holds)"
 else
-  fail "G1b unexpected tmux|herdr literals in rc or init-rip-cage.sh (D12 violation — optional-mux names must not appear in core source)" \
+  fail "G1b unexpected tmux|herdr literals in rc, cli/ or init-rip-cage.sh (D12 violation — optional-mux names must not appear in core source)" \
     "$(echo "$GREP_GUARD_OUT" | head -5)"
 fi
 echo "  Full grep output (D12 survivors report):"
 echo "$GREP_GUARD_OUT" | while IFS= read -r _line; do echo "    $_line"; done
 echo ""
 
-# G1c — 'none,tmux,herdr' comma-enum literal is absent from rc.
+# G1c — 'none,tmux,herdr' comma-enum literal is absent from core source.
 # This is the historically-leaky shape (the static schema enum that B2 removed).
 # Belt-and-suspenders: even if G1b somehow missed it, this anchored grep catches it.
-ENUM_HITS=$(grep -n 'none,tmux,herdr' "${REPO_ROOT}/rc" 2>/dev/null || true)
+ENUM_HITS=$(grep -n 'none,tmux,herdr' "${G1_FILES[@]}" 2>/dev/null || true)
 if [[ -z "$ENUM_HITS" ]]; then
-  pass "G1c 'none,tmux,herdr' static enum literal absent from rc (B2 de-enumeration holds)"
+  pass "G1c 'none,tmux,herdr' static enum literal absent from core source (B2 de-enumeration holds)"
 else
-  fail "G1c 'none,tmux,herdr' static enum PRESENT in rc — static enum must be replaced by dynamic derivation" \
+  fail "G1c 'none,tmux,herdr' static enum PRESENT in core source — static enum must be replaced by dynamic derivation" \
     "hits: ${ENUM_HITS}"
 fi
 
-# G1d — No case-arm matching 'tmux' or 'herdr' as named targets in rc or init-rip-cage.sh.
+# G1d — No case-arm matching 'tmux' or 'herdr' as named targets in rc, cli/ or init-rip-cage.sh.
 # The case-dispatch pattern 'case.*tmux|herdr' is the historically-hardcoded dispatch shape
 # (B3's job was to de-hardcode these). Anchored grep.
-CASE_HITS=$(grep -nE 'tmux\)|herdr\)' "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null || true)
+CASE_HITS=$(grep -nE 'tmux\)|herdr\)' "${G1_FILES[@]}" 2>/dev/null || true)
 if [[ -z "$CASE_HITS" ]]; then
-  pass "G1d no 'tmux)' or 'herdr)' case-arm targets in rc or init-rip-cage.sh (B3 dispatch de-hardcoding holds)"
+  pass "G1d no 'tmux)' or 'herdr)' case-arm targets in rc, cli/ or init-rip-cage.sh (B3 dispatch de-hardcoding holds)"
 else
-  fail "G1d hardcoded case-arm dispatch target 'tmux)' or 'herdr)' found in rc or init-rip-cage.sh" \
+  fail "G1d hardcoded case-arm dispatch target 'tmux)' or 'herdr)' found in rc, cli/ or init-rip-cage.sh" \
     "hits: ${CASE_HITS}"
 fi
 
@@ -168,7 +181,7 @@ echo ""
 # E1: E2E composability probe — NEEDS_CONTAINER / RC_E2E=1
 # ---------------------------------------------------------------------------
 if [[ "${RC_E2E:-}" != "1" ]]; then
-  echo "SKIP (NEEDS_CONTAINER / e2e): E1a-E1g — set RC_E2E=1 to run the live fakemux composability probe"
+  echo "SKIP (NEEDS_CONTAINER / e2e): E1a-E1f — set RC_E2E=1 to run the live fakemux composability probe"
   echo ""
   if [[ $FAILURES -eq 0 ]]; then
     echo "All G1 grep-guard tests PASSED."
@@ -531,23 +544,6 @@ else
   else
     fail "E1f /tmp/fakemux-attached was NOT written" "hook output: '${_e1f_hook_out}'"
   fi
-fi
-
-# ---------------------------------------------------------------------------
-# E1g — Zero edits to rc/init: verify the committed source was not touched.
-# The test runs against the committed repo; no rc/init file was modified by
-# any step in E1. This assertion is structural (no build process touches rc/init).
-# We confirm by asserting the git working tree for rc/init is clean.
-# ---------------------------------------------------------------------------
-echo ""
-echo "--- E1g: zero rc/init edits (composability claim: rc-unknown mux needs ZERO source edits) ---"
-
-_e1g_rc_dirty=$(git -C "${REPO_ROOT}" diff --name-only -- rc init-rip-cage.sh 2>/dev/null || true)
-if [[ -z "${_e1g_rc_dirty}" ]]; then
-  pass "E1g rc and init-rip-cage.sh are CLEAN (no edits made by this test — zero-rc-edit claim holds)"
-else
-  fail "E1g rc or init-rip-cage.sh modified during this test run — the composability claim is FALSE" \
-    "dirty files: ${_e1g_rc_dirty}"
 fi
 
 # Summarise: the novel-name (fakemux) drove config-validate + start + attach

@@ -1179,7 +1179,7 @@ _up_converge_needed() {
 # guard (rip-cage-aa4t). Every recreate path — `--replace` and the stopped-cage
 # converge — destroys the guest's ephemeral rootfs overlay. A cage created
 # before rc host-bound ~/.claude/projects keeps its caged-claude conversation
-# transcripts only there, so the recreate loses them silently: herdr restores
+# transcripts only there, so the recreate loses them silently: the multiplexer restores
 # the pane layout faithfully and the operator finds out when `claude --resume`
 # reports no conversation.
 #
@@ -1735,7 +1735,7 @@ _up_start_container() {
 # below) — this is the mechanism behind ADR-029 D4's "rc re-runs init on
 # each resume" corollary (bead criterion 6: git identity re-established;
 # git config --global user.name/user.email are set unconditionally inside
-# init-rip-cage.sh on every run) and the cockpit/herdr re-registration
+# init-rip-cage.sh on every run) and the cockpit re-registration
 # corollary (bead criterion 3: the multiplexer 'start' hook dispatch also
 # lives inside this same script, section 12).
 #
@@ -3291,7 +3291,7 @@ cmd_up() {
     fi
     # _msb_start is a resume — a fresh kernel boot, per ADR-029 D4's
     # resume-path corollary. _up_init_container immediately after re-runs
-    # the SAME init script the create path runs (cockpit/herdr
+    # the SAME init script the create path runs (cockpit
     # re-registration + git-identity re-establishment, bead criteria 3/6).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _msb_start "$name" >/dev/null
