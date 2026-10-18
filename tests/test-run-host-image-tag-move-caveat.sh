@@ -2,8 +2,9 @@
 # tests/test-run-host-image-tag-move-caveat.sh — rip-cage-or84's Verification
 # target: a probe that pins the rip-cage:latest image ID at run START,
 # repoints it to a deliberately DIFFERENT image mid-run, and asserts
-# run-host.sh reports a named TAG-MOVED condition (a "CAVEAT" line) rather
-# than a bare, uninformative probe failure.
+# run-host.sh reports a named tag-moved condition (the "MOVED: rip-cage:latest"
+# line, originally an advisory "CAVEAT") rather than a bare, uninformative
+# probe failure -- and, since rip-cage-ely4.7.9, FAILS the run (exit 1).
 #
 # MANUAL-ONLY PROBE -- marker: manual-only-probe(run-host.sh)
 #
@@ -19,7 +20,7 @@
 # see the "Shared-host concurrency" section of `.claude/verification.md` (the
 # `###` heading at .claude/verification.md:56), which also lists this file
 # under its manual-only probes row. That is the very contamination class this
-# probe's own subject (the CAVEAT line) exists to make legible, so nesting it
+# probe's own subject (the MOVED line) exists to make legible, so nesting it
 # inside a suite run would be self-defeating as well as unsafe; the child
 # run's TOTALS block landing in the parent's ledger is the smaller cost.
 #
@@ -55,21 +56,20 @@
 # Coverage:
 #   T1  POSITIVE: fake docker returns a DIFFERENT image ID on the run-end
 #       resolve than on the run-start resolve (simulating a mid-run
-#       rip-cage:latest repoint) -> run-host.sh's stdout contains a CAVEAT
-#       line naming both IDs, and the run still exits 0 (advisory only, see
-#       T3).
+#       rip-cage:latest repoint) -> run-host.sh's stdout contains the
+#       "MOVED: rip-cage:latest" line naming both IDs, and the run exits
+#       NON-ZERO (T1c): a tag move is no longer advisory (rip-cage-ely4.7.9;
+#       RH_IMAGE_MOVED feeds the exit).
 #   T2  NEGATIVE CONTROL: fake docker returns the SAME image ID both times
-#       (no tag move) -> no CAVEAT line anywhere in stdout, exit 0. Proves
-#       T1's green is not vacuous -- the probe can tell the two cases apart.
-#   T3  The CAVEAT never flips run-host.sh's exit status: both T1 and T2
-#       exit 0 (TOTALS: PASS=0 FAIL=0 SKIP=0 either way, since --only
-#       matches nothing) -- a tag move must never turn a PASS into a FAIL.
+#       (no tag move) -> no MOVED line anywhere in stdout, exit 0
+#       (TOTALS: PASS=0 FAIL=0 SKIP=0, since --only matches nothing). Proves
+#       T1's result is not vacuous -- the probe can tell the two cases apart.
 #
 # RED demonstration (rip-cage-or84 Verification target's Invalidation
-# clause): before this bead's run-host.sh fix (_rh_check_image_tag_moved),
-# T1 fails -- today's run-host.sh never re-resolves the digest at run end
-# and never prints a CAVEAT, so the assertion that one appears when the
-# fake docker's second call differs from its first is unmet. Captured
+# clause): before run-host.sh's _rh_check_image_tag_moved existed, T1 fails --
+# run-host.sh never re-resolved the digest at run end and never printed the
+# moved line. T1c (rip-cage-b8kd.19.3) is red against a run-host.sh whose
+# RH_IMAGE_MOVED no longer feeds the exit path (exit 0 on a tag move). Captured
 # verbatim in the rip-cage-or84 ship-record (this file's PASS/FAIL bodies
 # are unchanged either way -- the RED run used a HEAD-checked-out copy of
 # the pre-fix run-host.sh via `git show HEAD:tests/run-host.sh`, not a
@@ -87,6 +87,7 @@ fail() { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "FAIL  [$TOTAL] 
 
 MOCK_BIN=""
 COUNT_FILE=""
+# shellcheck disable=SC2329 # invoked via the EXIT trap below
 cleanup() {
   [[ -n "${MOCK_BIN:-}" && -d "${MOCK_BIN:-}" ]] && rm -rf "$MOCK_BIN"
   [[ -n "${COUNT_FILE:-}" ]] && rm -f "$COUNT_FILE"
@@ -173,8 +174,8 @@ _run_probe() {
 }
 
 # ---------------------------------------------------------------------------
-# T1: POSITIVE -- fake docker's two calls disagree -> CAVEAT line naming
-# both IDs, exit still 0.
+# T1: POSITIVE -- fake docker's two calls disagree -> MOVED line naming
+# both IDs, exit non-zero.
 # ---------------------------------------------------------------------------
 setup_fake_docker
 ID_A="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -182,26 +183,26 @@ ID_B="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 t1_out="$(_run_probe "$ID_A" "$ID_B")"
 t1_exit="$(printf '%s\n' "$t1_out" | grep -E '^EXIT=' | tail -1 | cut -d= -f2)"
 
-if printf '%s\n' "$t1_out" | grep -q 'CAVEAT'; then
-  pass "T1a run-host.sh prints a CAVEAT line when the image digest moves mid-run"
+if printf '%s\n' "$t1_out" | grep -q '^MOVED: rip-cage:latest'; then
+  pass "T1a run-host.sh prints the MOVED line when the image digest moves mid-run"
 else
-  fail "T1a run-host.sh prints a CAVEAT line when the image digest moves mid-run" "$t1_out"
+  fail "T1a run-host.sh prints the MOVED line when the image digest moves mid-run" "$t1_out"
 fi
 
 if printf '%s\n' "$t1_out" | grep -q "$ID_A" && printf '%s\n' "$t1_out" | grep -q "$ID_B"; then
-  pass "T1b CAVEAT line names both the start and end image digests"
+  pass "T1b MOVED line names both the start and end image digests"
 else
-  fail "T1b CAVEAT line names both the start and end image digests" "$t1_out"
+  fail "T1b MOVED line names both the start and end image digests" "$t1_out"
 fi
 
-if [[ "$t1_exit" == "0" ]]; then
-  pass "T1c/T3 a detected tag move does not change run-host.sh's exit status (still 0)"
+if [[ -n "$t1_exit" && "$t1_exit" != "0" ]]; then
+  pass "T1c a detected tag move makes run-host.sh exit non-zero (exit=$t1_exit)"
 else
-  fail "T1c/T3 a detected tag move does not change run-host.sh's exit status (still 0)" "exit=$t1_exit"
+  fail "T1c a detected tag move makes run-host.sh exit non-zero" "exit=${t1_exit:-<none>}"
 fi
 
 # ---------------------------------------------------------------------------
-# T2: NEGATIVE CONTROL -- fake docker's two calls agree -> no CAVEAT line,
+# T2: NEGATIVE CONTROL -- fake docker's two calls agree -> no MOVED line,
 # exit 0. Proves T1's result is not vacuous (the probe can tell the two
 # cases apart).
 # ---------------------------------------------------------------------------
@@ -209,10 +210,10 @@ ID_SAME="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 t2_out="$(_run_probe "$ID_SAME" "$ID_SAME")"
 t2_exit="$(printf '%s\n' "$t2_out" | grep -E '^EXIT=' | tail -1 | cut -d= -f2)"
 
-if printf '%s\n' "$t2_out" | grep -q 'CAVEAT'; then
-  fail "T2a negative control: no CAVEAT line when the image digest does not move" "$t2_out"
+if printf '%s\n' "$t2_out" | grep -q '^MOVED: rip-cage:latest'; then
+  fail "T2a negative control: no MOVED line when the image digest does not move" "$t2_out"
 else
-  pass "T2a negative control: no CAVEAT line when the image digest does not move"
+  pass "T2a negative control: no MOVED line when the image digest does not move"
 fi
 
 if [[ "$t2_exit" == "0" ]]; then
