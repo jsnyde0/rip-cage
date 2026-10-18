@@ -171,24 +171,22 @@ fi
 # --- Test 7: rc build uses SCRIPT_DIR to find Dockerfile ---
 echo ""
 echo "=== Test 7: rc build finds Dockerfile via SCRIPT_DIR ==="
-# We just test that it attempts docker build with the right context
-# Use --dry-run isn't available, so we test from a different directory
-# and check that it doesn't complain about missing Dockerfile
-# (it will fail because docker may not be running, but the error should
-# be about docker, not about missing Dockerfile)
-cd /tmp || exit 1
-# rip-cage-d2bo kind-1 (harmless): --help-test-sentinel is not on cmd_build's
-# flag allowlist, which is fail-closed and REJECTS an unrecognised flag before
-# any docker call is made (see `rc help`, build's flag table). No image is ever
-# built, so rip-cage:latest cannot be overwritten here.
-build_output=$("$RC" build --help-test-sentinel 2>&1 || true)
-# If we get a docker error (not a "Dockerfile not found" error), the path resolution works
-# The command should at least print what it's doing
-if echo "$build_output" | grep -qi "build\|docker"; then
-  pass "build command recognized and attempts docker build"
+# rip-cage-b8kd.19.1: run rc build from a NON-repo cwd behind a stub docker that
+# records its argv, and assert docker was handed THIS repo's cage/Dockerfile. A
+# cwd-relative lookup would fail to find the file and never reach docker build.
+# The cd lives in a subshell so it cannot leak into later cases. The stub pair
+# is not the file-wide pair, so its log is private to this case.
+_T7_LOG=$(mktemp "${TMPDIR:-/tmp}/rc-t7-docker-log.XXXXXX")
+_T7_BIN=$(fake_runtime_bin "$_T7_LOG")
+_T7_CWD=$(mktemp -d)
+_T7_WANT="$(cd "$REPO_ROOT" && pwd -P)/cage/Dockerfile"
+build_output=$(cd "$_T7_CWD" && PATH="${_T7_BIN}:${PATH}" "$RC" build 2>&1 || true)
+if grep -qF -- "docker build -f ${_T7_WANT} " "$_T7_LOG"; then
+  pass "rc build from a non-repo cwd hands docker the repo's cage/Dockerfile"
 else
-  fail "build command not working: $build_output"
+  fail "rc build from a non-repo cwd did not hand docker ${_T7_WANT} (docker calls: $(grep '^docker build' "$_T7_LOG" || echo none); rc said: ${build_output})"
 fi
+rm -rf "$_T7_BIN" "$_T7_LOG" "$_T7_CWD"
 
 # --- Test 8: check_docker surfaces Docker daemon errors ---
 # rip-cage-tsf2.1: `rc down` moved from check_docker to check_msb (ADR-029
@@ -541,47 +539,17 @@ if [[ -d "${HOME}/.claude/agents" ]]; then
   fi
   rm -rf "$TEST_DIR_T14"
 else
-  pass "rc up --dry-run agents check skipped — ~/.claude/agents not present"
+  echo "SKIP: Test 14 — rc up --dry-run agents check, ~/.claude/agents not present"
 fi
 
 # --- Test 15: beads-host-dolt in rc test (Tier 3: requires running rc container) ---
 echo ""
 echo "=== Test 15: beads-host-dolt check in rc test (Tier 3) ==="
-# Find a running rc container whose workspace is the rip-cage repo (embedded mode).
-# The file-wide fake docker answers `docker ps` with nothing, so this case always
-# takes the skip branch below and the else branch is dead here (it was already
-# dead under msb, where no rc container is a docker container).
-RIPCAGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RC_CONTAINER_T15=$(docker ps --filter "label=rc.source.path=${RIPCAGE_ROOT}" --format "{{.Names}}" 2>/dev/null | head -1 || true)
-
-if [[ -z "$RC_CONTAINER_T15" ]]; then
-  echo "SKIP: Test 15 — no running rc container found for ${RIPCAGE_ROOT} (start one with: rc up ${RIPCAGE_ROOT})"
-  pass "beads-host-dolt rc test (skipped — no container)"
-else
-  # JSON mode: embedded project should produce pass with correct name
-  rc_json_out=$("$RC" --output json test "$RC_CONTAINER_T15" 2>/dev/null || true)
-  bd_status=$(echo "$rc_json_out" | jq -r '.checks[] | select(.name=="beads-host-dolt") | .status' 2>/dev/null || true)
-  if [[ "$bd_status" == "pass" ]]; then
-    pass "rc test JSON: beads-host-dolt status is pass"
-  else
-    fail "rc test JSON: beads-host-dolt status expected 'pass', got '${bd_status}' (json: ${rc_json_out})"
-  fi
-
-  bd_detail=$(echo "$rc_json_out" | jq -r '.checks[] | select(.name=="beads-host-dolt") | .detail' 2>/dev/null || true)
-  if [[ "$bd_detail" == "not applicable (embedded mode)" ]]; then
-    pass "rc test JSON: beads-host-dolt detail is 'not applicable (embedded mode)'"
-  else
-    fail "rc test JSON: beads-host-dolt detail expected 'not applicable (embedded mode)', got '${bd_detail}'"
-  fi
-
-  # Text mode: check PASS line present
-  rc_text_out=$("$RC" test "$RC_CONTAINER_T15" 2>/dev/null || true)
-  if echo "$rc_text_out" | grep -q "PASS \[0\] beads-host-dolt"; then
-    pass "rc test text: beads-host-dolt PASS line present"
-  else
-    fail "rc test text: missing 'PASS [0] beads-host-dolt' (output: ${rc_text_out})"
-  fi
-fi
+# The file-wide fake docker answers `docker ps` with nothing, so no running rc
+# container is ever found here (and under msb no rc container is a docker
+# container at all). The case reports SKIP and records no pass; beads-host-dolt
+# is exercised without a container by Test 16 via __bd-preflight-test.
+echo "SKIP: Test 15 — beads-host-dolt rc test needs a running rc container; the file-wide fake docker has none"
 
 # --- Test 16: beads-host-dolt stale port via __bd-preflight-test (no container needed) ---
 echo ""
