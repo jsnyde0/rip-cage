@@ -77,8 +77,6 @@ unset RC_CONFIG_GLOBAL
 # under a case banner is a trap for the next retirement -- keep it up here.
 # ===========================================================================
 
-
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"

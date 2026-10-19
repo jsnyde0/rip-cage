@@ -70,7 +70,7 @@
 # never fakes a PASS. Not wired into tests/run-host.sh (mirrors the sibling
 # live-msb effect probes tests/test-msb-flags-effect-probes.sh and
 # tests/test-msb-claude-home-resume.sh -- run directly; registered in the
-# Makefile's BASH_SCRIPTS for shellcheck only).
+# Makefile's lint glob, for shellcheck only).
 
 set -uo pipefail
 
