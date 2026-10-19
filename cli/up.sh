@@ -1594,6 +1594,7 @@ _up_prepare_conf_secret_env() {
 #
 # Reads globals: _UP_CAGE_CONF, _UP_MSB_REPLACE, _UP_RUN_ARGS,
 # _UP_PROTECTED_COVERS.
+# Returns 0; 2 if the egress generator fails; 3 if the translator fails.
 _up_build_msb_create_argv() {
   local _name="$1" _path="$2"
 
@@ -1602,12 +1603,12 @@ _up_build_msb_create_argv() {
 
   local _egress_cfg _egress_out _translate_out _line
   _egress_cfg=$(_up_build_egress_config_json "$_path")
-  _egress_out=$(_msb_flags_generate "$_egress_cfg") || return 1
+  _egress_out=$(_msb_flags_generate "$_egress_cfg") || return 2
   if [[ -n "$_egress_out" ]]; then
     while IFS= read -r _line; do _UP_MSB_ARGV+=("$_line"); done <<< "$_egress_out"
   fi
 
-  _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]+"${_UP_RUN_ARGS[@]}"}") || return 1
+  _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]+"${_UP_RUN_ARGS[@]}"}") || return 3
   if [[ -n "$_translate_out" ]]; then
     while IFS= read -r _line; do _UP_MSB_ARGV+=("$_line"); done <<< "$_translate_out"
   fi
@@ -1669,44 +1670,30 @@ _up_start_container() {
   # var msb reads at boot. Same in-shell requirement as the call above.
   _up_prepare_conf_secret_env "${_UP_CAGE_CONF}"
 
-  local _egress_out _egress_rc=0
-  _egress_out=$(_msb_flags_generate "$_egress_cfg") || _egress_rc=$?
-  if [[ "$_egress_rc" -ne 0 ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Failed to generate msb egress flags for $_name" "MSB_FLAGS_GENERATE_FAILED"
-    fi
-    echo "Error: failed to generate msb egress flags for $_name" >&2
-    return 1
-  fi
-  local _egress_flags=()
-  if [[ -n "$_egress_out" ]]; then
-    local _egress_line
-    while IFS= read -r _egress_line; do
-      _egress_flags+=("$_egress_line")
-    done <<< "$_egress_out"
-  fi
-
-  local _translate_out _translate_rc=0
-  _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]}") || _translate_rc=$?
-  if [[ "$_translate_rc" -ne 0 ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Failed to translate mount/env args to msb for $_name" "MSB_ARGS_TRANSLATE_FAILED"
-    fi
-    return 1
-  fi
-  local _translated_flags=()
-  if [[ -n "$_translate_out" ]]; then
-    local _translated_line
-    while IFS= read -r _translated_line; do
-      _translated_flags+=("$_translated_line")
-    done <<< "$_translate_out"
-  fi
-
-  local _UP_MSB_ARGV=()
-  if ! _up_build_msb_create_argv "$_name" "$_path"; then
-    echo "Error: failed to assemble the msb create argv for $_name" >&2
-    return 1
-  fi
+  # The builder runs the egress generator and the mount/env translator once,
+  # and says which of them failed: 2 = generate, 3 = translate.
+  local _UP_MSB_ARGV=() _argv_rc=0
+  _up_build_msb_create_argv "$_name" "$_path" || _argv_rc=$?
+  case "$_argv_rc" in
+    0) ;;
+    2)
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Failed to generate msb egress flags for $_name" "MSB_FLAGS_GENERATE_FAILED"
+      fi
+      echo "Error: failed to generate msb egress flags for $_name" >&2
+      return 1
+      ;;
+    3)
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Failed to translate mount/env args to msb for $_name" "MSB_ARGS_TRANSLATE_FAILED"
+      fi
+      return 1
+      ;;
+    *)
+      echo "Error: failed to assemble the msb create argv for $_name" >&2
+      return 1
+      ;;
+  esac
 
   local msb_stderr
   if ! msb_stderr=$("${_UP_MSB_ARGV[@]}" 2>&1 >/dev/null); then

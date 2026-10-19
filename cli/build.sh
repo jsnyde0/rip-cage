@@ -77,6 +77,12 @@ _build_dockerfile_outside_cage_mounts() {
 }
 
 
+# _build_docker_image DOCKERFILE CONTEXT -- the one spelling of the fixed
+# docker build argv (ADR-031 D5(c)) that cmd_build and _pull_or_build_local run.
+_build_docker_image() {
+  docker build -f "$1" --build-arg "RC_VERSION=${RC_VERSION}" -t "$IMAGE" "$2"
+}
+
 # cmd_build -- build the cage image from ONE host-side Dockerfile.
 #
 # ADR-031 D5(c), FIRM: rc build accepts EXACTLY ONE user input, the Dockerfile
@@ -187,7 +193,7 @@ cmd_build() {
   log "Building $IMAGE from ${_bf_real}..."
   local _build_ok=0
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    if docker build -f "$_bf_real" --build-arg "RC_VERSION=${RC_VERSION}" -t "$IMAGE" "$_bf_context" >/dev/null 2>&1; then
+    if _build_docker_image "$_bf_real" "$_bf_context" >/dev/null 2>&1; then
       # rip-cage-jnvb / D-d: informational, non-blocking warning (stderr, so
       # stdout JSON stays parseable) when existing rc cages are pinned to a
       # different image than the one just built -- rc up will refuse to resume
@@ -212,7 +218,7 @@ cmd_build() {
       json_error "Build failed" "BUILD_FAILED"
     fi
   else
-    docker build -f "$_bf_real" --build-arg "RC_VERSION=${RC_VERSION}" -t "$IMAGE" "$_bf_context" || _build_ok=$?
+    _build_docker_image "$_bf_real" "$_bf_context" || _build_ok=$?
     if [[ "$_build_ok" -eq 0 ]]; then
       # Same informational warning and same RC_IMAGE skip as the JSON path.
       [[ -z "${RC_IMAGE:-}" ]] && _build_warn_stale_containers
@@ -547,12 +553,11 @@ _image_is_current() {
 # _pull_or_build_local — the from-source fallback. Builds rc's OWN base
 # Dockerfile only: this path exists so `rc up` on a fresh host gets a working
 # base image, and an operator's extension image is never something rc decides to
-# build behind their back. Same fixed argv as cmd_build (ADR-031 D5(c)); the
-# containment check cmd_build runs is not repeated here because the path is rc's
-# own, not a caller's.
+# build behind their back. The containment check cmd_build runs is not
+# repeated here because the path is rc's own, not a caller's.
 _pull_or_build_local() {
   local _pob_exit=0
-  docker build -f "${SCRIPT_DIR}/cage/Dockerfile" --build-arg "RC_VERSION=${RC_VERSION}" -t "$IMAGE" "$SCRIPT_DIR" || _pob_exit=$?
+  _build_docker_image "${SCRIPT_DIR}/cage/Dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
   return "$_pob_exit"
 }
 
