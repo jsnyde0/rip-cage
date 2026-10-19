@@ -40,6 +40,9 @@ skip() { echo "SKIP: $1"; SKIPPED=$((SKIPPED + 1)); }
 
 _track() { CREATED_CAGES+=("$1"); }
 
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 # Resolve the container name from the workspace label — robust against
 # rc's collision-hash fallback and tr/sed name normalization.
 # shellcheck source=tests/_cage-lookup-lib.sh
@@ -115,6 +118,10 @@ export HOME="$TEST_HOME_SANDBOX"
 # rc exec, rc destroy — not only rc up) must resolve against the real msb
 # sandboxes registry, not an empty one under the temp HOME.
 export MSB_HOME="$REAL_MSB_HOME"
+# Docker resolves its CONTEXT through $HOME/.docker, and HOME is sandboxed
+# above, so without this every docker call reports a daemon error instead of
+# this suite's subject (same fix as tests/test-pi-auth-mount.sh).
+export DOCKER_CONFIG="${REAL_HOME}/.docker"
 
 CLEANUP_DONE=false
 cleanup_all() {
@@ -211,7 +218,7 @@ TEST_WS=$(mktemp -d)
 # ---- Bring up the container ----
 echo ""
 echo "=== Bringing up container (rc up) ==="
-RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
 
 CONTAINER=$(_resolve_container "$TEST_WS")
 if [[ -z "$CONTAINER" ]]; then
@@ -338,7 +345,7 @@ if [[ -d "$PI_AGENT_DIR" ]]; then
 fi
 
 TEST_WS2=$(mktemp -d)
-RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS2" </dev/null >/dev/null 2>&1 || true
+RC_CAGE_CONF="$(cage_conf_for "$TEST_WS2")" "$RC" up "$TEST_WS2" </dev/null >/dev/null 2>&1 || true
 
 # Restore the pi agent dir immediately after rc up
 if [[ -d "$PI_AGENT_BACKUP_TMP" ]]; then

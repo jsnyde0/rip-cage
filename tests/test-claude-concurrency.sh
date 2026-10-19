@@ -743,8 +743,9 @@ fi
 #
 # The mount-composed signal (/proc/mounts -- empirically confirmed: a
 # carried-mount cage's /proc/mounts contains a line whose field 2 is
-# exactly /home/agent/.claude.json; cli/up.sh:704-711 only adds the -v arg
-# when the host file exists at cage-creation time) is kept here PURELY for
+# exactly /home/agent/.claude.json; since b6fbbce the mount is a line in the
+# operator's cage config -- share/rip-cage/cage.yaml.template ships it -- and
+# rc up composes none of its own) is kept here PURELY for
 # labeling/observability -- distinguishing "mount was composed, then went
 # dead" (SEEDED) from "no mount was ever composed" (pure-synthesized) in
 # the output is worth having even though it does not move the pass/fail
@@ -783,23 +784,23 @@ rm -f "$OUT_SINGLE"
 #
 # Step 5 above answers "is auth-bootstrap state present" (satisfied by
 # EITHER carrier — correct, per doctor.sh's SEEDED semantics, and NOT
-# re-litigated here). This is a DIFFERENT assertion: "did rc's mount-
-# composition code do what the HOST state says it should have done." The
+# re-litigated here). This is a DIFFERENT assertion: "does the cage's
+# mount composition match what the HOST state says it should carry." The
 # only oracle that can see a mount-composition regression is host state,
 # because THIS test runs on the host (not just in-cage) -- host state is
 # ground truth for what SHOULD have been mounted at cage-creation time
-# (cli/up.sh:704-711 only adds the ~/.claude.json -v arg when
-# `[[ -f "${HOME}/.claude.json" ]]` at `rc up` time; mounts are fixed at
-# creation, never re-evaluated on resume).
+# (the ~/.claude.json mount is a line in the cage's config --
+# share/rip-cage/cage.yaml.template ships it, rc up adds none of its own;
+# mounts are fixed at creation, never re-evaluated on resume).
 #
 # Constructible both ways -- unlike a mount-composed check folded into Step
 # 5's own boundary (shown above to algebraically add no new fail path
 # beyond "neither carrier"), this one has a genuine, distinct red case:
 #   host ~/.claude.json present + mount entry present -> pass (composed as expected)
 #   host ~/.claude.json absent  + mount entry absent  -> pass (nothing to compose)
-#   host ~/.claude.json present + mount entry ABSENT  -> FAIL LOUD: a
-#     genuine mount-composition regression -- host state says this cage
-#     should carry a live mount and the running cage has no such entry.
+#   host ~/.claude.json present + mount entry ABSENT  -> FAIL LOUD: host
+#     state says this cage should carry a live mount and the running cage
+#     has no such entry -- its config lacks the template's mount line.
 #   host ~/.claude.json absent  + mount entry present -> also reported loud
 #     (not silently accepted): under normal `rc up` semantics this can't
 #     happen (nothing without a host source gets mounted), so if it's ever
@@ -827,7 +828,7 @@ elif [[ "$_host_claude_json_present" == "false" && "$CLAUDE_JSON_MOUNTED" == "fa
   pass "Mount-composition guard: host ~/.claude.json absent and the cage's mount table shows no entry — nothing was supposed to be mounted"
 elif [[ "$_host_claude_json_present" == "true" && "$CLAUDE_JSON_MOUNTED" == "false" ]]; then
   fail "Mount-composition guard: host ~/.claude.json is present and non-empty, but the cage's mount table has NO /home/agent/.claude.json entry" \
-    "genuine mount-composition regression — rc up should have mounted this at cage creation"
+    "the cage's config carries no ~/.claude.json mount line (the shipped share/rip-cage/cage.yaml.template has one) — add it to this cage's project config and recreate with rc up --replace"
 else
   fail "Mount-composition guard: host ~/.claude.json is absent, but the cage's mount table SHOWS a /home/agent/.claude.json entry" \
     "anomalous state — a mount with no host source should not be possible under normal rc up semantics"

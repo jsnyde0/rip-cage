@@ -13,6 +13,8 @@ CREATED_CAGES=()
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1${2:+ -- $2}"; FAILURES=$((FAILURES + 1)); }
 
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 # shellcheck source=tests/_cage-lookup-lib.sh
 source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 
@@ -77,7 +79,7 @@ fi
 # Step 2: Create temp project and start container
 TEST_WS=$(mktemp -d)
 echo "# pi e2e test" > "$TEST_WS/README"
-RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" \
+RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" "$RC" up "$TEST_WS" \
   </dev/null >/dev/null 2>&1 || true
 CONTAINER=$(_resolve_container)
 if [[ -z "$CONTAINER" ]]; then
