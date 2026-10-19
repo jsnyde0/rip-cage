@@ -23,7 +23,6 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 TOTAL=0
 

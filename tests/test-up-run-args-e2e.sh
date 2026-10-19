@@ -50,7 +50,7 @@ RC="${REPO_ROOT}/rc"
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 
 GM_FAKEBIN="${SCRIPT_DIR}/golden-master/lib/fake-bin"
-# shellcheck source=golden-master/lib/scrub.sh
+# shellcheck source=tests/golden-master/lib/scrub.sh
 source "${SCRIPT_DIR}/golden-master/lib/scrub.sh"
 FAILURES=0
 TEST_HOME=""

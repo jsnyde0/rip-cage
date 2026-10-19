@@ -163,10 +163,13 @@ else
 fi
 # Give the non-restarting daemons more than one backoff window to misbehave.
 sleep 7
+# shellcheck disable=SC2015  # pass/check never fail, so the || arm runs only when the test fails
 [ "$(count default)" -eq 1 ] && pass "D2 no restart key: exactly 1 start" \
   || fail "D2 no restart key: exactly 1 start" "starts=$(count default)"
+# shellcheck disable=SC2015  # pass/check never fail, so the || arm runs only when the test fails
 [ "$(count never)" -eq 1 ] && pass "D3 restart: never: exactly 1 start" \
   || fail "D3 restart: never: exactly 1 start" "starts=$(count never)"
+# shellcheck disable=SC2015  # pass/check never fail, so the || arm runs only when the test fails
 [ "$(count unhealthy)" -eq 1 ] && pass "D4 restart: always with a failed first health check: exactly 1 start" \
   || fail "D4 restart: always with a failed first health check: exactly 1 start" "starts=$(count unhealthy)"
 

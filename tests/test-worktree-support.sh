@@ -153,6 +153,7 @@ check "Relative gitdir paths resolved with realpath" \
   "$(grep_check 'realpath.*path.*host_gitdir\|realpath.*host_gitdir')"
 
 # Test 20: Syntax check passes
+# shellcheck disable=SC2015  # check never fails
 bash -n "$RC_FILE" 2>/dev/null && check "rc script passes bash syntax check" "true" || check "rc script passes bash syntax check" "false"
 
 # --- Tests for bead rip-cage-yha: git_hooks_ro in worktree JSON output ---
@@ -233,6 +234,7 @@ check "Auto-redirect warns when main .beads/ not found" \
 # above) remains.
 
 # Test 30: Explicit .beads/redirect still takes precedence (elif branch)
+# shellcheck disable=SC2016  # literal $ in the grep pattern
 check "Explicit .beads/redirect has precedence (elif branch for auto)" \
   "$(grep -q 'elif \[\[ "\$wt_detected" == "true" \]\]' "$RC_FILE" && echo true || echo false)"
 

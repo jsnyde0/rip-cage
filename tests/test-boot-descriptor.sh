@@ -150,9 +150,11 @@ else
   # Read the descriptor back OUT OF THE IMAGE rather than trusting the fragment
   # we wrote -- the artifact is the thing under test.
   MERGED=$(docker run --rm --entrypoint sh "$OK_TAG" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null)
+  # shellcheck disable=SC2015  # pass/check never fail, so the || arm runs only when the test fails
   jq -e '(.daemons // []) | any(.name == "probe")' <<<"$MERGED" >/dev/null 2>&1 \
     && pass "rc-boot-merge landed the daemon in the image's descriptor" \
     || fail "the merged descriptor in the image carries no 'probe' daemon"
+  # shellcheck disable=SC2015  # pass/check never fail, so the || arm runs only when the test fails
   jq -e '(.tools // []) | any(.name == "claude")' <<<"$MERGED" >/dev/null 2>&1 \
     && pass "the merge preserved the base image's own tools[] entries" \
     || fail "the merge dropped the base descriptor's tools[] -- a fragment must ADD, not replace"

@@ -1165,6 +1165,7 @@ E49_CONF
 # protected-path fixture is therefore a fake ".ssh" under the scratch root
 # rather than the real ~/.ssh — matching is by path COMPONENT, so it exercises
 # the identical branch without ever naming the operator's own key directory.
+# shellcheck disable=SC2030,SC2031  # env is scoped to the subshell on purpose
 e49_run_rc() {
   ( export PATH="${E49_BIN}:${PATH}"
     export XDG_CONFIG_HOME="${E49_HOME}/.config"
@@ -1369,6 +1370,7 @@ T61_CONF
 # thing. Same computation cli/up.sh's _up_cage_conf_sha does.
 T61_CONF_SHA=$(shasum -a 256 "${T61_ROOT}/cage.yaml" | awk '{print $1}')
 
+# shellcheck disable=SC2030,SC2031  # env is scoped to the subshell on purpose
 t61_run_rc() {
   ( export PATH="${T61_BIN}:${PATH}"
     export XDG_CONFIG_HOME="${T61_ROOT}/home/.config"
@@ -1467,6 +1469,7 @@ mounts:
 CONF
 
 t62_rc=0
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 t62_out=$(PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" \
   "$RC" build --file "${T62_PROJ}/Dockerfile" 2>&1) || t62_rc=$?
 
@@ -1497,6 +1500,7 @@ fi
 T62_OUTSIDE="${T62_ROOT}/outside"
 mkdir -p "$T62_OUTSIDE"
 printf 'FROM rip-cage:latest\n' > "${T62_OUTSIDE}/Dockerfile"
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" RC_IMAGE="rip-cage-t62:1" \
   "$RC" build --file "${T62_OUTSIDE}/Dockerfile" >/dev/null 2>&1 || true
 if grep -q "build" "$T62_LOG" 2>/dev/null; then
@@ -1514,6 +1518,7 @@ fi
 # The one-input rule: anything other than --file is refused, pre-docker.
 : > "$T62_LOG"
 t62_flag_rc=0
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 t62_flag=$(PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" "$RC" build --no-cache 2>&1) || t62_flag_rc=$?
 if [[ "$t62_flag_rc" -ne 0 ]] && ! grep -q "build" "$T62_LOG" 2>/dev/null; then
   pass "62g: a docker flag other than --file is refused before docker runs"
@@ -1522,6 +1527,7 @@ else
 fi
 : > "$T62_LOG"
 t62_tag_rc=0
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 t62_tag=$(PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" "$RC" build -t evil:latest 2>&1) || t62_tag_rc=$?
 if [[ "$t62_tag_rc" -ne 0 ]] && ! grep -q "build" "$T62_LOG" 2>/dev/null; then
   pass "62h: -t/--tag is refused too — the tag is rc's own, set via RC_IMAGE"
@@ -1583,9 +1589,11 @@ chmod +x "${T63_BIN}/msb"
 # T63_SENTINEL marks any msb verb past --version/image list (63b/63c assert its
 # absence: refused before msb is touched); T63_CREATED marks `msb create`
 # alone, which is what 63d asserts -- the launch itself, not a probe.
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 _make_fake_docker_dir "$T63_BIN" "$RC_IMAGE" "$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
 
 # t63_conf <dest> <network-block-body-or-empty>
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 t63_conf() {
   cat > "$1" <<T63_CONF
 image: ${RC_IMAGE}
@@ -1596,6 +1604,7 @@ ${2}
 T63_CONF
 }
 
+# shellcheck disable=SC2030,SC2031  # env is scoped to the subshell on purpose
 t63_run_rc() {
   ( export PATH="${T63_BIN}:${PATH}"
     export XDG_CONFIG_HOME="${T63_HOME}/.config"
@@ -1747,6 +1756,7 @@ chmod +x "${DG_DIR}/msb"
 
 # _dg_run <case-label> <cwd> [args...] -- run rc destroy under the shim from
 # CWD with a fresh call log. Echoes the exit code; the log is at $DG_LOG.
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 _dg_run() {
   local _cwd="$2"
   shift 2
@@ -1811,6 +1821,7 @@ else
 fi
 
 # DG5: the refusal names the cages it left alone, so an operator can act on it.
+# shellcheck disable=SC2031  # reads the parent's own value; the subshell edits are scoped on purpose
 DG5_OUT=$( cd "$DG_ELSEWHERE" && PATH="${DG_DIR}:$PATH" "$RC" destroy "" 2>&1 >/dev/null )
 if echo "$DG5_OUT" | grep -q "$DG_CAGE" && echo "$DG5_OUT" | grep -qi 'untouched'; then
   pass "DG5: the refusal lists the registered cage as untouched"

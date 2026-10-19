@@ -72,7 +72,6 @@ echo "=== Phase 1: rc up --dry-run ==="
 DRY_TMP=$(mktemp -d)
 DRY_PROJECT="$DRY_TMP/dryrun-fixture"
 mkdir -p "$DRY_PROJECT"
-DRY_PARENT_RESOLVED=$(cd "$DRY_TMP" && pwd -P)
 DRY_OUT=$(RC_CAGE_CONF="$(cage_conf_for "$DRY_PROJECT")" "$RC" --dry-run up "$DRY_PROJECT" 2>&1 || true)
 DRY_PROJECT_RESOLVED=$(cd "$DRY_PROJECT" && pwd -P)
 EXPECTED_DRY_KEY=$(printf '%s' "$DRY_PROJECT_RESOLVED" | tr '/.' '-')
@@ -124,7 +123,6 @@ mkdir -p "$E2E_TMP/rc"
 E2E_PROJECT="$E2E_TMP/rc/dn2-test"
 mkdir -p "$E2E_PROJECT"
 CONTAINER_NAME="rc-dn2-test"
-E2E_RESOLVED=$(cd "$E2E_TMP" && pwd -P)
 E2E_PROJECT_RESOLVED=$(cd "$E2E_PROJECT" && pwd -P)
 HOST_KEY=$(printf '%s' "$E2E_PROJECT_RESOLVED" | tr '/.' '-')
 HOST_PROJECTS_DIR="$HOME/.claude/projects/$HOST_KEY"
@@ -149,11 +147,13 @@ else
 fi
 
 # Bind-mount check via /proc/mounts (mountpoint(1) not guaranteed inside image)
+# shellcheck disable=SC2016,SC2088  # $2 is awk's; ~ is label text, not a path
 if msb exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/projects" { found=1; exit } END { exit !found }' /proc/mounts; then
   check "~/.claude/projects is a mountpoint inside container" pass
 else
   check "~/.claude/projects is a mountpoint inside container" fail
 fi
+# shellcheck disable=SC2016,SC2088  # $2 is awk's; ~ is label text, not a path
 if msb exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/sessions" { found=1; exit } END { exit !found }' /proc/mounts; then
   check "~/.claude/sessions is a mountpoint inside container" pass
 else
@@ -178,6 +178,7 @@ fi
 
 # Write a session-like file from inside the container, via the -workspace symlink.
 # This simulates Claude Code writing a session keyed by the container's cwd (/workspace).
+# shellcheck disable=SC2015  # check never fails
 msb exec "$CONTAINER_NAME" -- sh -c \
   'echo "{\"type\":\"test\",\"msg\":\"rip-cage-dn2 persistence\"}" \
      > /home/agent/.claude/projects/-workspace/dn2-probe.jsonl' \

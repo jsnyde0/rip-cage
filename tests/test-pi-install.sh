@@ -67,7 +67,6 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/_cage-lookup-lib.sh
 source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
-RC="${SCRIPT_DIR}/../rc"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 

@@ -78,8 +78,6 @@ unset RC_CONFIG_GLOBAL
 # ===========================================================================
 
 
-# Captured before any case sandboxes HOME (see S19).
-REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME}/.docker}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
@@ -168,8 +166,7 @@ test_s1_collect_absolute_symlinks() {
   target=$(echo "$out" | cut -d'|' -f2)
 
   # macOS resolves /var/folders → /private/var/folders; normalize for comparison
-  local norm_link norm_target
-  norm_link=$(readlink -f "${TEST_HOME}/.pi/agent/AGENTS.md" 2>/dev/null || echo "${TEST_HOME}/.pi/agent/AGENTS.md")
+  local norm_target
   norm_target=$(readlink -f "${target_dir}/AGENTS.md" 2>/dev/null || echo "${target_dir}/AGENTS.md")
 
   # The link path in output is the find result (may be normalized by readlink -f in helper)
@@ -313,7 +310,7 @@ test_s8_on_dangling_follow() {
     _UP_RUN_ARGS=()
     wt_detected=false
     _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
   " 2>&1) || exit_code=$?
 
   # Check: a MOUNT with the target path was added (without :ro suffix for rw)
@@ -359,7 +356,7 @@ YAML
     _UP_RUN_ARGS=()
     wt_detected=false
     _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
   " 2>&1) || exit_code=$?
 
   local has_target_mount has_log
@@ -410,7 +407,7 @@ test_s11_mode_rw() {
     _UP_RUN_ARGS=()
     wt_detected=false
     _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
   " 2>&1) || exit_code=$?
 
   # The mount should be present WITHOUT :ro
@@ -463,7 +460,7 @@ test_s13_scope_file() {
     _UP_RUN_ARGS=()
     wt_detected=false
     _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
   " 2>&1) || exit_code=$?
 
   local has_leaf_mount
@@ -730,7 +727,7 @@ test_s_adr019_pi_mount_preserved() {
     _UP_RUN_ARGS=()
     wt_detected=false
     _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
   " 2>&1) || exit_code=$?
 
   # auth.json sub-mount should be present (ADR-019 D1 evolved: narrow sub-mount)

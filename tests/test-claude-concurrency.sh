@@ -33,8 +33,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/_cage-lookup-lib.sh
 source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
-REPO_ROOT="${SCRIPT_DIR}/.."
-RC="${REPO_ROOT}/rc"
 
 FAILURES=0
 

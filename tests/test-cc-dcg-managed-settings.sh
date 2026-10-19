@@ -57,8 +57,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/_cage-lookup-lib.sh
 source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
-REPO_ROOT="${SCRIPT_DIR}/.."
-RC="${REPO_ROOT}/rc"
 
 FAILURES=0
 TOTAL=0
@@ -385,6 +383,7 @@ CRED_FILE_PRESENT=$(cexec bash -c '
 # CLAUDE_CODE_OAUTH_TOKEN in-cage (tests/test-safety-stack.sh:186-190 idiom).
 if [[ "$CRED_FILE_PRESENT" == "absent" ]]; then
   CRED_MOUNTS_CLAUDE_LABEL=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.config.labels["rc.auth.credential-mounts.claude"] // empty')
+  # shellcheck disable=SC2016  # expands inside the guest shell, not here
   if [[ "$CRED_MOUNTS_CLAUDE_LABEL" == "none" ]]; then
     CRED_FILE_PRESENT="non-possession-label"
   elif cexec bash -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then

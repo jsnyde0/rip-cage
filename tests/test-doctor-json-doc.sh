@@ -120,6 +120,7 @@ if [[ -z "$_doc_heading_line" ]]; then
   exit 1
 fi
 
+# shellcheck disable=SC2016  # literal backticks in the markdown-table pattern
 _documented_keys=$(awk -v start="$_doc_heading_line" '
   NR == start { found = 1; next }
   found && /^#/ { exit }
@@ -263,6 +264,7 @@ if [[ -z "$_host_doc_heading_line" ]]; then
   exit 1
 fi
 
+# shellcheck disable=SC2016  # literal backticks in the markdown-table pattern
 _host_documented_keys=$(awk -v start="$_host_doc_heading_line" '
   NR == start { found = 1; next }
   found && /^#/ { exit }

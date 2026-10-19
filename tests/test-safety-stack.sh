@@ -536,6 +536,7 @@ check_bridge() {
 # login shell that would have picked up the zshrc append. Fail the test if
 # source itself errors — silent failure would mask a corrupt cage-env.
 if [ -f /etc/rip-cage/cage-env ]; then
+  # shellcheck disable=SC1091  # in-cage file, absent on the lint host
   if ! source /etc/rip-cage/cage-env; then
     check "cage-env is sourceable" "fail"
   fi

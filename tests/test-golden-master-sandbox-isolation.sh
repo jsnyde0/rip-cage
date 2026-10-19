@@ -215,6 +215,7 @@ S4_OUT=$(
   export LC_ALL=en_US.UTF-8
   # shellcheck source=/dev/null
   source "${GM_LIB}/sandbox.sh"
+  # shellcheck disable=SC2034  # read by gm_capture in the sourced sandbox.sh
   RC="$S4_PROBE"          # gm_capture runs "$RC"; point it at the probe
   gm_capture noop
   printf '%s' "$GM_OUT"

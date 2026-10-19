@@ -64,6 +64,7 @@ echo "=== C2: No unsafe json_out with interpolated variables ==="
 # Count json_out *function calls* (exact name, not _up_json_output) with $ (variable interpolation).
 # Exclude variable assignments (json_out=...) and variable substitutions (${json_out}, "$json_out") —
 # those are not function calls and don't carry the interpolation-injection risk this check guards.
+# shellcheck disable=SC2016,SC2126  # literal $ in grep patterns; grep|wc kept for readability
 unsafe_count=$(grep -w 'json_out' "$RC_SRC" \
   | grep -v 'json_out()' \
   | grep -v 'json_out=' \
@@ -106,6 +107,7 @@ while IFS= read -r line; do
   elif [[ "$in_cmd_up" == true ]] && [[ "$line" =~ ^cmd_ ]] && [[ ! "$line" =~ ^cmd_up ]]; then
     break
   elif [[ "$in_cmd_up" == true ]]; then
+    # shellcheck disable=SC2076  # literal substring match is intended
     if [[ "$line" =~ "--dry-run)" ]] || [[ "$line" =~ "--output)" ]]; then
       dup_found=true
     fi
@@ -152,6 +154,7 @@ cmd_up_slice=$(awk '/^cmd_up\(\)/,/^}/' "$RC_SRC")
 # function's own echo lines, so a new msb state added there needs no edit here.
 msb_state_slice=$(awk '/^_msb_sandbox_state\(\)/,/^}/' "$RC_SRC")
 emittable_states=$(grep -oE 'echo "[a-z]+"' <<<"$msb_state_slice" | sed -E 's/echo "(.*)"/\1/' | sort -u | tr '\n' ' ' || true)
+# shellcheck disable=SC2016  # literal $state in the grep pattern
 compared_states=$(grep -oE '"\$state" [!=]= "[a-z]+"' <<<"$cmd_up_slice" | sed -E 's/.*"([a-z]+)"$/\1/' | sort -u || true)
 if [[ -z "$emittable_states" || -z "$compared_states" ]]; then
   fail "could not read state literals (emittable='$emittable_states' compared='$compared_states')"

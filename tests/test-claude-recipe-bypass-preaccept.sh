@@ -260,6 +260,7 @@ fi
 # explicit value is still honored (Case 1 intact).
 # ---------------------------------------------------------------------------
 _ENVDUMP="$WORK/env-dump.txt"
+# shellcheck disable=SC2016  # expands when the stub runs, not here
 printf '#!/usr/bin/env bash\nprintf "%%s" "${CLAUDE_CONFIG_DIR:-UNSET}" > "%s"\n' "$_ENVDUMP" > "$STUB_CLAUDE"
 HOME="$WORK" RC_P1P_JSON_BASE="$FIXTURE" CLAUDE_CONFIG_DIR="$WORK/.claude" \
   TMUX="" HERDR_SESSION="imgdefault" "$WRAPPER_UNDER_TEST" --version >/dev/null 2>&1

@@ -49,7 +49,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/_cage-lookup-lib.sh
 source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
-RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 TOTAL=0
 PROBE_SUFFIX=$$

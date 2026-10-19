@@ -131,7 +131,6 @@ EOF
 # Small non-stub files: must exercise the find/grep-l inner branch.
 echo "not-an-lfs-pointer" > "$TEST_DIR/small1.txt"
 echo "also-not-lfs" > "$TEST_DIR/small2.txt"
-parent=$(dirname "$TEST_DIR")
 RC_CAGE_CONF="$(cage_conf_for "$TEST_DIR")" "$RC" --dry-run up "$TEST_DIR" >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]]; then

@@ -202,7 +202,6 @@ test_t1_collision_precondition() {
 # path when project B's derived name collides with an existing container
 # whose rc.source.path label belongs to project A.
 # ===========================================================================
-NAME_B_DISAMBIGUATED=""  # populated for T3 to reuse
 
 test_t2_disambiguation_fires() {
   setup_sandbox
@@ -228,7 +227,6 @@ test_t2_disambiguation_fires() {
      && "$name" != "$base_name" \
      && "$name" == "${base_name}-"* ]]; then
     pass "T2" "collision fires disambiguation: name='$name' (base='$base_name'), name_disambiguated=true"
-    NAME_B_DISAMBIGUATED="$name"
   else
     fail "T2" "disambiguation should fire with -<hash> suffix, distinct from base name" \
       "exit=$exit_code name=$name name_disambiguated=$name_disambiguated out=$out"

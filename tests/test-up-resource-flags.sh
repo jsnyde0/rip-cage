@@ -73,6 +73,7 @@ echo "=== R3: stopped-cage converge forwards only given flags ==="
 R3_BASH=bash
 [[ -x /bin/bash ]] && [[ "$(/bin/bash -c 'echo ${BASH_VERSINFO[0]}')" == 3 ]] && R3_BASH=/bin/bash
 converge_args() {
+  # shellcheck disable=SC2016  # script body expands in the child bash
   RC_CAGE_CONF="$CONF" "$R3_BASH" -c '
     source "$1"; shift
     set -euo pipefail   # rc sets this only when executed, not sourced

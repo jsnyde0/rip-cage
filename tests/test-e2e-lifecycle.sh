@@ -1210,6 +1210,7 @@ else
       "expected v20.18.0, got '${node_ver:-<empty>}'"
   fi
 
+  # shellcheck disable=SC2016  # $(which node) expands in the guest zsh
   node_path=$(msb exec "$_nvmrc_container" -- zsh -lic 'cd /workspace && readlink -f $(which node)' 2>/dev/null | tail -1)
   if echo "$node_path" | grep -q '/mise/installs/node/20.18.0/'; then
     check "mise: node binary path under mise installs dir" "pass" "$node_path"

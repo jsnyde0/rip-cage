@@ -151,6 +151,7 @@ echo "=== R: red check, DRY_RUN guard removed in a scratch copy ==="
 R="${T}/rc-copy"
 mkdir -p "$R"
 ( cd "$REPO_ROOT" && tar -cf - rc cli share VERSION cage/boot 2>/dev/null ) | tar -xf - -C "$R"
+# shellcheck disable=SC2016  # literal $ in the sed pattern
 sed -i.bak 's/if \[\[ "\$_image_absent" == false && "\${DRY_RUN:-}" != "true" \]\]; then/if [[ "$_image_absent" == false ]]; then/' "${R}/cli/up.sh"
 if cmp -s "${R}/cli/up.sh" "${R}/cli/up.sh.bak"; then
   fail "R1 could not remove the guard in the scratch copy (anchor line changed?)"

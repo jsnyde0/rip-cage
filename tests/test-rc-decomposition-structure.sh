@@ -733,6 +733,7 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "=== (h) rc build invocations in tests/ always pass -t/--tag/RC_IMAGE (rip-cage-q4t6) ==="
 
+# shellcheck disable=SC2016  # awk program
 _h_join_awk='
 BEGIN { buf=""; startno=0 }
 {
@@ -748,6 +749,7 @@ BEGIN { buf=""; startno=0 }
   buf = ""
 }
 '
+# shellcheck disable=SC2016  # literal $ in the regex
 _h_invoke_re='(\$\{REPO_ROOT\}/rc|\$\{RC\}|\$RC)"?[[:space:]]+build([[:space:]]|$)|\./rc[[:space:]]+build([[:space:]]|$)'
 _h_exclude_re='echo|printf|pass[[:space:]]*"|fail[[:space:]]*"|check[[:space:]]*"'
 _h_safe_re='(--tag|[[:space:]]-t[[:space:]]|RC_IMAGE=)'

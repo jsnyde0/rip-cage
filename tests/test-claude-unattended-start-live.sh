@@ -198,6 +198,7 @@ fi
 # does not override a true from settings.json, measured 2026-09-29.)
 CTRL="${LOG_DIR}/probe-control.txt"
 gexec 30 sh -c 'mkdir -p /tmp/jimf-ctrl && jq "del(.skipDangerousModePermissionPrompt)" /home/agent/.claude/settings.json > /tmp/jimf-ctrl/settings.json && cp /home/agent/.claude.json /tmp/jimf-ctrl/.claude.json' >/dev/null 2>&1
+# shellcheck disable=SC2016  # $1 expands in the guest sh
 gexec 60 sh -c 'CLAUDE_CONFIG_DIR=/tmp/jimf-ctrl exec python3 -c "$1" 25 /workspace' _ "$(cat "$PROBE")" > "$CTRL" 2>&1
 if grep -qF "Yes, I accept" "$CTRL"; then
   pass "U12 control: with skipDangerousModePermissionPrompt absent, the accept dialog appears"

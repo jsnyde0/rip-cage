@@ -60,7 +60,7 @@ TEST_GLOBAL_CFG_DIR=$(mktemp -d)
 # The cage config must be resolved for the directory rc will default to,
 # which is the cwd -- that IS what this case is checking (ADR-031 D2).
 TEST_CAGE_CONF=$(cage_conf_for "$TEST_ALLOWED_DIR")
-cd "$TEST_ALLOWED_DIR"
+cd "$TEST_ALLOWED_DIR" || exit 1
 # rip-cage-47gy: behind fake docker + msb, never the host's real binaries.
 # shellcheck source=tests/_fake-runtime-lib.sh
 source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
@@ -93,7 +93,7 @@ else
   fail "--output json up with no path did not default to '.' (want would_* and source_path=$_t7_expected). Got: $up_default"
 fi
 rm -rf "$TEST_ALLOWED_DIR" "$TEST_GLOBAL_CFG_DIR"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR" || exit 1
 
 # --- Test 8: check_docker surfaces JSON error when daemon is unreachable ---
 echo ""
@@ -155,7 +155,7 @@ echo "=== Test 10: --dry-run flag is accepted ==="
 # `ls` was this case's subject until it retired (rip-cage-ely4.10); `doctor` is
 # a surviving verb on the same rejecting side of that split.
 dryrun_exit=0
-dryrun_output=$("$RC" --dry-run doctor 2>&1) || dryrun_exit=$?
+"$RC" --dry-run doctor >/dev/null 2>&1 || dryrun_exit=$?
 if [[ $dryrun_exit -ne 0 ]]; then
   pass "--dry-run correctly rejected for the doctor command"
 else

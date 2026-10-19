@@ -169,11 +169,13 @@ else
   fi
   _g11_ok=1
   for _d in projects sessions; do
+    # shellcheck disable=SC2012  # compares ls -A listings captured the same way
     if [[ ! -d "${HOME}/.claude/${_d}" || -L "${HOME}/.claude/${_d}" ]] \
        || ! ls -A "${HOME}/.claude/${_d}" | cmp -s "${T}/${_d}.ls.orig" -; then
       _g11_ok=0
     fi
   done
+  # shellcheck disable=SC2012  # ls output is diagnostic text only
   if [[ $_g11_ok -eq 1 ]]; then pass "G11 host ~/.claude/projects and sessions untouched (no legacy-volume link)"; else fail "G11 init linked into host ~/.claude/projects or sessions" "$(ls -la "${HOME}/.claude/projects" "${HOME}/.claude/sessions" 2>&1 | tr '\n' ' ')"; fi
 
   # --- G12-G13: rip-cage-jimf.9 -- the image points claude at ~/.claude; with
