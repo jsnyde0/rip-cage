@@ -302,6 +302,9 @@ rm -rf "$T9_ROOT" "$T9_OUTSIDE" "$(dirname "$T9_CFG")"
 # the exit code too, which this case never did.
 
 # --- Test 11: _collect_symlink_parents handles file symlinks ---
+# Sources the shipped function from cli/up.sh (rip-cage-b8kd.20). A file
+# symlink must yield its parent dir, which needs the target check to be
+# [[ -e ]] rather than [[ -d ]].
 echo ""
 echo "=== Test 11: _collect_symlink_parents handles file symlinks ==="
 FILE_SYMLINK_TARGET_DIR=$(mktemp -d "${HOME}/.tmp-rc-file-test-XXXXXX")
@@ -309,70 +312,13 @@ echo "# Test agent" > "${FILE_SYMLINK_TARGET_DIR}/test-agent.md"
 FILE_SYMLINK_AGENTS_DIR=$(mktemp -d)
 ln -s "${FILE_SYMLINK_TARGET_DIR}/test-agent.md" "${FILE_SYMLINK_AGENTS_DIR}/test-agent.md"
 
-# Positive test: [[ -e ]] version (the fix) should return the parent dir
-file_symlink_output=$(bash -c '
-  HOME='"\"${HOME}\""'
-  _collect_symlink_parents() {
-    local asset_dir="$1"
-    local entry target tdir seen_it d
-    local seen_dirs
-    seen_dirs=()
-    for entry in "${asset_dir}/"*; do
-      [[ -L "$entry" ]] || continue
-      target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -e "$target" ]] || continue
-      if [[ "$target" != "${HOME}/"* ]]; then continue; fi
-      tdir=$(dirname "$target")
-      seen_it=0
-      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
-        [[ "$d" == "$tdir" ]] && seen_it=1 && break
-      done
-      if [[ "$seen_it" == 0 ]]; then
-        seen_dirs+=("$tdir")
-        echo "$tdir"
-      fi
-    done
-  }
-  _collect_symlink_parents "$1"
-' _ "${FILE_SYMLINK_AGENTS_DIR}")
+file_symlink_output=$(bash -c 'source "$1/cli/up.sh" && _collect_symlink_parents "$2"' \
+  _ "$REPO_ROOT" "$FILE_SYMLINK_AGENTS_DIR")
 
 if echo "$file_symlink_output" | grep -qF "${FILE_SYMLINK_TARGET_DIR}"; then
-  pass "file symlink target parent dir returned with [[ -e ]] fix"
+  pass "file symlink target parent dir returned"
 else
   fail "file symlink target parent dir NOT returned (got: $file_symlink_output, expected: $FILE_SYMLINK_TARGET_DIR)"
-fi
-
-# Negative test: [[ -d ]] version (the old bug) should return empty for file symlinks
-file_symlink_old_output=$(bash -c '
-  HOME='"\"${HOME}\""'
-  _collect_symlink_parents_old() {
-    local asset_dir="$1"
-    local entry target tdir seen_it d
-    local seen_dirs
-    seen_dirs=()
-    for entry in "${asset_dir}/"*; do
-      [[ -L "$entry" ]] || continue
-      target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -d "$target" ]] || continue
-      if [[ "$target" != "${HOME}/"* ]]; then continue; fi
-      tdir=$(dirname "$target")
-      seen_it=0
-      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
-        [[ "$d" == "$tdir" ]] && seen_it=1 && break
-      done
-      if [[ "$seen_it" == 0 ]]; then
-        seen_dirs+=("$tdir")
-        echo "$tdir"
-      fi
-    done
-  }
-  _collect_symlink_parents_old "$1"
-' _ "${FILE_SYMLINK_AGENTS_DIR}")
-
-if [[ -z "$file_symlink_old_output" ]]; then
-  pass "old [[ -d ]] version returns empty for file symlinks (proves fix is needed)"
-else
-  fail "old [[ -d ]] version should return empty for file symlinks (got: $file_symlink_old_output)"
 fi
 
 rm -rf "$FILE_SYMLINK_TARGET_DIR" "$FILE_SYMLINK_AGENTS_DIR"
