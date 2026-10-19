@@ -62,7 +62,7 @@ Upgrade path: when `ms` publishes Linux binaries, swap `command`/`args` in `sett
 - Mounts get their parent dirs created as root, which is why `init-rip-cage.sh` starts with `sudo chown agent:agent ~/.claude`.
 - `container_name()` (`cli/lib/container.sh`) derives cage names from the last two path components; collisions get a 4-char hash suffix.
 - Every resume is a fresh kernel boot under msb — processes die between stop and start, so `rc` re-runs init on each resume.
-- msb does not follow a host-side symlink in a mount source, and the mount fails at boot rather than at validation. On macOS write `/private/tmp/...`, never `/tmp/...`.
+- msb does not follow a host-side symlink in a mount source; since msb 0.7.x it refuses at validation (use the resolved path, or msb's `follow-root-symlinks`). On macOS write `/private/tmp/...`, never `/tmp/...`.
 - msb keeps its own image cache. `rc build` does `docker build` then loads into msb; a docker-only build leaves cages booting the old image.
 
 ## When a host is denied egress inside the cage
