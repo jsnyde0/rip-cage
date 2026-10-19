@@ -351,3 +351,16 @@ scratch_cage_deregister() {
   _scratch_cage_registry_remove "$_cname"
   return 0
 }
+
+# scratch_image_is_production <image-ref> — true when <image-ref> names the
+# operator's production image, rip-cage:latest, in ANY spelling
+# (rip-cage-b8kd.44): the registry/namespace prefix is stripped and a missing
+# tag defaults to :latest, so rip-cage, docker.io/library/rip-cage:latest and
+# localhost/rip-cage:latest all match. Stripping every prefix also refuses
+# <someone>/rip-cage:latest — the fail-safe direction for a refusal. A pure
+# string test: no docker or msb read, so a guard can call it before any boot.
+scratch_image_is_production() {
+  local _n="${1##*/}"
+  [[ "$_n" == *:* ]] || _n="${_n}:latest"
+  [[ "$_n" == "rip-cage:latest" ]]
+}

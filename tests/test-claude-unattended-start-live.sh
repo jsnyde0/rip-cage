@@ -68,9 +68,16 @@ FAILS=0
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1${2:+ -- $2}"; FAILS=$((FAILS + 1)); }
 
-if [[ -z "${RC_IMAGE:-}" || "$RC_IMAGE" == "rip-cage:latest" ]]; then
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+if [[ -z "${RC_IMAGE:-}" ]]; then
   echo "SKIP: RC_IMAGE must be set to an explicit scratch tag other than rip-cage:latest. Build one: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
   exit 0
+fi
+# rip-cage-b8kd.44: every spelling of the production tag, not just the literal.
+if scratch_image_is_production "$RC_IMAGE"; then
+  echo "FAIL: RC_IMAGE=${RC_IMAGE} names the operator's production tag (rip-cage:latest) -- this test never boots a cage on it. Build a scratch tag: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
+  exit 1
 fi
 IMAGE="$RC_IMAGE"
 command -v msb >/dev/null 2>&1 || { echo "SKIP: msb not on PATH"; exit 0; }
@@ -132,8 +139,6 @@ else
   echo "auth=fake-token (screen leg of the nudge check is vacuous)"
 fi
 
-# shellcheck source=tests/_scratch-cage-lib.sh
-source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 scratch_cage_register "$NAME"
 echo "cage=${NAME} image=${IMAGE} logs=${LOG_DIR}"
 

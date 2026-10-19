@@ -47,9 +47,16 @@ fi
 # rip-cage-ely4.7.17 fix round 3, finding 4: never run against rip-cage:latest
 # at all -- the operator's production tag is exactly what an earlier round's
 # INCIDENT rewrote. Before any rc call.
-if [[ -z "${RC_IMAGE:-}" || "$RC_IMAGE" == "rip-cage:latest" ]]; then
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+if [[ -z "${RC_IMAGE:-}" ]]; then
   echo "SKIP: RC_IMAGE must be set to an explicit scratch tag other than rip-cage:latest -- this proof never runs rc up against the operator's production tag. Build one: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
   exit 0
+fi
+# rip-cage-b8kd.44: every spelling of the production tag, not just the literal.
+if scratch_image_is_production "$RC_IMAGE"; then
+  echo "FAIL: RC_IMAGE=${RC_IMAGE} names the operator's production tag (rip-cage:latest) -- this test never boots a cage on it. Build a scratch tag: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
+  exit 1
 fi
 command -v msb >/dev/null 2>&1 || { echo "SKIP: msb not on PATH"; exit 0; }
 msb image inspect "$IMAGE" --format json >/dev/null 2>&1 || { echo "SKIP: image ${IMAGE} not in msb's cache"; exit 0; }
@@ -111,8 +118,6 @@ sed -e "s#<ABSOLUTE_PATH_TO_YOUR_PROJECT>#${WS}#g" \
 cp -p "$CCTOK_SRC" "${XDG_CONFIG_HOME}/rip-cage/secrets/CCTOK"
 TOKFILE="${XDG_CONFIG_HOME}/rip-cage/secrets/CCTOK"
 
-# shellcheck source=tests/_scratch-cage-lib.sh
-source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 scratch_cage_register "$NAME"
 
 echo "cage=${NAME} image=${IMAGE}"

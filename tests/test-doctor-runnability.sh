@@ -6,7 +6,7 @@
 # NEEDS_CONTAINER: spins real cages via `rc up` + `msb create` (rip-cage-neu7.14,
 # Batch E msb port -- was `docker run -d --name`). Self-skips (SKIP, exit 0)
 # when RC_IMAGE is unset or empty, or when docker, msb, or host `bd` is
-# unavailable. RC_IMAGE=rip-cage:latest is refused (FAIL, exit 1).
+# unavailable. RC_IMAGE=rip-cage:latest, in any spelling, is refused (FAIL, exit 1).
 #
 # Coverage:
 #   D1  correct fresh cage: cwd probe is OK, workspace-resolution probe is OK
@@ -56,12 +56,18 @@
 #     refused loudly.
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RC="${SCRIPT_DIR}/../rc"
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
 if [[ -z "${RC_IMAGE:-}" ]]; then
   echo "SKIP: RC_IMAGE is unset or empty -- this test boots real cages and needs an explicit scratch tag other than rip-cage:latest. Build one: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
   exit 0
 fi
-if [[ "$RC_IMAGE" == "rip-cage:latest" ]]; then
-  echo "FAIL: RC_IMAGE=rip-cage:latest is the operator's production tag -- this test never boots a cage on it. Build a scratch tag: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
+# rip-cage-b8kd.44: every spelling of the production tag, not just the literal.
+if scratch_image_is_production "$RC_IMAGE"; then
+  echo "FAIL: RC_IMAGE=${RC_IMAGE} names the operator's production tag (rip-cage:latest) -- this test never boots a cage on it. Build a scratch tag: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
   exit 1
 fi
 
@@ -78,8 +84,6 @@ if ! command -v bd > /dev/null 2>&1; then
   exit 0
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 TOTAL=0
 
@@ -95,9 +99,6 @@ DOCTOR_TMP=$(_host_scratch_mktemp_d doctor)
 DOCTOR_TMP=$(realpath "$DOCTOR_TMP")
 
 trap 'rm -rf "$DOCTOR_TMP"' EXIT
-
-# shellcheck source=tests/_scratch-cage-lib.sh
-source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 
 echo "=== test-doctor-runnability.sh ==="
 echo "DOCTOR_TMP=${DOCTOR_TMP}"

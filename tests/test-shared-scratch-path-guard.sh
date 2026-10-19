@@ -203,10 +203,14 @@ else
   fail "tests/golden-master/self-check.sh shared-path" "found the fixed literal /tmp/rc-gm-selfcheck-underscrub.diff -- every concurrent invocation writes/reads/rm's the SAME file, so whoever finishes first deletes it out from under the others (rip-cage-k13u S5 flake). Fix: mktemp a per-invocation path, matching this file's own idiom at lines 31/32/97."
 fi
 
-if check_backup_version_file_unique "$RC_COMMANDS_SH"; then
-  pass "tests/test-rc-commands.sh's BACKUP_VERSION_FILE carries a per-process uniqueness token"
+# No assignment (or no subject) already FAILed above; check_backup_version_file_unique
+# reads that case as clean, so it must not print a PASS (rip-cage-b8kd.44).
+if ! require_backup_version_assignment "$RC_COMMANDS_SH"; then
+  :
+elif check_backup_version_file_unique "$RC_COMMANDS_SH"; then
+  pass "${RC_COMMANDS_SH}'s BACKUP_VERSION_FILE carries a per-process uniqueness token"
 else
-  fail "tests/test-rc-commands.sh BACKUP_VERSION_FILE" "the assignment is a fixed literal name in the repo root -- two overlapping test-rc-commands.sh runs collide on it (rip-cage-k13u DESIGN: the rsync 'VERSION.t20bak: No such file or directory' symptom). Fix: append a per-process token (e.g. \$\$) to the name."
+  fail "${RC_COMMANDS_SH} BACKUP_VERSION_FILE" "the assignment is a fixed literal name in the repo root -- two overlapping test-rc-commands.sh runs collide on it (rip-cage-k13u DESIGN: the rsync 'VERSION.t20bak: No such file or directory' symptom). Fix: append a per-process token (e.g. \$\$) to the name."
 fi
 
 echo ""
