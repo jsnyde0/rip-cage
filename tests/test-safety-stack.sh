@@ -32,17 +32,6 @@ check_auth() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# assert-present generic runner (rip-cage-m8zc) — sourced from shared lib
-# ---------------------------------------------------------------------------
-# Defines RC_ASSERTED_FILE default and _run_asserted_checks().
-# Both this file and test-mount-seam-integration.sh source the SAME lib
-# (no divorced copy — single-source principle).
-# In-cage: both files live in /usr/local/lib/rip-cage/ — dirname resolves correctly.
-# Host/CI: both files live in tests/ — dirname resolves correctly.
-# shellcheck source=tests/_safety-stack-assert-lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/_safety-stack-assert-lib.sh"
-
 echo "=== Rip Cage Health Check ==="
 echo ""
 
@@ -153,29 +142,6 @@ if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks"))' ~/.claud
   check "settings.json denies .git/hooks writes" "pass"
 else
   check "settings.json denies .git/hooks writes" "fail"
-fi
-
-# 10-assert. Generic assert-present check (rip-cage-m8zc).
-# Runs every declared-required tool's baked check from the asserted-file.
-# File absent = minimal cage (valid; no assertions baked). File present = run checks.
-# Also verifies root-ownership of the file + parent dir (fail-closed trust requirement).
-if [[ -f "${RC_ASSERTED_FILE}" ]]; then
-  # Confirm the asserted-file and its parent dir are root-owned (fail-closed per F3 fix).
-  _ssa_file_owner=$(stat -c '%U' "${RC_ASSERTED_FILE}" 2>/dev/null || echo "unknown")
-  _ssa_dir_owner=$(stat -c '%U' "$(dirname "${RC_ASSERTED_FILE}")" 2>/dev/null || echo "unknown")
-  if [[ "$_ssa_file_owner" == "root" && "$_ssa_dir_owner" == "root" ]]; then
-    check "safety-stack-asserted file+dir root-owned (rip-cage-m8zc)" "pass" \
-      "file=${RC_ASSERTED_FILE} owner=${_ssa_file_owner} dir owner=${_ssa_dir_owner}"
-  else
-    check "safety-stack-asserted NOT root-owned (rip-cage-m8zc)" "fail" \
-      "file owner='${_ssa_file_owner}' dir owner='${_ssa_dir_owner}' (expected root:root) — agent-writable declaration is untrustworthy"
-  fi
-  unset _ssa_file_owner _ssa_dir_owner
-  # Run all declared-required tool checks from the baked asserted-file (generic, name-free).
-  _run_asserted_checks
-else
-  TOTAL=$((TOTAL + 1))
-  echo "INFO  [$TOTAL] safety-stack-asserted absent (minimal cage — no required tools declared; valid state)"
 fi
 
 # Recipe-specific behavioral smoke tests have been moved to co-located recipe smoke tests

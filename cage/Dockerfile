@@ -172,7 +172,6 @@ COPY cage/guards/ssh/known_hosts.github /etc/ssh/ssh_known_hosts
 COPY cage/guards/ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
-COPY tests/_safety-stack-assert-lib.sh /usr/local/lib/rip-cage/_safety-stack-assert-lib.sh
 COPY tests/run-recipe-smokes.sh /usr/local/lib/rip-cage/run-recipe-smokes.sh
 COPY cage/agent/settings.json /etc/rip-cage/settings.json
 # cage-claude.md, cage-pi.md and the CC managed-settings floor-lock are provisioned

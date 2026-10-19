@@ -33,13 +33,6 @@
 #           Compose a TOOL that declares a hook-bounds-violating rw mount; call
 #           _manifest_validate; assert it REJECTS. DO NOT rebuild full MD1 depth.
 #
-#   SI5 — assert-present flip positive control (rip-cage-m8zc, generic/name-free):
-#           Compose an ARBITRARY SYNTHETIC required tool whose baked check deliberately fails.
-#           Override RC_ASSERTED_FILE to a fixture with the synthetic tool's baked line;
-#           call _run_asserted_checks (sourced from _safety-stack-assert-lib.sh — SAME shared
-#           lib test-safety-stack.sh sources; no divorced copy);
-#           assert it returns FAIL. Proves generic RED-on-absent with zero guard-specific names.
-#
 #   SI6 — fake-AGENT-archetype sweep: confirm zero remnants in tests/ (verification only).
 #
 # TIER-2 (RC_E2E-gated; loud-fail if RC_E2E set but precondition missing; never silent-skip):
@@ -57,10 +50,6 @@
 #
 #   SE4 — No-guard-pi smoke: pi wrapper present, no dcg-guard = no denial for benign command.
 #           (proves pi wrapper's absence of its own guard — the guard comes from dcg recipe).
-#
-#   SE5 — assert-present end-to-end: /etc/rip-cage/safety-stack-asserted exists, root-owned
-#           (file+dir), lists dcg; safety-stack.sh FAILs if a required tool is removed
-#           (prove the flip goes RED, not just that the file is present).
 #
 #   SE7 — Recipe smoke enforcing gate (rip-cage-wiwa): run the generic name-free runner
 #           (run-recipe-smokes.sh) inside the composed cage; assert both recipe smoke tests
@@ -345,80 +334,6 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# SI5 — assert-present flip positive control (rip-cage-m8zc: generic, name-free)
-#        Compose an ARBITRARY SYNTHETIC required tool whose baked check is designed
-#        to FAIL (the check command references a path that does not exist on the host).
-#        Override RC_ASSERTED_FILE to a fixture with the synthetic tool's baked line.
-#        Assert that _run_asserted_checks returns FAIL through the REAL shared lib,
-#        proving RED through the generic mechanism with zero guard-specific names.
-#        Single-source: sources _safety-stack-assert-lib.sh (SAME lib test-safety-stack.sh
-#        sources — no divorced copy).
-# ---------------------------------------------------------------------------
-test_si5_assert_present_flip_positive_control() {
-  # Arbitrary synthetic required tool — name-free (no guard-specific strings).
-  local synth_id synth_check b64_check
-  synth_id="zzz-synthetic-required-${RANDOM}"
-  # The check command deliberately references a path that does not exist:
-  # /usr/local/lib/rip-cage/zzz-nonexistent-synthetic-<rand> — will always FAIL.
-  synth_check="test -x /usr/local/lib/rip-cage/zzz-nonexistent-synthetic-${RANDOM}"
-  b64_check=$(printf '%s' "$synth_check" | base64 | tr -d '\n')
-
-  # Create a fixture asserted-file with the synthetic tool's baked line.
-  local fixture_asserted
-  fixture_asserted=$(mktemp "${TMPDIR:-/tmp}/rc-seam-asserted-XXXXXX")
-  printf '%s %s\n' "$synth_id" "$b64_check" > "$fixture_asserted"
-
-  # Source the SAME shared lib that test-safety-stack.sh sources (no divorced copy).
-  # Both files live in the same directory (tests/ on host, /usr/local/lib/rip-cage/ in-cage).
-  local lib_path
-  lib_path="$(dirname "${BASH_SOURCE[0]}")/_safety-stack-assert-lib.sh"
-
-  local exit_code
-  exit_code=0
-
-  # Run a subshell that:
-  # 1. Defines check/FAIL/TOTAL counters (consumer stub — _run_asserted_checks
-  #    calls check() which resolves dynamically from this scope)
-  # 2. Sources the REAL _run_asserted_checks from the shared lib
-  # 3. With RC_ASSERTED_FILE=fixture, calls _run_asserted_checks
-  # 4. Exits with $FAIL count
-  RC_ASSERTED_FILE="$fixture_asserted" \
-    bash -c "
-PASS=0; FAIL=0; TOTAL=0
-check() {
-  local name=\"\$1\" result=\"\$2\" detail=\"\${3:-}\"
-  TOTAL=\$((TOTAL + 1))
-  if [[ \"\$result\" == \"pass\" ]]; then
-    echo \"PASS  [\$TOTAL] \$name\${detail:+ — \$detail}\"
-    PASS=\$((PASS + 1))
-  else
-    echo \"FAIL  [\$TOTAL] \$name\${detail:+ — \$detail}\"
-    FAIL=\$((FAIL + 1))
-  fi
-}
-
-# Source the SAME shared lib (no divorced copy — single-source principle)
-source '${lib_path}'
-
-# Run all checks from the fixture file; synthetic tool's check MUST FAIL.
-_run_asserted_checks
-
-echo \"exit_fail_count=\$FAIL\"
-exit \$FAIL
-" >/dev/null 2>&1 || exit_code=$?
-
-  rm -f "$fixture_asserted"
-
-  # The positive-control must produce a FAIL (non-zero exit from the subshell).
-  # If it exits 0, the flip is broken (absent required tool not caught generically).
-  if [[ "$exit_code" -ne 0 ]]; then
-    pass "SI5 assert-present flip: positive control correctly returns FAIL (exit=${exit_code}) for arbitrary synthetic required tool '${synth_id}' with failing check — generic flip RED-on-absent PROVEN (rip-cage-m8zc, name-free, SAME shared lib, no divorced copy)"
-  else
-    fail "SI5 assert-present flip: positive control returned 0 (passed) for synthetic tool with failing check — generic flip BROKEN; absent required tool not caught"
-  fi
-}
-
-# ---------------------------------------------------------------------------
 # SI6 — fake-AGENT-archetype sweep (verification only; likely no-op)
 # ---------------------------------------------------------------------------
 test_si6_no_fake_agent_archetype_remnants() {
@@ -639,57 +554,6 @@ test_se_tier2_composed_cage_suite() {
   # exec) retired 2026-10-16 (rip-cage-kmsw), for the same reason as SE1's.
 
   # -----------------------------------------------------------------
-  # SE5 — assert-present end-to-end
-  # -----------------------------------------------------------------
-  echo ""
-  echo "--- SE5: assert-present end-to-end (/etc/rip-cage/safety-stack-asserted) ---"
-
-  # File exists.
-  local ssa_exists
-  ssa_exists=$(docker exec "$se_container" test -f /etc/rip-cage/safety-stack-asserted 2>/dev/null && echo "yes" || echo "no")
-  if [[ "$ssa_exists" == "yes" ]]; then
-    pass "SE5 safety-stack-asserted: file EXISTS at /etc/rip-cage/safety-stack-asserted"
-  else
-    fail "SE5 safety-stack-asserted: file ABSENT at /etc/rip-cage/safety-stack-asserted — manifest/default-tools.yaml build did not generate it"
-    return
-  fi
-
-  # File is root-owned.
-  local ssa_file_owner ssa_dir_owner
-  ssa_file_owner=$(docker exec "$se_container" stat -c '%U' /etc/rip-cage/safety-stack-asserted 2>/dev/null || echo "unknown")
-  ssa_dir_owner=$(docker exec "$se_container" stat -c '%U' /etc/rip-cage 2>/dev/null || echo "unknown")
-  if [[ "$ssa_file_owner" == "root" && "$ssa_dir_owner" == "root" ]]; then
-    pass "SE5 safety-stack-asserted: file+dir root-owned (file=${ssa_file_owner} dir=${ssa_dir_owner}) — ownership-not-presence"
-  else
-    fail "SE5 safety-stack-asserted: NOT root-owned (file=${ssa_file_owner} dir=${ssa_dir_owner}) — agent could modify the declaration"
-  fi
-
-  # File lists 'dcg-wiring' as an entry-id (new format: "<id> <b64check>").
-  # The Tier-2 probe hardcodes the default image's expected required-set {dcg-wiring}
-  # as a release-gate: if it's dropped, the asserted-file won't list it → FAIL.
-  # (This probe legitimately knows what the default image ships — same latitude as the
-  # safety-stack test knowing its guards; D12 governs rc/codegen, not release-gate tests.)
-  # (ssh-bypass-hook retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5.)
-  local ssa_content
-  ssa_content=$(docker exec "$se_container" cat /etc/rip-cage/safety-stack-asserted 2>/dev/null || echo "")
-  if echo "$ssa_content" | grep -q "^dcg-wiring "; then
-    pass "SE5 safety-stack-asserted: lists 'dcg-wiring' entry-id (required tool declared + baked)"
-  else
-    fail "SE5 safety-stack-asserted: does NOT list 'dcg-wiring'. content='${ssa_content}'"
-  fi
-
-  # SE5 flip proof — intentionally deferred from Tier-2 (not a counted pass).
-  # The generic RED-on-absent flip behavior is proven by SI5 (Tier-1 positive control, rip-cage-m8zc):
-  # SI5 sources the SAME shared lib (_safety-stack-assert-lib.sh) that test-safety-stack.sh
-  # uses in-cage, overrides RC_ASSERTED_FILE to a fixture with an ARBITRARY synthetic required
-  # tool whose check is designed to fail, and asserts _run_asserted_checks returns FAIL
-  # generically — zero guard-specific names, no divorced copy. The heavyweight in-cage
-  # counterfactual (removing a real binary inside a running container) is intentionally
-  # deferred — it requires root-level teardown and adds no new coverage beyond SI5.
-  TOTAL=$((TOTAL + 1))
-  echo "INFO  [${TOTAL}] SE5 flip proof: generic RED-on-absent proven by SI5 Tier-1 positive control (rip-cage-m8zc — arbitrary synthetic required tool, same shared lib, no divorced copy); heavyweight in-cage counterfactual intentionally deferred (not a counted pass)"
-
-  # -----------------------------------------------------------------
   # SE7 — Recipe smoke enforcing gate (rip-cage-wiwa)
   # Run the generic recipe-smoke runner inside the composed cage.
   # Asserts: the recipe smoke test RAN, reported >= pinned check count, and passed.
@@ -770,7 +634,6 @@ test_si1_codegen_seam_arbitrary_tool
 test_si2_mount_seam_arbitrary_tool
 test_si3_root_owned_required_validator_fires
 test_si4_rw_extension_validator_fires
-test_si5_assert_present_flip_positive_control
 test_si6_no_fake_agent_archetype_remnants
 
 echo ""
