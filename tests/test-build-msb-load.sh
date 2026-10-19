@@ -361,9 +361,8 @@ fi
 # status 3 as T6 -- docker holds the image, msb does not. The only thing
 # telling the two apart is that _build_msb_load never reached its
 # load-succeeded path here, so _RC_MSB_LOAD_SUCCEEDED stays 0 and the
-# emitter must stay COMPLETELY silent. This is what keeps
-# tests/test-seed-drift-stderr-scoping.sh (and every other suite asserting
-# clean/scoped `rc build` stderr) passing for the RIGHT reason.
+# emitter must stay COMPLETELY silent. This is what keeps every suite
+# asserting clean/scoped `rc build` stderr passing for the RIGHT reason.
 #
 # NOT vacuous, and not a duplicate of T5d: T5d only calls _build_msb_load,
 # so it cannot see an over-eager emitter. T7 runs the full build-order

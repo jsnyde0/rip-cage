@@ -839,7 +839,8 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-dotpi-factory-reach.sh" # rip-cage-8jg5.8: examples/dotpi-factory/cage-reach against a fake msb -- stdin closed, multiplexer env read from the boot descriptor (not hardcoded), argv verbatim, exit status propagated, usage refusal; README reach line + cage-ops cite -- host-only
   run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seeds ~/.pi/agent/auth.json on cold start
   # Also retired with the manifest, for the same reason -- every case called a
-  # deleted _manifest_* function: test-mount-seam-integration.sh,
+  # deleted _manifest_* function, and deleted from tests/ (rip-cage-b8kd.16):
+  # test-mount-seam-integration.sh,
   # test-pi-recipe-lifecycle.sh, test-pi-substrate-mounts.sh,
   # test-dcg-demotion.sh, test-pi-wrapper-glob.sh, test-skill-manifest-author.sh,
   # test-multiplexer-registry-bake.sh,
