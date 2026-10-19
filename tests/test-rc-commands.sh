@@ -242,132 +242,59 @@ fi
 rm -rf "$FAKE_MSB_DIR"
 
 # --- Test 9: skill symlink resolution in rc up --dry-run ---
+# Drives the shipped _collect_symlink_parents through rc's own dry-run preview
+# (rip-cage-b8kd.20): HOME points at a scratch home whose ~/.claude/skills holds
+# one symlink outside it and two into one shared parent inside it.
 echo ""
 echo "=== Test 9: skill symlink resolution in rc up --dry-run ==="
-SYMLINK_SKILLS_DIR=$(mktemp -d)
-# The target must sit OUTSIDE $HOME. A bare `mktemp -d` cannot promise that:
-# run-host.sh points TMPDIR at ~/.cache/rc-t, and GNU mktemp honours it
-# (BSD mktemp ignores TMPDIR without a template). Pin /tmp (rip-cage-m3ka).
-SYMLINK_TARGET_DIR=$(mktemp -d /tmp/rc-t9-outside.XXXXXX)
-# Create a real skill directory (non-symlink) — should not produce extra mount
-mkdir -p "${SYMLINK_SKILLS_DIR}/real-skill"
-# Create a symlinked skill pointing to the target dir
-ln -s "${SYMLINK_TARGET_DIR}" "${SYMLINK_SKILLS_DIR}/linked-skill"
-# Override HOME/.claude/skills for this test via env substitution in rc
-# rc uses ${HOME}/.claude/skills directly, so we need a workaround:
-# source the rc helper function directly and call it
-symlink_parent_output=$(bash -c '
-  _collect_symlink_parents() {
-    local asset_dir="$1"
-    local entry target tdir seen_it d
-    local seen_dirs
-    seen_dirs=()
-    for entry in "${asset_dir}/"*; do
-      [[ -L "$entry" ]] || continue
-      target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -e "$target" ]] || continue
-      if [[ "$target" != "${HOME}/"* ]]; then
-        echo "[rc] Warning: asset outside HOME — skipping" >&2
-        continue
-      fi
-      tdir=$(dirname "$target")
-      seen_it=0
-      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
-        [[ "$d" == "$tdir" ]] && seen_it=1 && break
-      done
-      if [[ "$seen_it" == 0 ]]; then
-        seen_dirs+=("$tdir")
-        echo "$tdir"
-      fi
-    done
-  }
-  _collect_symlink_parents "$1"
-' _ "${SYMLINK_SKILLS_DIR}")
+# realpath: rc compares the RESOLVED target against $HOME, and on macOS /tmp
+# is itself a symlink. The outside target is pinned to /tmp, not TMPDIR:
+# run-host.sh points TMPDIR at ~/.cache/rc-t, which sits under the real HOME.
+T9_ROOT=$(realpath "$(mktemp -d /tmp/rc-t9.XXXXXX)")
+T9_HOME="${T9_ROOT}/home"
+T9_PROJ="${T9_ROOT}/proj"
+T9_BIN="${T9_ROOT}/bin"
+T9_OUTSIDE=$(realpath "$(mktemp -d /tmp/rc-t9-outside.XXXXXX)")
+T9_FIXTURE_TAG="rip-cage-test-fixture:t9-skills"
+mkdir -p "${T9_HOME}/.claude/skills/real-skill" "${T9_HOME}/monorepo/a" \
+  "${T9_HOME}/monorepo/b" "${T9_PROJ}/.git" "$T9_BIN"
+ln -s "$T9_OUTSIDE" "${T9_HOME}/.claude/skills/outside"
+ln -s "${T9_HOME}/monorepo/a" "${T9_HOME}/.claude/skills/a"
+ln -s "${T9_HOME}/monorepo/b" "${T9_HOME}/.claude/skills/b"
+# The image reads present (msb image list) and current (docker label), so the
+# dry run reaches the "Would mount" preview instead of provisioning.
+cat > "${T9_BIN}/msb" <<T9_MSB
+#!/usr/bin/env bash
+[[ "\${1:-} \${2:-}" == "image list" ]] && echo '[{"reference":"${T9_FIXTURE_TAG}"}]'
+exit 0
+T9_MSB
+chmod +x "${T9_BIN}/msb"
+_make_fake_docker_dir "$T9_BIN" "$T9_FIXTURE_TAG" "$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
+T9_CFG=$(rc_test_write_cage_conf "$T9_PROJ" "$T9_FIXTURE_TAG")
+t9_out=$(HOME="$T9_HOME" XDG_CONFIG_HOME="${T9_HOME}/.config" PATH="${T9_BIN}:${PATH}" \
+  RC_IMAGE="$T9_FIXTURE_TAG" RC_CAGE_CONF="$T9_CFG" \
+  "$RC" up --dry-run "$T9_PROJ" 2>&1 || true)
 
-# The linked-skill target is in /tmp (outside $HOME) — should be skipped with warning
-# Real-world targets under $HOME would pass through
-if echo "$symlink_parent_output" | grep -q "$(dirname "${SYMLINK_TARGET_DIR}")"; then
-  fail "should have skipped target outside HOME"
+if grep -qF "asset symlink 'outside' resolves outside \$HOME (${T9_OUTSIDE}) — skipping mount" <<<"$t9_out" \
+  && ! grep -qF "Would mount ${T9_OUTSIDE}" <<<"$t9_out"; then
+  pass "skill symlink target outside HOME is skipped with rc's warning"
 else
-  pass "skill symlink target outside HOME is skipped"
+  fail "skill symlink target outside HOME was not skipped with rc's warning (output: $t9_out)"
 fi
 
-# Create a symlinked skill pointing INSIDE HOME (simulate monorepo case)
-HOME_TARGET_DIR=$(mktemp -d "${HOME}/.tmp-rc-test-XXXXXX")
-SYMLINK_SKILLS_DIR2=$(mktemp -d)
-ln -s "${HOME_TARGET_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill"
-symlink_parent_output2=$(bash -c '
-  HOME='"\"${HOME}\""'
-  _collect_symlink_parents() {
-    local asset_dir="$1"
-    local entry target tdir seen_it d
-    local seen_dirs
-    seen_dirs=()
-    for entry in "${asset_dir}/"*; do
-      [[ -L "$entry" ]] || continue
-      target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -e "$target" ]] || continue
-      if [[ "$target" != "${HOME}/"* ]]; then
-        continue
-      fi
-      tdir=$(dirname "$target")
-      seen_it=0
-      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
-        [[ "$d" == "$tdir" ]] && seen_it=1 && break
-      done
-      if [[ "$seen_it" == 0 ]]; then
-        seen_dirs+=("$tdir")
-        echo "$tdir"
-      fi
-    done
-  }
-  _collect_symlink_parents "$1"
-' _ "${SYMLINK_SKILLS_DIR2}")
-
-expected_parent="$(dirname "${HOME_TARGET_DIR}")"
-if echo "$symlink_parent_output2" | grep -qF "${expected_parent}"; then
+t9_line="Would mount ${T9_HOME}/monorepo -> ${T9_HOME}/monorepo:ro (skill symlink target)"
+t9_count=$(grep -cF "$t9_line" <<<"$t9_out" || true)
+if [[ "$t9_count" -ge 1 ]]; then
   pass "skill symlink target inside HOME produces parent mount"
 else
-  fail "skill symlink target inside HOME did not produce parent mount (got: $symlink_parent_output2, expected: $expected_parent)"
+  fail "skill symlink target inside HOME did not produce parent mount (expected: $t9_line; output: $t9_out)"
 fi
-
-# Deduplication: two symlinks pointing to the same parent should produce one line
-ln -s "${HOME_TARGET_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill2" 2>/dev/null || true
-mkdir -p "${HOME_TARGET_DIR}/../sibling-$(basename "${HOME_TARGET_DIR}")"
-SIBLING_DIR="${HOME_TARGET_DIR}/../sibling-$(basename "${HOME_TARGET_DIR}")"
-SIBLING_DIR=$(realpath "${SIBLING_DIR}")
-ln -s "${SIBLING_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill3"
-dedup_output=$(bash -c '
-  HOME='"\"${HOME}\""'
-  _collect_symlink_parents() {
-    local asset_dir="$1"
-    local entry target tdir seen_it d
-    local seen_dirs
-    seen_dirs=()
-    for entry in "${asset_dir}/"*; do
-      [[ -L "$entry" ]] || continue
-      target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -e "$target" ]] || continue
-      if [[ "$target" != "${HOME}/"* ]]; then continue; fi
-      tdir=$(dirname "$target")
-      seen_it=0
-      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
-        [[ "$d" == "$tdir" ]] && seen_it=1 && break
-      done
-      if [[ "$seen_it" == 0 ]]; then
-        seen_dirs+=("$tdir")
-        echo "$tdir"
-      fi
-    done
-  }
-  _collect_symlink_parents "$1"
-' _ "${SYMLINK_SKILLS_DIR2}")
-dedup_count=$(echo "$dedup_output" | grep -c "$(dirname "${HOME_TARGET_DIR}")" || true)
-if [[ "$dedup_count" -eq 1 ]]; then
+if [[ "$t9_count" -eq 1 ]]; then
   pass "symlinks sharing a parent produce exactly one mount (deduplication)"
 else
-  fail "deduplication failed — expected 1 parent mount, got $dedup_count (output: $dedup_output)"
+  fail "deduplication failed — expected 1 parent mount, got $t9_count (output: $t9_out)"
 fi
+rm -rf "$T9_ROOT" "$T9_OUTSIDE" "$(dirname "$T9_CFG")"
 
 # --- Test 10: RETIRED into Test 1b (rip-cage-ely4.10) ---
 # Asserted that `rc init` (removed in rip-cage-kt25) falls through to usage.
@@ -1949,7 +1876,6 @@ fi
 rm -rf "$DG_DIR"
 
 # --- Cleanup ---
-rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
 
 # --- Audit: the fake pair was reached, and nothing above wrote an image store ---
 # The log holds every call that reached the file-wide pair (see rule 3 in the
