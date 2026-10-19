@@ -71,11 +71,10 @@ unset RC_CONFIG_GLOBAL
 #                  a file rip-cage-hb4w deleted, and says so at its banner.
 #   SKIPPED (1)    S17, on its own pre-existing precondition.
 #
-# Two fixtures were re-homed ABOVE the cases while doing this: _print_mounts'
-# writer and make_msb_stub_symlink both sat under a retired case's banner, so
-# deleting that case took them with it and every surviving case that used them
-# died with exit 127. A shared fixture under a case banner is a trap for the
-# next retirement -- keep them up here.
+# One fixture was re-homed ABOVE the cases while doing this: _print_mounts'
+# writer sat under a retired case's banner, so deleting that case took it with
+# it and every surviving case that used it died with exit 127. A shared fixture
+# under a case banner is a trap for the next retirement -- keep it up here.
 # ===========================================================================
 
 
@@ -126,10 +125,10 @@ source_rc() {
 # ---------------------------------------------------------------------------
 # SHARED HELPERS — restored by rip-cage-ely4.9.
 #
-# These two lived physically between two case banners that this bead retired,
-# so a banner-to-banner deletion took them with it and every surviving case
-# that called them died with exit 127. They are helpers, not cases: re-homed
-# here, above the cases, so the next retirement cannot repeat the mistake.
+# This lived physically between two case banners that this bead retired, so a
+# banner-to-banner deletion took it with it and every surviving case that
+# called it died with exit 127. It is a helper, not a case: re-homed here,
+# above the cases, so the next retirement cannot repeat the mistake.
 # ---------------------------------------------------------------------------
 
 # Helper script for printing -v mount args inside bash -c invocations.
@@ -148,28 +147,6 @@ _print_mounts() {
   done
 }
 HELPER_EOF
-make_msb_stub_symlink() {
-  local stub_dir="$1" cname="$2" state="$3" workspace="$4"
-  cat > "${stub_dir}/msb" <<STUB
-#!/usr/bin/env bash
-case "\${1:-}" in
-  inspect)
-    if [[ "\${2:-}" != "${cname}" || "${state}" == "missing" ]]; then
-      echo "Error: no such sandbox: \${2:-}" >&2
-      exit 1
-    fi
-    _status="Stopped"
-    [[ "${state}" == "running" ]] && _status="Running"
-    echo "{\"status\":\"\${_status}\",\"config\":{\"manifest_digest\":\"\",\"labels\":{\"rc.source.path\":\"${workspace}\"}}}"
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-STUB
-  chmod +x "${stub_dir}/msb"
-}
 
 
 # ---------------------------------------------------------------------------

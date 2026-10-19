@@ -193,15 +193,3 @@ gm_read_version() {
 gm_ws_realpath() {
   (cd "$GM_WS" && pwd -P)
 }
-
-# gm_capture_in DIR VERB... — like gm_capture, but runs with DIR as $PWD
-# (some verbs, e.g. `rc config init`, resolve their target from raw `pwd`
-# rather than an explicit path argument). Restores the caller's cwd after.
-gm_capture_in() {
-  local _dir="$1"; shift
-  local _prev_pwd
-  _prev_pwd="$(pwd)"
-  cd "$_dir"
-  gm_capture "$@"
-  cd "$_prev_pwd"
-}
