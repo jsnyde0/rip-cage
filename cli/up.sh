@@ -2495,7 +2495,7 @@ Continuing anyway — bd calls inside the container will fail until resolved."
   return 0
 }
 
-# _up_attach_multiplexer NAME MUX PATH [swallow-exec-status]
+# _up_attach_multiplexer NAME MUX PATH
 #
 # Attach the caller's terminal to running cage NAME through multiplexer MUX
 # (the value of its rc.multiplexer label). none -> an interactive zsh;
@@ -2506,9 +2506,9 @@ Continuing anyway — bd calls inside the container will fail until resolved."
 # rc_up_session_name.
 #
 # Returns 1 when the hook cannot be resolved; otherwise the interactive exec's
-# status, or 0 when swallow-exec-status is passed.
+# status.
 _up_attach_multiplexer() {
-  local name="$1" mux="$2" path="$3" swallow="${4:-}"
+  local name="$1" mux="$2" path="$3"
   case "$mux" in
     none)
       [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
@@ -2542,9 +2542,7 @@ _up_attach_multiplexer() {
       fi
       ;;
   esac
-  local attach_rc=$?
-  [[ "$swallow" == "swallow-exec-status" ]] && return 0
-  return "$attach_rc"
+  return $?
 }
 
 
@@ -3541,11 +3539,10 @@ cmd_up() {
     return
   fi
   # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via the boot descriptor (new container — value still in _rc_multiplexer).
-  # swallow-exec-status preserves pre-refactor behaviour (the create path
-  # swallowed the attach status); see the rip-cage-b8kd.27 ruling.
-  _up_attach_multiplexer "$name" "${_rc_multiplexer:-none}" "$path" swallow-exec-status \
-    || { unset _rc_multiplexer; return 1; }
+  local _att_rc=0
+  _up_attach_multiplexer "$name" "${_rc_multiplexer:-none}" "$path" || _att_rc=$?
   unset _rc_multiplexer
+  return "$_att_rc"
 }
 
 
