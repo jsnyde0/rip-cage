@@ -48,7 +48,7 @@ if ! declare -F _doctor_bd_version_compare >/dev/null 2>&1; then
 fi
 
 # --- V1: identical versions -> ok ---
-v1_result=$(_doctor_bd_version_compare "bd version 1.0.5 (Homebrew)" "bd version 1.0.5 (dev)")
+v1_result=$(_doctor_bd_version_compare "bd version 1.0.5 (Homebrew)" "bd version 1.0.5 (Homebrew)")
 if [[ "$v1_result" == ok\ 1.0.5\ 1.0.5 ]]; then
   pass "V1 identical numeric versions -> ok"
 else

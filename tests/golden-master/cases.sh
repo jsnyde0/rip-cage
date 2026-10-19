@@ -15,7 +15,7 @@ GM_CASES=(
   build_bundled
   up_dry_run_json_running
   up_dry_run_json_exited_resume
-  up_dry_run_json_created_resume
+  up_dry_run_json_created_unrecognised_refused
   up_dry_run_json_paused
   up_dry_run_json_restarting
   up_dry_run_json_removing
@@ -65,7 +65,10 @@ case_build_bundled() {
 }
 
 
-# --- up --dry-run --output json: all 8 container states --------------------
+# --- up --dry-run --output json: 8 container states, 4 distinct outcomes ----
+# The fake msb maps only running/exited to a real state; created, paused,
+# restarting, removing and dead all record the same CONTAINER_STATE_UNSUPPORTED
+# refusal (state=unknown), so those five cases pin one refusal path, not five.
 # Image present+current for every state; the would_create+image-absent
 # combination is covered explicitly by a dedicated case below,
 # case_up_dry_run_json_absent_create_image_absent.
@@ -83,7 +86,7 @@ _gm_up_dry_run_state() {
 
 case_up_dry_run_json_running() { _gm_up_dry_run_state running; }
 case_up_dry_run_json_exited_resume() { _gm_up_dry_run_state exited; }
-case_up_dry_run_json_created_resume() { _gm_up_dry_run_state created; }
+case_up_dry_run_json_created_unrecognised_refused() { _gm_up_dry_run_state created; }
 case_up_dry_run_json_paused() { _gm_up_dry_run_state paused; }
 case_up_dry_run_json_restarting() { _gm_up_dry_run_state restarting; }
 case_up_dry_run_json_removing() { _gm_up_dry_run_state removing; }

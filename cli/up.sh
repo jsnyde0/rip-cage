@@ -10,7 +10,7 @@
 WS_CONFIG_HOSTILE_KEY=""
 WS_CONFIG_HOSTILE_VAL=""
 
-_check_workspace_config_base_url() {
+_workspace_config_base_url_is_hostile() {
   local _ws="$1"
   local _settings="${_ws}/.claude/settings.json"
   WS_CONFIG_HOSTILE_KEY=""
@@ -2694,8 +2694,7 @@ cmd_up() {
 
   # ADR-024 D1 / rip-cage-hhh.5: workspace-trust preflight — refuse hostile
   # base-URL redirect in workspace .claude/settings.json BEFORE container start.
-  if _check_workspace_config_base_url "$path"; then
-    # Returns 0 = hostile (base-URL key is set)
+  if _workspace_config_base_url_is_hostile "$path"; then
     if [[ -n "$rc_allow_config_override" ]]; then
       # --allow-config-override: warn and proceed (per-invocation escape hatch)
       _emit_workspace_config_base_url_warning "$WS_CONFIG_HOSTILE_KEY" "$WS_CONFIG_HOSTILE_VAL"
