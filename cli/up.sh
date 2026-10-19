@@ -2495,6 +2495,59 @@ Continuing anyway — bd calls inside the container will fail until resolved."
   return 0
 }
 
+# _up_attach_multiplexer NAME MUX PATH [swallow-exec-status]
+#
+# Attach the caller's terminal to running cage NAME through multiplexer MUX
+# (the value of its rc.multiplexer label). none -> an interactive zsh;
+# anything else -> the attach (or, with --new, new_session) hook resolved from
+# the image's boot descriptor via _container_mux_hook_cmd. No hardcoded mux
+# names (ADR-005 D12 FIRM); an undeclared mux fails loud (ADR-001). Without a
+# TTY, prints how to attach instead. Reads cmd_up's rc_up_new_session and
+# rc_up_session_name.
+#
+# Returns 1 when the hook cannot be resolved; otherwise the interactive exec's
+# status, or 0 when swallow-exec-status is passed.
+_up_attach_multiplexer() {
+  local name="$1" mux="$2" path="$3" swallow="${4:-}"
+  case "$mux" in
+    none)
+      [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
+        echo "warning: --new/--session ignored under multiplexer=none" >&2
+      if [[ -t 0 && -t 1 ]]; then
+        _msb_exec_interactive "$name" -- zsh
+      else
+        echo "Container $name is running (multiplexer=none). Shell into it with: msb exec $name -- zsh" >&2
+      fi
+      ;;
+    *)
+      local hook_cmd
+      if [[ -n "$rc_up_new_session" ]]; then
+        hook_cmd=$(_container_mux_hook_cmd "$mux" "new_session" "$name") || return 1
+        if [[ -z "$hook_cmd" ]]; then
+          echo "warning: multiplexer '${mux}' has no new_session hook — falling back to attach" >&2
+          hook_cmd=$(_container_mux_hook_cmd "$mux" "attach" "$name") || return 1
+        fi
+      else
+        hook_cmd=$(_container_mux_hook_cmd "$mux" "attach" "$name") || return 1
+      fi
+      if [[ -z "$hook_cmd" ]]; then
+        echo "Error: multiplexer '${mux}' has no attach hook declared in the boot descriptor for cage '$name'." >&2
+        return 1
+      fi
+      if [[ -t 0 && -t 1 ]]; then
+        # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
+        _msb_exec_interactive "$name" -- sh -c "$hook_cmd" rc-mux-hook "${rc_up_session_name:-}"
+      else
+        echo "Container $name is running (multiplexer=${mux}). Attach from a terminal with: rc up $path" >&2
+      fi
+      ;;
+  esac
+  local attach_rc=$?
+  [[ "$swallow" == "swallow-exec-status" ]] && return 0
+  return "$attach_rc"
+}
+
+
 
 cmd_up() {
   local path="" port="" env_file=""
@@ -3131,46 +3184,7 @@ cmd_up() {
       return
     fi
     # rip-cage-1f59.2 / rip-cage-61al.3: dispatch on the multiplexer label via the boot descriptor.
-    # No hardcoded mux names — any declared-in-manifest provider is dispatched through
-    # _container_mux_hook_cmd (ADR-005 D12 FIRM).
-    local _up_run_mux
-    _up_run_mux=$(_container_multiplexer "$name")
-    case "$_up_run_mux" in
-      none)
-        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
-          echo "warning: --new/--session ignored under multiplexer=none" >&2
-        if [[ -t 0 && -t 1 ]]; then
-          _msb_exec_interactive "$name" -- zsh
-        else
-          echo "Container $name is running (multiplexer=none). Shell into it with: msb exec $name -- zsh" >&2
-        fi
-        ;;
-      *)
-        # Descriptor dispatch: resolve the hook command from the boot descriptor and run it.
-        # Fails loud if the mux was not declared in the manifest used to build this image
-        # (ADR-001 fail-loud; ADR-005 D12 — no hardcoded optional-mux names in rc).
-        local _up_run_hook_cmd
-        if [[ -n "$rc_up_new_session" ]]; then
-          _up_run_hook_cmd=$(_container_mux_hook_cmd "$_up_run_mux" "new_session" "$name") || return 1
-          if [[ -z "$_up_run_hook_cmd" ]]; then
-            echo "warning: multiplexer '${_up_run_mux}' has no new_session hook — falling back to attach" >&2
-            _up_run_hook_cmd=$(_container_mux_hook_cmd "$_up_run_mux" "attach" "$name") || return 1
-          fi
-        else
-          _up_run_hook_cmd=$(_container_mux_hook_cmd "$_up_run_mux" "attach" "$name") || return 1
-        fi
-        if [[ -z "$_up_run_hook_cmd" ]]; then
-          echo "Error: multiplexer '${_up_run_mux}' has no attach hook declared in the boot descriptor for cage '$name'." >&2
-          return 1
-        fi
-        if [[ -t 0 && -t 1 ]]; then
-          # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          _msb_exec_interactive "$name" -- sh -c "$_up_run_hook_cmd" rc-mux-hook "${rc_up_session_name:-}"
-        else
-          echo "Container $name is running (multiplexer=${_up_run_mux}). Attach from a terminal with: rc up $path" >&2
-        fi
-        ;;
-    esac
+    _up_attach_multiplexer "$name" "$(_container_multiplexer "$name")" "$path"
     return
   elif [[ "$state" == "exited" ]]; then
     # rip-cage-y0u0: converge-on-up is DEFAULT-ON for a STOPPED cage with
@@ -3303,41 +3317,7 @@ cmd_up() {
       return
     fi
     # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via the boot descriptor (resumed cage label is immutable).
-    local _up_resume_mux
-    _up_resume_mux=$(_container_multiplexer "$name")
-    case "$_up_resume_mux" in
-      none)
-        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
-          echo "warning: --new/--session ignored under multiplexer=none" >&2
-        if [[ -t 0 && -t 1 ]]; then
-          _msb_exec_interactive "$name" -- zsh
-        else
-          echo "Container $name is running (multiplexer=none). Shell into it with: msb exec $name -- zsh" >&2
-        fi
-        ;;
-      *)
-        local _up_resume_hook_cmd
-        if [[ -n "$rc_up_new_session" ]]; then
-          _up_resume_hook_cmd=$(_container_mux_hook_cmd "$_up_resume_mux" "new_session" "$name") || return 1
-          if [[ -z "$_up_resume_hook_cmd" ]]; then
-            echo "warning: multiplexer '${_up_resume_mux}' has no new_session hook — falling back to attach" >&2
-            _up_resume_hook_cmd=$(_container_mux_hook_cmd "$_up_resume_mux" "attach" "$name") || return 1
-          fi
-        else
-          _up_resume_hook_cmd=$(_container_mux_hook_cmd "$_up_resume_mux" "attach" "$name") || return 1
-        fi
-        if [[ -z "$_up_resume_hook_cmd" ]]; then
-          echo "Error: multiplexer '${_up_resume_mux}' has no attach hook declared in the boot descriptor for cage '$name'." >&2
-          return 1
-        fi
-        if [[ -t 0 && -t 1 ]]; then
-          # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          _msb_exec_interactive "$name" -- sh -c "$_up_resume_hook_cmd" rc-mux-hook "${rc_up_session_name:-}"
-        else
-          echo "Container $name is running (multiplexer=${_up_resume_mux}). Attach from a terminal with: rc up $path" >&2
-        fi
-        ;;
-    esac
+    _up_attach_multiplexer "$name" "$(_container_multiplexer "$name")" "$path"
     return
   elif [[ "$_inspect_exit" -ne 0 ]]; then
     : # container absent — fall through to "New container" block below
@@ -3561,40 +3541,10 @@ cmd_up() {
     return
   fi
   # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via the boot descriptor (new container — value still in _rc_multiplexer).
-  case "${_rc_multiplexer:-none}" in
-    none)
-      [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
-        echo "warning: --new/--session ignored under multiplexer=none" >&2
-      if [[ -t 0 && -t 1 ]]; then
-        _msb_exec_interactive "$name" -- zsh
-      else
-        echo "Container $name is running (multiplexer=none). Shell into it with: msb exec $name -- zsh" >&2
-      fi
-      ;;
-    *)
-      local _up_new_hook_cmd
-      if [[ -n "$rc_up_new_session" ]]; then
-        _up_new_hook_cmd=$(_container_mux_hook_cmd "${_rc_multiplexer:-none}" "new_session" "$name") || { unset _rc_multiplexer; return 1; }
-        if [[ -z "$_up_new_hook_cmd" ]]; then
-          echo "warning: multiplexer '${_rc_multiplexer:-none}' has no new_session hook — falling back to attach" >&2
-          _up_new_hook_cmd=$(_container_mux_hook_cmd "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
-        fi
-      else
-        _up_new_hook_cmd=$(_container_mux_hook_cmd "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
-      fi
-      if [[ -z "$_up_new_hook_cmd" ]]; then
-        echo "Error: multiplexer '${_rc_multiplexer:-none}' has no attach hook declared in the boot descriptor for cage '$name'." >&2
-        unset _rc_multiplexer
-        return 1
-      fi
-      if [[ -t 0 && -t 1 ]]; then
-        # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-        _msb_exec_interactive "$name" -- sh -c "$_up_new_hook_cmd" rc-mux-hook "${rc_up_session_name:-}"
-      else
-        echo "Container $name is running (multiplexer=${_rc_multiplexer:-none}). Attach from a terminal with: rc up" >&2
-      fi
-      ;;
-  esac
+  # swallow-exec-status preserves pre-refactor behaviour (the create path
+  # swallowed the attach status); see the rip-cage-b8kd.27 ruling.
+  _up_attach_multiplexer "$name" "${_rc_multiplexer:-none}" "$path" swallow-exec-status \
+    || { unset _rc_multiplexer; return 1; }
   unset _rc_multiplexer
 }
 
