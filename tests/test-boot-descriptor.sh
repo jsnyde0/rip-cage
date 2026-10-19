@@ -108,7 +108,7 @@ boot_cage() {
 }
 
 drop_cage() {
-  [[ -n "$LIVE_CAGE" ]] && "$RC" destroy "$LIVE_CAGE" >/dev/null 2>&1
+  [[ -n "$LIVE_CAGE" ]] && "$RC" destroy "$LIVE_CAGE" >/dev/null 2>&1 && scratch_cage_deregister "$LIVE_CAGE"
   LIVE_CAGE=""
   return 0
 }

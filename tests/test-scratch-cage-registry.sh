@@ -55,6 +55,9 @@
 #   T13 a failed destroy is loud, keeps its line, and never aborts the
 #       `set -e` caller (run-host.sh) over a cleanup miss
 #   T14 run-host.sh really calls the sweep, and calls it BEFORE the warn
+#   T15 destroy-then-deregister, then exit: no warning, no second destroy
+#   T16 NEGATIVE CONTROL for T15: a stranded (never-deregistered) name still
+#       warns loudly, and only it
 
 set -uo pipefail
 
@@ -543,6 +546,57 @@ if [[ -n "$rh_sweep_line" && -n "$rh_warn_line" && "$rh_sweep_line" -lt "$rh_war
   pass "T14b: the sweep runs BEFORE the warn, so the warning names only what is really left"
 else
   fail "T14b: expected sweep before warn" "sweep=${rh_sweep_line} warn=${rh_warn_line}"
+fi
+
+echo ""
+echo "=== T15: destroy-then-deregister, then exit -> no leak warning (rip-cage-sygz.7) ==="
+# The stub rc FAILS, as a real destroy of an already-gone cage does: that
+# doomed second destroy is what used to print the false 'will leak' warning.
+# The trap fires on a real exit, not a direct _scratch_cage_cleanup call.
+REG15="${WORK}/reg15"
+: > "$REG15"
+LOG15="${WORK}/log15"
+: > "$LOG15"
+t15_err=$(
+  RC_TEST_CAGE_REGISTRY="$REG15" RC_STUB_LOG="$LOG15" RC_STUB_EXIT=1 \
+  bash -c '
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_cage_register "T-tmp.ffff"
+    scratch_cage_deregister "T-tmp.ffff"
+    exit 0
+  ' 2>&1 >/dev/null
+)
+if [[ -z "$t15_err" && ! -s "$LOG15" ]] && ! grep -qxF "T-tmp.ffff" "$REG15"; then
+  pass "T15: a deregistered cage gets no exit-trap destroy, no warning, and no registry line"
+else
+  fail "T15: expected silence, no destroy call, no line" "stderr='${t15_err}' calls='$(cat "$LOG15")' reg='$(cat "$REG15")'"
+fi
+
+echo ""
+echo "=== T16: NEGATIVE CONTROL for T15: a stranded name still warns loudly ==="
+REG16="${WORK}/reg16"
+: > "$REG16"
+LOG16="${WORK}/log16"
+: > "$LOG16"
+t16_err=$(
+  RC_TEST_CAGE_REGISTRY="$REG16" RC_STUB_LOG="$LOG16" RC_STUB_EXIT=1 \
+  bash -c '
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_cage_register "T-tmp.gggg"
+    scratch_cage_register "T-tmp.hhhh"
+    scratch_cage_deregister "T-tmp.gggg"
+    exit 0
+  ' 2>&1 >/dev/null
+)
+if grep -q "failed to destroy scratch cage 'T-tmp.hhhh'" <<<"$t16_err" \
+   && grep -q "will leak" <<<"$t16_err" \
+   && ! grep -qF "T-tmp.gggg" <<<"$t16_err" \
+   && [[ "$(cat "$LOG16")" == "rc destroy T-tmp.hhhh" ]]; then
+  pass "T16: the stranded name is destroyed and warned about; its deregistered sibling is not"
+else
+  fail "T16: expected one loud warning naming T-tmp.hhhh only" "stderr='${t16_err}' calls='$(cat "$LOG16")'"
 fi
 
 echo ""

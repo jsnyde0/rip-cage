@@ -130,10 +130,7 @@ for _pair in "${A}:${VOL_A}" "${B}:${VOL_B}"; do
   if "$RC" destroy "$_c" < /dev/null > /dev/null 2>&1; then
     # Gone: hand it back from the scratch registry so the exit trap does not
     # destroy it a second time and report a leak.
-    _keep=()
-    for _n in "${_SCRATCH_CAGE_NAMES[@]}"; do [[ "$_n" == "$_c" ]] || _keep+=("$_n"); done
-    _SCRATCH_CAGE_NAMES=("${_keep[@]+"${_keep[@]}"}")
-    _scratch_cage_registry_remove "$_c"
+    scratch_cage_deregister "$_c"
   fi
   if [[ -n "$_v" ]] && ! msb volume inspect "$_v" >/dev/null 2>&1; then
     pass "M5 rc destroy ${_c} removed ${_v}"

@@ -3,6 +3,7 @@
 #
 # Usage: source this file from any scratch-cage test, then call:
 #   scratch_cage_register <container-name>
+#   scratch_cage_deregister <container-name>   (after your OWN successful destroy)
 #
 # On first call, installs an idempotent EXIT/INT/TERM trap that runs
 # `rc destroy --force` on every registered container name when the test exits
@@ -330,4 +331,23 @@ scratch_cage_register() {
   else
     trap '_scratch_cage_cleanup' TERM
   fi
+}
+
+# scratch_cage_deregister <container-name> — hand back a cage this test has
+# ALREADY destroyed itself (rip-cage-sygz.7). Drops every array entry and the
+# registry line equal to <name>, so the exit trap neither destroys it a second
+# time nor reports that second, doomed destroy as a leak. Call it only after
+# your own destroy SUCCEEDED: a cage nobody destroyed stays registered, and the
+# trap's loud warning for it is the point (rip-cage-54q3 SEAM 2). There is no
+# existence probe here or in the trap, deliberately — that naive fix silenced
+# the loud-report contract test (bead notes, 2026-09-17).
+scratch_cage_deregister() {
+  local _cname="$1" _n
+  local _keep=()
+  for _n in "${_SCRATCH_CAGE_NAMES[@]+"${_SCRATCH_CAGE_NAMES[@]}"}"; do
+    [[ "$_n" == "$_cname" ]] || _keep+=("$_n")
+  done
+  _SCRATCH_CAGE_NAMES=("${_keep[@]+"${_keep[@]}"}")
+  _scratch_cage_registry_remove "$_cname"
+  return 0
 }
