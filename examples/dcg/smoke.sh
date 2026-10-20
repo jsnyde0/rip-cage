@@ -160,8 +160,8 @@ HOSTILE_EOF
   fi
   unset _hostile_ws _dcg4_payload _dcg4_result
 else
-  check "DCG-4 sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml [skip: /workspace not a git repo]" "pass" \
-    "DCG-2/DCG-3 already prove wrapper is load-bearing; proof not demonstrable without git root"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] DCG-4 sensitivity skipped: /workspace not a git repo — DCG-2/DCG-3 already prove wrapper is load-bearing; proof not demonstrable without git root"
 fi
 
 # ---------------------------------------------------------------------------
@@ -398,12 +398,12 @@ _pi4b_payload=$(mktemp /tmp/dcg-pi-4b-XXXXXX.json)
 printf '{"tool_name":"mcp_exec","tool_input":{"command":"rm -rf /"}}' > "$_pi4b_payload"
 _pi4b_result=$(cat "$_pi4b_payload" | "$DCG_GUARD" 2>/dev/null || true)
 rm -f "$_pi4b_payload"
+# A diagnostic, not a check: it prints INFO either way and counts no PASS.
+TOTAL=$((TOTAL + 1))
 if echo "$_pi4b_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG-PI-PIN-4b dcg directly guards unknown tool_name mcp_exec (belt-and-suspenders)" "pass" \
-    "dcg denied mcp_exec — dcg allowlist/conservatism covers the unknown tool; no regression, gate pinning still applies"
+  echo "INFO  [$TOTAL] DCG-PI-PIN-4b dcg directly guards unknown tool_name mcp_exec (belt-and-suspenders) — dcg denied mcp_exec — dcg allowlist/conservatism covers the unknown tool; no regression, gate pinning still applies"
 else
-  check "DCG-PI-PIN-4b dcg fails open on unknown tool_name mcp_exec (gate pinning load-bearing)" "pass" \
-    "mcp_exec NOT evaluated by dcg — confirms dcg-gate MUST pin to bash for MCP tools"
+  echo "INFO  [$TOTAL] DCG-PI-PIN-4b dcg fails open on unknown tool_name mcp_exec (gate pinning load-bearing) — mcp_exec NOT evaluated by dcg — confirms dcg-gate MUST pin to bash for MCP tools"
 fi
 unset _pi4b_payload _pi4b_result
 
