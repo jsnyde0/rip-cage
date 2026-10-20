@@ -799,8 +799,8 @@ rm -f "$OUT_SINGLE"
 #     legitimate operator composition (ADR-005 D12), not a regression; Step 5
 #     above still catches Claude failing to start without it.
 #   host ~/.claude.json absent  + mount entry present -> FAIL loud
-#     (not silently accepted): under normal `rc up` semantics this can't
-#     happen (nothing without a host source gets mounted), so if it's ever
+#     (not silently accepted): this can't normally happen -- msb checks each
+#     mount source at boot and refuses a missing one -- so if it's ever
 #     observed, something about this signal or this cage is anomalous and
 #     deserves attention rather than a silent pass.
 #
@@ -827,7 +827,7 @@ elif [[ "$_host_claude_json_present" == "true" && "$CLAUDE_JSON_MOUNTED" == "fal
   echo "SKIP: Step 5b mount-composition guard — host ~/.claude.json is present but the cage's mount table has no /home/agent/.claude.json entry: this cage's config carries no ~/.claude.json mount line (the shipped share/rip-cage/cage.yaml.template has one). A legitimate composition; nothing to compare."
 else
   fail "Mount-composition guard: host ~/.claude.json is absent, but the cage's mount table SHOWS a /home/agent/.claude.json entry" \
-    "anomalous state — a mount with no host source should not be possible under normal rc up semantics"
+    "anomalous state — msb's boot-time check of each mount source should make a mount with no host source impossible"
 fi
 
 # ---------------------------------------------------------------------------
