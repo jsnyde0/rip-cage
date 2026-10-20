@@ -79,17 +79,21 @@ scan_dir_for_leaks() {
 _RE_COMMENT='^[[:space:]]*#'
 _RE_ASSIGN='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)='
 _RE_HOME_PI='(\$\{?HOME\}?|~)/\.pi'
-_RE_MV_TEE='(^|[;&|({`])[[:space:]]*(mv|tee)[[:space:]]'
+# Command start: a separator, then any per-command `VAR=value ` prefixes.
+# `HOME=$tmp rm -rf "$HOME/.pi"` is a write at command start: bash expands
+# $HOME with the REAL value before the prefix applies (rip-cage-b8kd.42).
+_RE_CMD_START='(^|[;&|({`])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"']+)*[[:space:]]+)*'
+_RE_MV_TEE="${_RE_CMD_START}(mv|tee)[[:space:]]"
 # Any rm is a write: `rm -r`, `rm -f`, `rm -rf` and a bare `rm` all delete
 # (rip-cage-b8kd.8.2 -- the first draft required an f/F flag).
-_RE_RM='(^|[;&|({`])[[:space:]]*rm[[:space:]]'
-_RE_LN_S='(^|[;&|({`])[[:space:]]*ln[[:space:]]+-[a-zA-Z]*s'
+_RE_RM="${_RE_CMD_START}rm[[:space:]]"
+_RE_LN_S="${_RE_CMD_START}ln[[:space:]]+-[a-zA-Z]*s"
 
 # A HOME override statement: `HOME=<value>` at statement start whose value
 # is followed only by end of line, a separator or a comment -- never by
 # another word (that is a per-command prefix) -- or any `export HOME=`.
 _RE_HOME_STMT='(^|[;&|({`])[[:space:]]*(export[[:space:]]+)?HOME='
-_RE_HOME_VALUE_END='^("[^"]*"|'"'"'[^'"'"']*'"'"'|\$\([^)]*\)|[^[:space:];&|"'"'"'#]+)*[[:space:]]*($|[;&|)#])'
+_RE_HOME_VALUE_END='^("[^"]*"|'"'"'[^'"'"']*'"'"'|\$\(([^()]|\([^()]*\))*\)|[^[:space:];&|"'"'"'#]+)*[[:space:]]*($|[;&|)#])'
 
 # _home_override_line <file> -- prints the line number of the earliest real
 # HOME override in <file>, or 999999999 when there is none.
@@ -217,7 +221,7 @@ _scan_one_file() {
       local trimmed="${line#"${line%%[![:space:]]*}"}"
       WRITE_LEAKS+=("${base}:${lineno}: ${trimmed}")
     fi
-  done < <(grep -nE '>|(^|[;&|({`])[[:space:]]*(mv|rm|tee|ln)[[:space:]]' "$f" 2>/dev/null)
+  done < <(grep -nE ">|${_RE_CMD_START}(mv|rm|tee|ln)[[:space:]]" "$f" 2>/dev/null)
 }
 
 # ============================================================================
@@ -359,10 +363,28 @@ HOME="$tmp"; export HOME
 rm -r ~/.pi/agent
 FIXEOF
 
+# 1m. CLEAN: a HOME= statement whose value nests one $(...) inside another
+# is still an override (rip-cage-b8kd.42).
+cat > "${FIXTURE_DIR}/test-fixture-clean-nested-subst-home.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+HOME=$(cd "$(mktemp -d)" && pwd)
+rm -r "$HOME/.pi"
+FIXEOF
+
+# 1n. LEAKING: a same-line per-command HOME= prefix before rm -- bash
+# expands $HOME with the real value before the prefix applies.
+cat > "${FIXTURE_DIR}/test-fixture-leaking-sameline-prefix-rm.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+tmp=$(mktemp -d)
+HOME=$tmp rm -r "$HOME/.pi"
+FIXEOF
+
 scan_dir_for_leaks "$FIXTURE_DIR"
 
 _direct_flagged=0 _chained_flagged=0 _mv_flagged=0 _inline_flagged=0
-_comment_rm_flagged=0 _prefix_flagged=0
+_comment_rm_flagged=0 _prefix_flagged=0 _sameline_prefix_flagged=0
 _clean_flagged=""
 for _entry in "${WRITE_LEAKS[@]+"${WRITE_LEAKS[@]}"}"; do
   case "$_entry" in
@@ -372,6 +394,7 @@ for _entry in "${WRITE_LEAKS[@]+"${WRITE_LEAKS[@]}"}"; do
     test-fixture-leaking-inline.sh:*) _inline_flagged=1 ;;
     test-fixture-leaking-comment-home-rm-r.sh:*) _comment_rm_flagged=1 ;;
     test-fixture-leaking-prefix-home.sh:*) _prefix_flagged=1 ;;
+    test-fixture-leaking-sameline-prefix-rm.sh:*) _sameline_prefix_flagged=1 ;;
     test-fixture-clean-*|test-fixture-prose-only.sh:*) _clean_flagged="${_clean_flagged}${_entry}; " ;;
   esac
 done
@@ -412,6 +435,12 @@ else
   fail "negative control: a per-command HOME= prefix was taken as a file-wide sandbox"
 fi
 
+if [[ "$_sameline_prefix_flagged" -eq 1 ]]; then
+  pass "negative control: a same-line HOME=x prefix before rm of \$HOME/.pi is flagged"
+else
+  fail "negative control: 'HOME=x rm ... \$HOME/.pi' on one line escaped detection"
+fi
+
 if [[ -z "$_clean_flagged" ]]; then
   pass "positive controls: sandboxed / read-only / differently-named-var / prose-only fixtures are all correctly left clean"
 else
@@ -432,10 +461,11 @@ echo "--- Case 2: live scan of tests/*.sh for unsandboxed \$HOME/.pi writes ---"
 # planted leak, the whole test must exit non-zero naming it. Default: tests/.
 # This file is excluded: its Case 1 fixtures are quoted heredoc text written
 # into a mktemp dir, and they leak on purpose.
-scan_dir_for_leaks "${RC_HOME_PI_GUARD_SCAN_DIR:-$SCRIPT_DIR}" "$(basename "${BASH_SOURCE[0]}")"
+_SCAN_DIR="${RC_HOME_PI_GUARD_SCAN_DIR:-$SCRIPT_DIR}"
+scan_dir_for_leaks "$_SCAN_DIR" "$(basename "${BASH_SOURCE[0]}")"
 
 if [[ "${#WRITE_LEAKS[@]}" -eq 0 ]]; then
-  pass "live scan: zero unsandboxed \$HOME/.pi write(s) found under tests/*.sh"
+  pass "live scan: zero unsandboxed \$HOME/.pi write(s) found under ${_SCAN_DIR}/*.sh"
 else
   fail "live scan: ${#WRITE_LEAKS[@]} unsandboxed \$HOME/.pi write(s) found -- each risks clobbering the operator's real ~/.pi/agent (rip-cage-bh0r)" \
        "fix: sandbox \$HOME via a throwaway mktemp dir (export HOME=\$(mktemp -d)) BEFORE deriving any \${HOME}/.pi path -- see test-pi-auth-mount.sh / test-pi-cage-context.sh for the working pattern"
