@@ -93,6 +93,14 @@ check() {
   fi
 }
 
+# info: a line that checked nothing (a skipped step). Prints INFO, never
+# PASS, so the PASS count only counts real assertions (rip-cage-b8kd.28).
+info() {
+  local name="$1" detail="${2:-}"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] $name${detail:+ -- $detail}"
+}
+
 # ---------------------------------------------------------------------------
 # Guards: docker + msb + image. Self-skip (exit 0) when any is missing --
 # never fake a PASS. (rc up needs BOTH runtimes: docker for image
@@ -370,13 +378,16 @@ if [[ "${RC_E2E_REBUILD:-0}" == "1" ]]; then
     check "rc build succeeds" "fail" "rc build exited non-zero"
   fi
 else
-  check "rc build (skipped -- set RC_E2E_REBUILD=1 to rebuild)" "pass" "using existing local image"
+  info "rc build (skipped -- set RC_E2E_REBUILD=1 to rebuild)" "using existing local image"
 fi
 
 # Check 2: Scratch workspace initialized
-git -C "$TEST_WS" init > /dev/null 2>&1
 echo "# e2e test workspace" > "$TEST_WS/README"
-check "scratch workspace created with git repo" "pass" "$TEST_WS"
+if git -C "$TEST_WS" init > /dev/null 2>&1 && [[ -d "$TEST_WS/.git" ]]; then
+  check "scratch workspace created with git repo" "pass" "$TEST_WS"
+else
+  check "scratch workspace created with git repo" "fail" "git init in $TEST_WS failed"
+fi
 
 # Check 3: rc up headless — cage starts and is REALLY running (msb-native
 # state read via _msb_sandbox_state; the old rc.egress=on label check is

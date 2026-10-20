@@ -32,6 +32,15 @@ check_auth() {
   fi
 }
 
+# info: a line that checked nothing -- a skipped check or a snapshot. Prints
+# INFO, never PASS, so rc test's PASS count only counts real assertions
+# (cli/test.sh parses PASS/FAIL lines alone). Keeps the [n] numbering.
+info() {
+  local name="$1" detail="${2:-}"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] $name${detail:+ — $detail}"
+}
+
 echo "=== Rip Cage Health Check ==="
 echo ""
 
@@ -169,10 +178,10 @@ fi
 # 14. Token-expiry check retired with the credentials-file possession path
 # (rip-cage-ely4.7.17) -- CLAUDE_CODE_OAUTH_TOKEN is an msb --secret
 # placeholder with no expiry field of its own to inspect, and there is no
-# other token shape left in-cage to check. Kept as a pass/skip line (rather
+# other token shape left in-cage to check. Kept as an INFO line (rather
 # than deleted) so the check numbering and output shape stay stable for
 # anything that greps this script's output by line count.
-check_auth "Token not expired" "pass" "no expiring credentials file in-cage (non-possession, rip-cage-ely4.7.17)"
+info "Token not expired" "no expiring credentials file in-cage (non-possession, rip-cage-ely4.7.17)"
 
 echo ""
 echo "-- Git --"
@@ -223,7 +232,7 @@ if [ -d /workspace/.beads ]; then
     check_auth "bd can access beads data" "fail" "$bd_err"
   fi
 else
-  check_auth "bd can access beads data" "pass" "no .beads/ in workspace (skipped)"
+  info "bd can access beads data" "no .beads/ in workspace (skipped)"
 fi
 
 # 26. Workspace resolution (rip-cage-2cks; guards rip-cage-aq70): `bd status`
@@ -244,7 +253,7 @@ if [ -d /workspace/.beads ]; then
     check "bd status resolves cleanly from /workspace" "fail" "$(echo "$ws_bd_out" | head -1)"
   fi
 else
-  check "bd status resolves cleanly from /workspace" "pass" "no .beads/ in workspace (skipped)"
+  info "bd status resolves cleanly from /workspace" "no .beads/ in workspace (skipped)"
 fi
 
 if git -C /workspace rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -256,7 +265,7 @@ if git -C /workspace rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     check "git status resolves cleanly from /workspace" "fail" "$(echo "$ws_git_out" | head -1)"
   fi
 else
-  check "git status resolves cleanly from /workspace" "pass" "not a git repo (skipped)"
+  info "git status resolves cleanly from /workspace" "not a git repo (skipped)"
 fi
 
 echo ""
@@ -323,7 +332,7 @@ if [[ -d /workspace/.git/hooks ]]; then
     check ".git/hooks is read-only (D11)" "pass"
   fi
 else
-  check ".git/hooks is read-only (D11)" "pass" "no .git/hooks directory (skipped)"
+  info ".git/hooks is read-only (D11)" "no .git/hooks directory (skipped)"
 fi
 
 # 34. Python write bypass blocked: python3 open() to .git/hooks must fail
@@ -336,7 +345,7 @@ if [[ -d /workspace/.git/hooks ]]; then
     check "Python write to .git/hooks blocked (D11)" "fail" "python3 open() succeeded or unexpected error: $python_result"
   fi
 else
-  check "Python write to .git/hooks blocked (D11)" "pass" "no .git/hooks directory (skipped)"
+  info "Python write to .git/hooks blocked (D11)" "no .git/hooks directory (skipped)"
 fi
 
 # 35. D11 (evolved 2026-10-16, rip-cage-rsh9.2): .git/config is read-only, so
@@ -368,7 +377,7 @@ if [[ -n "$_d11_git_dir" && -f "${_d11_git_dir}/config" ]]; then
     fi
   fi
 else
-  check ".git/config is read-only (D11)" "pass" "no git dir under /workspace (skipped)"
+  info ".git/config is read-only (D11)" "no git dir under /workspace (skipped)"
 fi
 
 if [[ -d /workspace/.git-main ]]; then
@@ -617,13 +626,13 @@ fi
 echo ""
 echo "-- Version Manifest (rip-cage-7v4) --"
 # Emits pinned-component versions so a future harness failure after an upgrade
-# can be localized by diffing the manifest against a prior run. Always PASS —
+# can be localized by diffing the manifest against a prior run. INFO, never PASS —
 # this is a snapshot, not a gate.
 manifest_tool() {
     local label="$1" cmd="$2"
     local out
     out=$($cmd 2>&1 | head -1 || true)
-    check "manifest: $label" "pass" "${out:-unavailable}"
+    info "manifest: $label" "${out:-unavailable}"
 }
 manifest_tool "bd" "bd --version"
 manifest_tool "dolt" "dolt version"
