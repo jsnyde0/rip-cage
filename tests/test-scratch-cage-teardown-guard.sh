@@ -119,27 +119,15 @@ _scan_one_file() {
   done < <(grep -oE 'rc-(state|history)-\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' "$f" 2>/dev/null \
              | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | tr -d '${}')
 
-  # (b) <wrapper> destroy [--force] "$VAR" (rc / run_rc / $RC destroy) --
-  # ORDER-SENSITIVE (rip-cage-4cuh's own hypothesized-but-secondary
-  # mechanism, confirmed live in test-rc-reload.sh / test-up-converge.sh
-  # while building this guard): `rc destroy` only reaps volumes when the
-  # msb sandbox is STILL PRESENT (cli/down_destroy.sh's volume-deletion
-  # loop runs after a presence check; CONTAINER_NOT_FOUND exits loud
-  # BEFORE it). A `destroy $VAR` call AFTER a bare `msb remove
-  # $VAR` already ran is a no-op for volumes -- the cage is already gone.
-  # So this only counts as pairing for an `msb remove` occurrence at line
-  # L if a destroy call for the SAME var exists at a line strictly BEFORE
-  # L (destroy reaped a still-live cage; the later bare remove is
-  # redundant cleanup of an already-volumeless situation, not a leak).
-  # `msb volume remove` (tier (c) above) has no such hazard -- it acts on
-  # the volume directly, independent of cage presence.
-  local -A destroy_first_line=()
+  # (b) <wrapper> destroy [--force] "$VAR" (rc / run_rc / $RC destroy),
+  # ANYWHERE in the file, before or after the `msb remove`. Order no longer
+  # matters (rip-cage-b8kd.29): since rip-cage-o5ie, `rc destroy` on a cage
+  # whose sandbox is already gone still reaps its rc-state-/rc-history-/
+  # rc-mise-cache- volumes (cli/down_destroy.sh, the no-sandbox branch), so a
+  # destroy after a bare remove is a real reap, not a no-op.
   while IFS=: read -r _dline _dtext; do
     var=$(echo "$_dtext" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | head -1 | tr -d '${}')
-    [[ -z "$var" ]] && continue
-    if [[ -z "${destroy_first_line[$var]:-}" || "$_dline" -lt "${destroy_first_line[$var]}" ]]; then
-      destroy_first_line["$var"]="$_dline"
-    fi
+    [[ -n "$var" ]] && reaped["$var"]=1
   done < <(grep -nE 'destroy([[:space:]]+--force)?[[:space:]]+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?' "$f" 2>/dev/null)
 
   # --- (d) file-scoped fallback precondition: a live EXIT/INT/TERM trap ---
@@ -215,9 +203,6 @@ _scan_one_file() {
 
     if [[ -n "$var" && -n "${reaped[$var]:-}" ]]; then
       continue
-    fi
-    if [[ -n "$var" && -n "${destroy_first_line[$var]:-}" && "${destroy_first_line[$var]}" -lt "$lineno" ]]; then
-      continue  # a `destroy --force` for this var already reaped a still-live cage before this line
     fi
     if [[ "$file_has_reap_net" -eq 1 ]]; then
       continue
@@ -545,15 +530,11 @@ fi
 msb remove --force "$CAGE_C1" >/dev/null 2>&1 || true
 FIXEOF
 
-# 1h. LEAKING fixture: `msb remove` runs BEFORE a `destroy --force` call on
-# the same rc-up-sourced variable (mirrors the real bug found live in
-# tests/test-rc-reload.sh / tests/test-up-converge.sh while building this
-# guard). The later destroy is a no-op -- cli/down_destroy.sh's
-# volume-deletion loop only runs when the sandbox is still present, and the
-# bare remove already killed it. A destroy call ANYWHERE in the file is not
-# enough; it must run on a still-live cage (i.e. before this remove) to
-# count as pairing.
-cat > "${FIXTURE_DIR}/test-fixture-leaking-destroy-too-late.sh" <<'FIXEOF'
+# 1h. CLEAN fixture: `msb remove` runs BEFORE a `destroy` call on the same
+# rc-up-sourced variable. Since rip-cage-o5ie the later destroy still reaps
+# the volumes of an already-removed sandbox, so this pairs (rip-cage-b8kd.29;
+# it was a LEAKING fixture while destroy skipped a missing sandbox).
+cat > "${FIXTURE_DIR}/test-fixture-clean-destroy-after-remove.sh" <<'FIXEOF'
 #!/usr/bin/env bash
 set -uo pipefail
 UP_OUT=$(run_rc up "$WS" 2>&1)
@@ -603,14 +584,12 @@ FIXEOF
 scan_dir_for_leaks "$FIXTURE_DIR"
 
 _leaking_flagged=0
-_destroy_order_flagged=0
 _ambiguous_clean_flagged=1
 _ambiguous_leak_flagged=0
 _clean_flagged=""
 for _entry in "${LEAK_LINES[@]+"${LEAK_LINES[@]}"}"; do
   case "$_entry" in
     test-fixture-leaking.sh:*) _leaking_flagged=1 ;;
-    test-fixture-leaking-destroy-too-late.sh:*) _destroy_order_flagged=1 ;;
     test-fixture-clean-ambiguous-no-rc-up-evidence.sh:*) _ambiguous_clean_flagged=0 ;;
     test-fixture-leaking-ambiguous-with-rc-up-evidence.sh:*) _ambiguous_leak_flagged=1 ;;
     test-fixture-clean-*|test-fixture-prose-only.sh:*) _clean_flagged="${_clean_flagged}${_entry}; " ;;
@@ -629,14 +608,8 @@ else
   fail "negative control: ambiguous-provenance resolution is wrong" "clean-case-cleared=$([[ "$_ambiguous_clean_flagged" -eq 1 ]] && echo yes || echo no) leak-case-flagged=$([[ "$_ambiguous_leak_flagged" -eq 1 ]] && echo yes || echo no)"
 fi
 
-if [[ "$_destroy_order_flagged" -eq 1 ]]; then
-  pass "negative control: a destroy call AFTER the msb remove (too late to reap) is still flagged, not falsely cleared"
-else
-  fail "negative control: an order-insensitive destroy match let a real leak (remove-before-destroy) through uncaught"
-fi
-
 if [[ -z "$_clean_flagged" ]]; then
-  pass "positive controls: registered / paired / rc-destroy / bespoke-net / prose-only fixtures are all correctly left clean"
+  pass "positive controls: registered / paired / rc-destroy / destroy-after-remove / bespoke-net / prose-only fixtures are all correctly left clean"
 else
   fail "positive controls: detector false-positived on a correctly-paired or prose-only fixture" "$_clean_flagged"
 fi

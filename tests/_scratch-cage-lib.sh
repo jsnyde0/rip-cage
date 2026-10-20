@@ -6,9 +6,10 @@
 #   scratch_cage_deregister <container-name>   (after your OWN successful destroy)
 #
 # On first call, installs an idempotent EXIT/INT/TERM trap that runs
-# `rc destroy --force` on every registered container name when the test exits
-# (normal or interrupted). Composes with any pre-existing trap so tests that
-# already arm their own EXIT trap keep working.
+# `rc destroy` on every registered container name when the test exits
+# (normal or interrupted; an interrupt then exits 130/143 rather than resuming
+# the test against destroyed cages). Composes with any pre-existing trap so
+# tests that already arm their own EXIT trap keep working.
 #
 # Design decisions:
 # - TRAP COMPOSITION: captures current EXIT/INT/TERM body via `trap -p` before
@@ -21,7 +22,7 @@
 #   dead mount — msb then reports every later exec as spawn-ENOENT against the
 #   program name, not the missing cwd). Destroying the cage first closes that
 #   window.
-# - LOUDNESS (rip-cage-54q3): each `rc destroy --force` output and exit status
+# - LOUDNESS (rip-cage-54q3): each `rc destroy` output and exit status
 #   are captured; a failed destroy is named on stderr (cage name + destroy
 #   output) and counted, with a summary line when any failed. This is a REPORT,
 #   not a gate: the handler preserves $? (entry status captured on first line,
@@ -316,20 +317,22 @@ scratch_cage_register() {
     trap '_scratch_cage_cleanup' EXIT
   fi
 
-  # Install combined INT handler (same ordering rationale as EXIT above).
+  # Install combined INT/TERM handlers (same ordering rationale as EXIT
+  # above). An interrupt ENDS the test (rip-cage-b8kd.29): returning would
+  # resume it against the cages just destroyed. The names are cleared first so
+  # the EXIT trap that `exit` fires does not destroy them a second time and
+  # warn about each doomed retry; it still runs any prior EXIT body.
   if [[ -n "$_prior_int" ]]; then
     # shellcheck disable=SC2064
-    trap "_scratch_cage_cleanup; ${_prior_int}" INT
+    trap "_scratch_cage_cleanup; ${_prior_int}; _SCRATCH_CAGE_NAMES=(); exit 130" INT
   else
-    trap '_scratch_cage_cleanup' INT
+    trap '_scratch_cage_cleanup; _SCRATCH_CAGE_NAMES=(); exit 130' INT
   fi
-
-  # Install combined TERM handler (same ordering rationale as EXIT above).
   if [[ -n "$_prior_term" ]]; then
     # shellcheck disable=SC2064
-    trap "_scratch_cage_cleanup; ${_prior_term}" TERM
+    trap "_scratch_cage_cleanup; ${_prior_term}; _SCRATCH_CAGE_NAMES=(); exit 143" TERM
   else
-    trap '_scratch_cage_cleanup' TERM
+    trap '_scratch_cage_cleanup; _SCRATCH_CAGE_NAMES=(); exit 143' TERM
   fi
 }
 

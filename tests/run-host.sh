@@ -504,7 +504,10 @@ _rh_ledger_summary() {
   order_file="$(mktemp)"
   printf '%s\n' "${_RH_FULL_ENUM[@]}" > "$order_file"
 
-  local summary_rc
+  # `|| summary_rc=$?` for the same set -e reason as the header check above:
+  # the awk exits 1 on a red ledger, and a bare failing statement would abort
+  # here, leaking $order_file and skipping the return below (rip-cage-b8kd.29).
+  local summary_rc=0
   awk -F'|' -v order_file="$order_file" '
     BEGIN {
       while ((getline b < order_file) > 0) {
@@ -568,8 +571,7 @@ _rh_ledger_summary() {
       if (zero > 0 || fail > 0 || malformed > 0) exit 1
       exit 0
     }
-  ' "${files[@]}"
-  summary_rc=$?
+  ' "${files[@]}" || summary_rc=$?
   rm -f "$order_file"
   if [[ "$header_rc" -ne 0 ]]; then
     return "$header_rc"
@@ -938,8 +940,9 @@ fi
 if [[ "$RH_LEDGER_SUMMARY_MODE" == "true" ]]; then
   _RH_MODE="enumerate"
   _run_all_tests
-  _rh_ledger_summary "${RH_LEDGER_SUMMARY_FILES[@]}"
-  exit $?
+  _rh_summary_rc=0
+  _rh_ledger_summary "${RH_LEDGER_SUMMARY_FILES[@]}" || _rh_summary_rc=$?
+  exit "$_rh_summary_rc"
 fi
 
 # rip-cage-w3lq: the config-sandbox setup (RC_CONFIG_GLOBAL + XDG_CONFIG_HOME
