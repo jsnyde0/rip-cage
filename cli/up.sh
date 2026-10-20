@@ -544,12 +544,13 @@ _up_prepare_docker_mounts() {
 
   # Land every in-cage entry mode in the repo, not /home/agent. The image WORKDIR is
   # /home/agent — correct for build-time RUN/CMD, but /workspace is a runtime-only bind
-  # mount (above) that doesn't exist at build time, so the fix belongs at container-run
-  # time, not in the Dockerfile. Setting the container's runtime working dir here makes
-  # `docker run` AND every subsequent `docker exec` (rc attach, multiplexer panes, rc exec,
-  # the drover's cage-exec worker spawn) default into the workspace, so bd/git/rg and
-  # all project-relative paths resolve without a per-session `cd /workspace`. Colocated
-  # with the mount so it only applies when /workspace is actually mounted. (rip-cage-0rng)
+  # mount (from the cage config) that doesn't exist at build time, so the fix belongs at
+  # cage-create time, not in the Dockerfile. This --workdir passes through
+  # _up_translate_docker_args_to_msb into the `msb create` argv, setting the sandbox's
+  # default working dir, so every later `msb exec` into the cage (the boot descriptor's
+  # multiplexer attach hook, the `msb exec <cage> -- zsh` shell rc up prints) defaults
+  # into the workspace, and bd/git/rg and all project-relative paths resolve without a
+  # per-session `cd /workspace`. (rip-cage-0rng)
   _UP_RUN_ARGS+=(--workdir /workspace)
 
   # THE WORKSPACE MOUNT, THE CONFIG SHADOW-MOUNT AND mounts.mask ALL LEFT HERE
