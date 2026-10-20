@@ -100,6 +100,7 @@ SBX_B="xuy8-resume-b-$$"
 SCRATCH_A=""
 SCRATCH_B=""
 SAFETY_STAMP=""
+ERR_DIR=""
 
 cleanup() {
   msb remove -f "$SBX_A" >/dev/null 2>&1 || true
@@ -107,6 +108,7 @@ cleanup() {
   [[ -n "$SCRATCH_A" ]] && rm -rf "$SCRATCH_A"
   [[ -n "$SCRATCH_B" ]] && rm -rf "$SCRATCH_B"
   [[ -n "$SAFETY_STAMP" ]] && rm -f "$SAFETY_STAMP"
+  [[ -n "$ERR_DIR" ]] && rm -rf "$ERR_DIR"
 }
 trap cleanup EXIT
 
@@ -142,6 +144,7 @@ CODEWORD_B="XUY8NEGATIVE-$$-${RANDOM}"
 # stamp is read back at the end for the planted codewords. The host's own
 # Claude sessions may write there meanwhile; only a codeword hit is a leak.
 SAFETY_STAMP=$(mktemp)
+ERR_DIR=$(mktemp -d)
 
 # ===========================================================================
 # SCENARIO A -- fix present: _seed_claude_home_dirs pre-creates projects/
@@ -168,13 +171,13 @@ A_PLANT_OUT=$(msb run --name "$SBX_A" --replace --timeout 90s "${NET_RULES[@]}" 
   --mount-file "${WRAPPER_SRC}:/home/agent/.rc-context/claude-wrapper.sh:ro" \
   -w /home/agent "$IMAGE" -- sh -c \
   "bash /home/agent/.rc-context/claude-wrapper.sh -p 'Remember this codeword: ${CODEWORD_A}. Confirm you stored it.' --output-format json" \
-  2>/tmp/xuy8-a-plant.err)
+  2>"${ERR_DIR}/a-plant.err")
 A_PLANT_RC=$?
 A_SESSION_ID=$(echo "$A_PLANT_OUT" | jq -r '.session_id // empty' 2>/dev/null)
 if [[ "$A_PLANT_RC" -eq 0 && -n "$A_SESSION_ID" ]]; then
   pass "A1: planted a real session in scenario A (session_id=${A_SESSION_ID})"
 else
-  fail "A1: planting session A failed" "rc=${A_PLANT_RC} out=${A_PLANT_OUT} err=$(cat /tmp/xuy8-a-plant.err)"
+  fail "A1: planting session A failed" "rc=${A_PLANT_RC} out=${A_PLANT_OUT} err=$(cat "${ERR_DIR}/a-plant.err")"
 fi
 
 # Authoritative, non-LLM-mediated check: the HOST-side transcript file
@@ -193,7 +196,7 @@ A_RESUME_OUT=$(msb run --name "$SBX_A" --replace --timeout 90s "${NET_RULES[@]}"
   --mount-file "${WRAPPER_SRC}:/home/agent/.rc-context/claude-wrapper.sh:ro" \
   -w /home/agent "$IMAGE" -- sh -c \
   "bash /home/agent/.rc-context/claude-wrapper.sh --resume ${A_SESSION_ID} -p 'What codeword did I ask you to remember? Reply with ONLY the codeword.' --output-format json" \
-  2>/tmp/xuy8-a-resume.err)
+  2>"${ERR_DIR}/a-resume.err")
 A_RESUME_RC=$?
 A_RESUME_RESULT=$(echo "$A_RESUME_OUT" | jq -r '.result // empty' 2>/dev/null)
 
@@ -208,7 +211,7 @@ fi
 if [[ "$A_RESUME_RC" -eq 0 && "$A_RESUME_RESULT" == *"$CODEWORD_A"* ]]; then
   pass "A4 (functional corroboration): claude --resume in the recreated cage recalled the real codeword: '${A_RESUME_RESULT}'"
 else
-  fail "A4: claude --resume did not recall the codeword" "rc=${A_RESUME_RC} result='${A_RESUME_RESULT}' err=$(cat /tmp/xuy8-a-resume.err)"
+  fail "A4: claude --resume did not recall the codeword" "rc=${A_RESUME_RC} result='${A_RESUME_RESULT}' err=$(cat "${ERR_DIR}/a-resume.err")"
 fi
 
 # ===========================================================================
@@ -234,13 +237,13 @@ B_PLANT_OUT=$(msb run --name "$SBX_B" --replace --timeout 90s "${NET_RULES[@]}" 
   --mount-file "${WRAPPER_SRC}:/home/agent/.rc-context/claude-wrapper.sh:ro" \
   -w /home/agent "$IMAGE" -- sh -c \
   "bash /home/agent/.rc-context/claude-wrapper.sh -p 'Remember this codeword: ${CODEWORD_B}. Confirm you stored it.' --output-format json" \
-  2>/tmp/xuy8-b-plant.err)
+  2>"${ERR_DIR}/b-plant.err")
 B_PLANT_RC=$?
 B_SESSION_ID=$(echo "$B_PLANT_OUT" | jq -r '.session_id // empty' 2>/dev/null)
 if [[ "$B_PLANT_RC" -eq 0 && -n "$B_SESSION_ID" ]]; then
   pass "B1: planted a real session in scenario B (session_id=${B_SESSION_ID})"
 else
-  fail "B1: planting session B failed" "rc=${B_PLANT_RC} out=${B_PLANT_OUT} err=$(cat /tmp/xuy8-b-plant.err)"
+  fail "B1: planting session B failed" "rc=${B_PLANT_RC} out=${B_PLANT_OUT} err=$(cat "${ERR_DIR}/b-plant.err")"
 fi
 
 # The footgun firing: the host-mounted claude-home did NOT receive the
@@ -261,7 +264,7 @@ B_RESUME_OUT=$(msb run --name "$SBX_B" --replace --timeout 90s "${NET_RULES[@]}"
   --mount-file "${WRAPPER_SRC}:/home/agent/.rc-context/claude-wrapper.sh:ro" \
   -w /home/agent "$IMAGE" -- sh -c \
   "bash /home/agent/.rc-context/claude-wrapper.sh --resume ${B_SESSION_ID} -p 'What codeword did I ask you to remember? Reply with ONLY the codeword, or say NO_KNOWLEDGE if you do not know.' --output-format json" \
-  2>/tmp/xuy8-b-resume.err)
+  2>"${ERR_DIR}/b-resume.err")
 B_RESUME_RC=$?
 B_RESUME_RESULT=$(echo "$B_RESUME_OUT" | jq -r '.result // empty' 2>/dev/null)
 
@@ -270,18 +273,19 @@ B_RESUME_RESULT=$(echo "$B_RESUME_OUT" | jq -r '.result // empty' 2>/dev/null)
 # codeword is genuinely absent (whichever failure shape claude surfaces:
 # explicit "no such session" error, or an answer that does not know it).
 if [[ "$B_RESUME_RESULT" != *"$CODEWORD_B"* ]]; then
-  pass "B3 (acceptance 2): negative control -- cage LACKING the fix fails to recover the codeword. claude --resume output: rc=${B_RESUME_RC} result='${B_RESUME_RESULT}' stderr='$(cat /tmp/xuy8-b-resume.err)'"
+  pass "B3 (acceptance 2): negative control -- cage LACKING the fix fails to recover the codeword. claude --resume output: rc=${B_RESUME_RC} result='${B_RESUME_RESULT}' stderr='$(cat "${ERR_DIR}/b-resume.err")'"
 else
   fail "B3 (acceptance 2): negative control did NOT fail -- codeword was unexpectedly recovered without the fix" "result='${B_RESUME_RESULT}'"
 fi
 
 # ===========================================================================
-# Safety: real host ~/.claude never received any cage-side session state.
+# Safety: no planted codeword reached the real host ~/.claude (find -H
+# follows a symlinked ~/.claude root, as on a dotfiles host).
 # ===========================================================================
 echo ""
 if [[ -d "${HOME}/.claude" ]]; then
-  SAFETY_CHANGED=$(find "${HOME}/.claude" -type f -newer "$SAFETY_STAMP" 2>/dev/null | wc -l | tr -d ' ')
-  SAFETY_HITS=$(find "${HOME}/.claude" -type f -newer "$SAFETY_STAMP" -print0 2>/dev/null \
+  SAFETY_CHANGED=$(find -H "${HOME}/.claude" -type f -newer "$SAFETY_STAMP" 2>/dev/null | wc -l | tr -d ' ')
+  SAFETY_HITS=$(find -H "${HOME}/.claude" -type f -newer "$SAFETY_STAMP" -print0 2>/dev/null \
     | xargs -0 grep -lF -e "$CODEWORD_A" -e "$CODEWORD_B" 2>/dev/null)
   if [[ -z "$SAFETY_HITS" ]]; then
     pass "SAFETY: no planted codeword reached the real ~/.claude (${SAFETY_CHANGED} file(s) there changed during the run; none carries one)"
