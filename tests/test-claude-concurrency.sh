@@ -754,7 +754,7 @@ if cexec bash -c 'grep -q " /home/agent/.claude.json " /proc/mounts'; then
   echo "  .claude.json mount-table entry: present (mount was composed at cage creation)"
 else
   CLAUDE_JSON_MOUNTED=false
-  echo "  .claude.json mount-table entry: absent (no host ~/.claude.json at cage creation)"
+  echo "  .claude.json mount-table entry: absent (no host ~/.claude.json at cage creation, or the cage config carries no ~/.claude.json mount line)"
 fi
 
 if cexec test -s /home/agent/.claude.json; then
@@ -791,15 +791,14 @@ rm -f "$OUT_SINGLE"
 # share/rip-cage/cage.yaml.template ships it, rc up adds none of its own;
 # mounts are fixed at creation, never re-evaluated on resume).
 #
-# Constructible both ways -- unlike a mount-composed check folded into Step
-# 5's own boundary (shown above to algebraically add no new fail path
-# beyond "neither carrier"), this one has a genuine, distinct red case:
+# The four host-state x mount-table cases (human ruling on rip-cage-b8kd.58):
 #   host ~/.claude.json present + mount entry present -> pass (composed as expected)
 #   host ~/.claude.json absent  + mount entry absent  -> pass (nothing to compose)
-#   host ~/.claude.json present + mount entry ABSENT  -> FAIL LOUD: host
-#     state says this cage should carry a live mount and the running cage
-#     has no such entry -- its config lacks the template's mount line.
-#   host ~/.claude.json absent  + mount entry present -> also reported loud
+#   host ~/.claude.json present + mount entry ABSENT  -> SKIP with a printed
+#     reason: the cage config carries no ~/.claude.json mount line. That is a
+#     legitimate operator composition (ADR-005 D12), not a regression; Step 5
+#     above still catches Claude failing to start without it.
+#   host ~/.claude.json absent  + mount entry present -> FAIL loud
 #     (not silently accepted): under normal `rc up` semantics this can't
 #     happen (nothing without a host source gets mounted), so if it's ever
 #     observed, something about this signal or this cage is anomalous and
@@ -825,8 +824,7 @@ if [[ "$_host_claude_json_present" == "true" && "$CLAUDE_JSON_MOUNTED" == "true"
 elif [[ "$_host_claude_json_present" == "false" && "$CLAUDE_JSON_MOUNTED" == "false" ]]; then
   pass "Mount-composition guard: host ~/.claude.json absent and the cage's mount table shows no entry — nothing was supposed to be mounted"
 elif [[ "$_host_claude_json_present" == "true" && "$CLAUDE_JSON_MOUNTED" == "false" ]]; then
-  fail "Mount-composition guard: host ~/.claude.json is present and non-empty, but the cage's mount table has NO /home/agent/.claude.json entry" \
-    "the cage's config carries no ~/.claude.json mount line (the shipped share/rip-cage/cage.yaml.template has one) — add it to this cage's project config and recreate with rc up --replace"
+  echo "SKIP: Step 5b mount-composition guard — host ~/.claude.json is present but the cage's mount table has no /home/agent/.claude.json entry: this cage's config carries no ~/.claude.json mount line (the shipped share/rip-cage/cage.yaml.template has one). A legitimate composition; nothing to compare."
 else
   fail "Mount-composition guard: host ~/.claude.json is absent, but the cage's mount table SHOWS a /home/agent/.claude.json entry" \
     "anomalous state — a mount with no host source should not be possible under normal rc up semantics"
