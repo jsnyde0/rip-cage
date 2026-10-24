@@ -105,10 +105,19 @@ else
   echo "=== test-msb-boot-smoke.sh: ${FAILURES}/${TOTAL} failure(s) (aborting -- import failed, nothing else is verifiable) ==="
   exit 1
 fi
-if [[ -z "$IMPORT_OUT" ]]; then
-  pass "import: _build_msb_load is silent on success (no spurious warning)"
+# Success logs exactly one "Loaded <image> into msb's image cache" line
+# (cli/build.sh _build_msb_load; test-build-msb-load.sh T12c asserts it).
+# Require that line, then require nothing warn- or error-shaped beside it.
+if grep -qF "Loaded ${SMOKE_TAG} into msb's image cache" <<<"$IMPORT_OUT"; then
+  pass "import: _build_msb_load logs the Loaded line on success"
 else
-  fail "import: expected zero output on success" "$IMPORT_OUT"
+  fail "import: Loaded line missing from success output" "$IMPORT_OUT"
+fi
+IMPORT_NOISE=$(grep -vF "Loaded ${SMOKE_TAG} into msb's image cache" <<<"$IMPORT_OUT" | grep -iE 'warn|error' || true)
+if [[ -z "$IMPORT_NOISE" ]]; then
+  pass "import: no warn/error output beside the Loaded line"
+else
+  fail "import: warn/error output on success" "$IMPORT_NOISE"
 fi
 if msb image list --format json 2>/dev/null | grep -qF "$SMOKE_TAG"; then
   pass "import: msb image list shows the loaded tag"
