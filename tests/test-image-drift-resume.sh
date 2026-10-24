@@ -322,7 +322,8 @@ run_rc_up() {
 
   local _conf _conf_sha
   _conf=$(cage_conf_for "$TEST_WS" "${DRIFT_CONF_IMAGE:-}")
-  _conf_sha=$(shasum -a 256 "$_conf" | awk '{print $1}')
+  # rc's own hash helper (shasum, else sha256sum), not bare shasum (rip-cage-7xqi)
+  _conf_sha=$(bash -c 'source "$1" >/dev/null 2>&1; _up_sha256 "$2"' _ "$RC" "$_conf")
   # DRIFT_NO_CONF_SHA=1: model a cage that predates the label (T6 needs it --
   # the converge preview is exactly that path).
   [[ -n "${DRIFT_NO_CONF_SHA:-}" ]] && _conf_sha=""

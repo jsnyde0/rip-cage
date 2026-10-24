@@ -1368,7 +1368,7 @@ T61_CONF
 # digest as MATCHING the current image, or a plain `rc up` converges on config
 # drift or aborts on image drift and 61d's negative control measures the wrong
 # thing. Same computation cli/up.sh's _up_cage_conf_sha does.
-T61_CONF_SHA=$(shasum -a 256 "${T61_ROOT}/cage.yaml" | awk '{print $1}')
+T61_CONF_SHA=$(bash -c 'source "$1" >/dev/null 2>&1; _up_sha256 "$2"' _ "$RC" "${T61_ROOT}/cage.yaml")  # rc's helper, not bare shasum (rip-cage-7xqi)
 
 # shellcheck disable=SC2030,SC2031  # env is scoped to the subshell on purpose
 t61_run_rc() {
