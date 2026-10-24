@@ -345,14 +345,15 @@ _collect_symlink_parents() {
 #
 # Parameters:
 #   $1  root — the host directory to scan (e.g. ~/.pi/agent)
-#   $2  on_dangling — follow|skip|warn|error (default: follow). Only "skip"
-#       changes behaviour: a broken/unresolvable chain is skipped (warn +
-#       continue) instead of aborting, so the scan keeps emitting subsequent
-#       resolvable links (rip-cage-hcdn). All other values stay fail-loud.
+#   $2  on_dangling — follow|skip (default: follow). Only "skip" changes
+#       behaviour: a broken/unresolvable chain is skipped (warn + continue)
+#       instead of aborting, so the scan keeps emitting subsequent resolvable
+#       links (rip-cage-hcdn). rc up always passes follow (ADR-031 D2 retired
+#       the config knob); skip survives as a direct-call mode only.
 # Output: lines of "<absolute-link-path>|<readlink-f-resolved-target>"
 #         for each absolute symlink found under root.
-# Errors: returns non-zero (ADR-001 D1) when readlink -f fails, EXCEPT under
-#         on_dangling=skip where a broken chain is skipped rather than fatal.
+# Errors: returns non-zero (ADR-001 D1) when readlink -f fails, EXCEPT in
+#         skip mode where a broken chain is skipped rather than fatal.
 _collect_dangling_symlinks() {
   local root="$1" on_dangling="${2:-follow}"
   [[ -d "$root" ]] || return 0
@@ -378,7 +379,7 @@ _collect_dangling_symlinks() {
     # Guard on exit-nonzero OR empty output so this fires on both macOS and Linux.
     if ! target=$(readlink -f "$link" 2>/dev/null) || [[ -z "$target" ]]; then
       if [[ "$on_dangling" == "skip" ]]; then
-        echo "Warning: symlink at '$link' could not be resolved (broken symlink chain); skipping (mounts.symlinks.on_dangling=skip)." >&2
+        echo "Warning: symlink at '$link' could not be resolved (broken symlink chain); skipping (skip mode)." >&2
         continue
       fi
       echo "Error: symlink at '$link' could not be resolved (broken symlink chain). Repair or remove the symlink to unblock." >&2
@@ -691,7 +692,9 @@ _up_prepare_docker_mounts() {
   # and these are that schema's own defaults — so an unconfigured cage behaves
   # exactly as it did before. ADR-031 D2's alternatives table carries the
   # ruling that nothing remained to put in an rc-scoped config file.
-  local _sfl_on_dangling="follow" _sfl_scope="file" _sfl_mode="rw"
+  # on_dangling is always follow: every dangling symlink mounts (rip-cage-k070
+  # retired the dead skip/warn/error branches that used to switch on it).
+  local _sfl_scope="file" _sfl_mode="rw"
 
   local _sfl_root _sfl_link _sfl_target _sfl_collected
   for _sfl_root in "${_SFL_SCAN_ROOTS[@]+"${_SFL_SCAN_ROOTS[@]}"}"; do
@@ -699,7 +702,7 @@ _up_prepare_docker_mounts() {
     # (broken symlink chain) propagates correctly under set -e.  A process
     # substitution done < <(failing_cmd) silently swallows the failure; capturing
     # into a variable first lets the || branch abort the caller (ADR-001 D1).
-    _sfl_collected=$(_collect_dangling_symlinks "$_sfl_root" "$_sfl_on_dangling") || {
+    _sfl_collected=$(_collect_dangling_symlinks "$_sfl_root" follow) || {
       # Error message already printed by _collect_dangling_symlinks.
       exit 1
     }
@@ -743,10 +746,6 @@ _up_prepare_docker_mounts() {
         fi
       done
       if [[ "$_sfl_reserved" -eq 1 ]]; then
-        if [[ "$_sfl_on_dangling" == "skip" ]]; then
-          echo "[rip-cage] Warning: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; skipping mount (mounts.symlinks.on_dangling=skip)." >&2
-          continue
-        fi
         echo "[rip-cage] Error: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; refuse to mount. Remove the symlink or repoint it at a copy outside the reserved path, then re-run rc up." >&2
         exit 1
       fi
@@ -804,24 +803,13 @@ _up_prepare_docker_mounts() {
       local _sfl_mode_suffix=""
       [[ "$_sfl_mode" == "ro" ]] && _sfl_mode_suffix=":ro"
 
-      case "$_sfl_on_dangling" in
-        follow|warn)
-          # Always log per ADR-001 D1 (unconditional mount-expansion log).
-          echo "[rip-cage] follow-symlink: ${_sfl_link} → ${_sfl_target} (${_sfl_mode})" >&2
-          _UP_RUN_ARGS+=(-v "${_sfl_mount_src}:${_sfl_mount_src}${_sfl_mode_suffix}")
-          ;;
-        skip)
-          echo "[rip-cage] Warning: dangling symlink at '${_sfl_link}' → '${_sfl_target}'; skipping mount (mounts.symlinks.on_dangling=skip)." >&2
-          ;;
-        error)
-          echo "[rip-cage] Error: dangling symlink at '${_sfl_link}' targets '${_sfl_target}'; repair or remove the symlink to unblock." >&2
-          exit 1
-          ;;
-      esac
+      # Always log per ADR-001 D1 (unconditional mount-expansion log).
+      echo "[rip-cage] follow-symlink: ${_sfl_link} → ${_sfl_target} (${_sfl_mode})" >&2
+      _UP_RUN_ARGS+=(-v "${_sfl_mount_src}:${_sfl_mount_src}${_sfl_mode_suffix}")
     done <<< "$_sfl_collected"
   done
   unset _SFL_SCAN_ROOTS _SFL_RESERVED_CAGE_PATHS
-  unset _sfl_on_dangling _sfl_scope _sfl_mode _sfl_cfg_result
+  unset _sfl_scope _sfl_mode _sfl_cfg_result
   unset _sfl_root _sfl_link _sfl_target _sfl_collected
   unset _sfl_reserved _sfl_rp _sfl_collision _sfl_arg _sfl_dest
   unset _sfl_mount_src _sfl_mode_suffix
