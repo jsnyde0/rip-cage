@@ -209,9 +209,14 @@ printf '%s\n' "$AGENTS_MD_SENTINEL" > "$AGENTS_MD_PATH"
 # Also create a fake auth.json so rc up doesn't skip the mount
 printf '{"fake":true}\n' > "${PI_AGENT_DIR}/auth.json"
 
+# GNU stat first: on GNU, `stat -f` means filesystem status and exits 0, so a
+# BSD-first chain captures free-block counts (rip-cage-b8kd.62). BSD stat
+# rejects -c and falls through to -f %m.
+_file_mtime() { stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || true; }
+
 # Capture host AGENTS.md content and mtime BEFORE rc up
 AGENTS_CONTENT_BEFORE=$(cat "$AGENTS_MD_PATH")
-AGENTS_MTIME_BEFORE=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
+AGENTS_MTIME_BEFORE=$(_file_mtime "$AGENTS_MD_PATH")
 
 TEST_WS=$(mktemp -d)
 
@@ -233,7 +238,7 @@ echo ""
 echo "=== Test 1: Host ~/.pi/agent/AGENTS.md content + mtime unchanged after rc up ==="
 
 AGENTS_CONTENT_AFTER=$(cat "$AGENTS_MD_PATH")
-AGENTS_MTIME_AFTER=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
+AGENTS_MTIME_AFTER=$(_file_mtime "$AGENTS_MD_PATH")
 
 if [[ "$AGENTS_CONTENT_AFTER" == "$AGENTS_CONTENT_BEFORE" ]]; then
   pass "Test 1a: ~/.pi/agent/AGENTS.md content unchanged after rc up"
