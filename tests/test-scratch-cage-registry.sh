@@ -78,6 +78,10 @@ pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((FAILURES + 1)); }
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/rc-sygz2-XXXXXX")
+# Remove the work dir on exit (rip-cage-i80g). Every lib-sourcing case runs in a
+# child bash or subshell, which never inherits this trap, so it cannot clobber
+# the lib's cage-destroy trap; those children have exited before it fires.
+trap 'rm -rf "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
 # T1-T4: the registry itself, driven through the real lib.
