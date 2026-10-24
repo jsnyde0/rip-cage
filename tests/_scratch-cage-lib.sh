@@ -98,13 +98,21 @@ _scratch_cage_registry_add() {
 
 # _scratch_cage_registry_remove <name> — drop every line equal to <name>.
 # Exact whole-line equality (grep -x -F), never a prefix or a glob.
+# grep exits 1 when NO line survives, the normal case for the last name, so
+# its status is read with `|| _grc=$?`: a bare grep under the caller's `set -e`
+# aborted the exit trap and leaked ${_rf}.$$ (rip-cage-b8kd.64). Only exit 2,
+# a read error, keeps the old file, because the temp copy may be short.
 _scratch_cage_registry_remove() {
-  local _rf _tmp
+  local _rf _tmp _grc=0
   _rf=$(_scratch_cage_registry_path)
   [[ -f "$_rf" ]] || return 0
   _tmp="${_rf}.$$"
-  grep -vxF "$1" "$_rf" > "$_tmp" 2>/dev/null
-  mv "$_tmp" "$_rf" 2>/dev/null || true
+  grep -vxF "$1" "$_rf" > "$_tmp" 2>/dev/null || _grc=$?
+  if [[ "$_grc" -le 1 ]] && mv "$_tmp" "$_rf" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$_tmp" 2>/dev/null || true
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -249,8 +257,10 @@ _scratch_cage_cleanup() {
   local _name _out _rc
   local _failures=0
   for _name in "${_SCRATCH_CAGE_NAMES[@]+"${_SCRATCH_CAGE_NAMES[@]}"}"; do
-    _out=$("$_SCRATCH_CAGE_RC" destroy "$_name" 2>&1)
-    _rc=$?
+    # `|| _rc=$?`, not `_rc=$?` on the next line: this trap can run under the
+    # test's `set -e`, where a failing assignment ends it (rip-cage-b8kd.64).
+    _rc=0
+    _out=$("$_SCRATCH_CAGE_RC" destroy "$_name" 2>&1) || _rc=$?
     if [[ "$_rc" -ne 0 ]]; then
       echo "_scratch-cage-lib.sh: WARNING: failed to destroy scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2
       _failures=$((_failures + 1))
@@ -297,10 +307,13 @@ scratch_cage_register() {
   # Capture any pre-existing EXIT/INT/TERM trap body.
   # `trap -p SIG` emits: trap -- 'BODY' SIG
   # When no trap is set, it emits nothing. Extract only the body (the quoted string).
+  # bash prints INT and TERM as SIGINT / SIGTERM, so those patterns take an
+  # optional SIG prefix: anchored on ' INT$' alone they never matched, and a
+  # prior INT/TERM body was silently replaced (rip-cage-b8kd.64).
   local _prior_exit _prior_int _prior_term
   _prior_exit=$(trap -p EXIT 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' EXIT$/\\1/p" || true)
-  _prior_int=$(trap -p INT 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' INT$/\\1/p" || true)
-  _prior_term=$(trap -p TERM 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' TERM$/\\1/p" || true)
+  _prior_int=$(trap -p INT 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' \\(SIG\\)\\{0,1\\}INT$/\\1/p" || true)
+  _prior_term=$(trap -p TERM 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' \\(SIG\\)\\{0,1\\}TERM$/\\1/p" || true)
 
   # Install combined EXIT handler. rip-cage-54q3 SEAM 1: the scratch cleanup
   # (cage destroy) must run BEFORE the prior trap body, not after — a prior
@@ -310,11 +323,16 @@ scratch_cage_register() {
   # by this reordering: bash restores the pre-trap exit status once the whole
   # composed trap command finishes, regardless of what runs inside it or in
   # which order (verified empirically under this fix — see ship-record).
+  # `_scratch_cage_cleanup && :` (rip-cage-b8kd.64): the cleanup returns the
+  # entry $?, and when the test runs under `set -e` a non-zero return there
+  # aborted the trap before the prior body or the INT/TERM `exit`. A command
+  # left of `&&` is exempt from errexit, so the call completes and $? still
+  # reaches the prior body unchanged.
   if [[ -n "$_prior_exit" ]]; then
     # shellcheck disable=SC2064
-    trap "_scratch_cage_cleanup; ${_prior_exit}" EXIT
+    trap "_scratch_cage_cleanup && :; ${_prior_exit}" EXIT
   else
-    trap '_scratch_cage_cleanup' EXIT
+    trap '_scratch_cage_cleanup && :' EXIT
   fi
 
   # Install combined INT/TERM handlers (same ordering rationale as EXIT
@@ -324,15 +342,15 @@ scratch_cage_register() {
   # warn about each doomed retry; it still runs any prior EXIT body.
   if [[ -n "$_prior_int" ]]; then
     # shellcheck disable=SC2064
-    trap "_scratch_cage_cleanup; ${_prior_int}; _SCRATCH_CAGE_NAMES=(); exit 130" INT
+    trap "_scratch_cage_cleanup && :; ${_prior_int}; _SCRATCH_CAGE_NAMES=(); exit 130" INT
   else
-    trap '_scratch_cage_cleanup; _SCRATCH_CAGE_NAMES=(); exit 130' INT
+    trap '_scratch_cage_cleanup && :; _SCRATCH_CAGE_NAMES=(); exit 130' INT
   fi
   if [[ -n "$_prior_term" ]]; then
     # shellcheck disable=SC2064
-    trap "_scratch_cage_cleanup; ${_prior_term}; _SCRATCH_CAGE_NAMES=(); exit 143" TERM
+    trap "_scratch_cage_cleanup && :; ${_prior_term}; _SCRATCH_CAGE_NAMES=(); exit 143" TERM
   else
-    trap '_scratch_cage_cleanup; _SCRATCH_CAGE_NAMES=(); exit 143' TERM
+    trap '_scratch_cage_cleanup && :; _SCRATCH_CAGE_NAMES=(); exit 143' TERM
   fi
 }
 

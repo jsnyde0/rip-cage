@@ -58,6 +58,11 @@
 #   T15 destroy-then-deregister, then exit: no warning, no second destroy
 #   T16 NEGATIVE CONTROL for T15: a stranded (never-deregistered) name still
 #       warns loudly, and only it
+#   T17 INT/TERM under `set -e`: exit 130/143, one destroy, no reg.* leak
+#   T18 EXIT under `set -e`: every cage destroyed, exit status kept, prior
+#       EXIT body runs and sees it
+#   T19 deregistering the last name under `set -e` keeps the caller alive
+#   T20 a prior INT/TERM trap body is captured and still runs
 
 set -uo pipefail
 
@@ -598,6 +603,116 @@ if grep -q "failed to destroy scratch cage 'T-tmp.hhhh'" <<<"$t16_err" \
 else
   fail "T16: expected one loud warning naming T-tmp.hhhh only" "stderr='${t16_err}' calls='$(cat "$LOG16")'"
 fi
+
+echo ""
+echo "=== T17: an INT/TERM under set -e ends the test 130/143, one destroy, no reg.* leak (rip-cage-b8kd.64) ==="
+# Several live suites turn `set -e` on AFTER registering their cage. The trap
+# then runs under errexit, and the registry-remove grep exits 1 once it empties
+# the file: before the fix the trap aborted there, so the shell exited 1, the
+# EXIT trap destroyed the cage a second time, and reg.<pid> was left behind.
+for _t17_sig in INT TERM; do
+  case "$_t17_sig" in INT) _t17_want=130 ;; TERM) _t17_want=143 ;; esac
+  REG17="${WORK}/reg17-${_t17_sig}"
+  : > "$REG17"
+  LOG17="${WORK}/log17-${_t17_sig}"
+  : > "$LOG17"
+  t17_rc=0
+  RC_TEST_CAGE_REGISTRY="$REG17" RC_STUB_LOG="$LOG17" RC_STUB_EXIT=0 \
+  bash -c '
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_cage_register "T-tmp.sig17"
+    set -e
+    kill -'"$_t17_sig"' $$
+    sleep 2
+    echo RESUMED-AFTER-SIGNAL
+  ' >/dev/null 2>&1 || t17_rc=$?
+  _t17_leak=$(find "$WORK" -maxdepth 1 -name "reg17-${_t17_sig}.*" | wc -l | tr -d ' ')
+  if [[ "$t17_rc" -eq "$_t17_want" && "$(cat "$LOG17")" == "rc destroy T-tmp.sig17" \
+        && ! -s "$REG17" && "$_t17_leak" -eq 0 ]]; then
+    pass "T17 (${_t17_sig}): exit ${_t17_want}, exactly one destroy, registry emptied, no reg.* temp file"
+  else
+    fail "T17 (${_t17_sig}): expected exit ${_t17_want}, one destroy, empty registry, no temp file" \
+         "exit=${t17_rc} calls='$(tr '\n' ';' < "$LOG17")' reg='$(cat "$REG17")' temp_files=${_t17_leak}"
+  fi
+done
+
+echo ""
+echo "=== T18: the EXIT trap under set -e destroys EVERY cage, keeps the exit status, runs the prior body ==="
+# Same errexit hazard on the EXIT path: it stopped after the cage whose removal
+# emptied the registry, and a non-zero test status (returned by the cleanup to
+# preserve \$?) aborted the trap before the prior EXIT body could run.
+REG18="${WORK}/reg18"
+: > "$REG18"
+LOG18="${WORK}/log18"
+: > "$LOG18"
+t18_rc=0
+RC_TEST_CAGE_REGISTRY="$REG18" RC_STUB_LOG="$LOG18" RC_STUB_EXIT=0 \
+bash -c '
+  SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+  trap '"'"'echo "prior-exit-body saw $?" >> "$RC_STUB_LOG"'"'"' EXIT
+  source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+  scratch_cage_register "T-tmp.ex18a"
+  scratch_cage_register "T-tmp.ex18b"
+  set -e
+  exit 3
+' >/dev/null 2>&1 || t18_rc=$?
+t18_want=$'rc destroy T-tmp.ex18a\nrc destroy T-tmp.ex18b\nprior-exit-body saw 3'
+if [[ "$t18_rc" -eq 3 && "$(cat "$LOG18")" == "$t18_want" && ! -s "$REG18" ]]; then
+  pass "T18: both cages destroyed once, the prior EXIT body ran and saw \$?=3, the test's exit 3 survives"
+else
+  fail "T18: expected two destroys then the prior body seeing 3, exit 3, empty registry" \
+       "exit=${t18_rc} calls='$(tr '\n' ';' < "$LOG18")' reg='$(cat "$REG18")'"
+fi
+
+echo ""
+echo "=== T19: deregistering the LAST name under set -e does not kill the caller ==="
+REG19="${WORK}/reg19"
+: > "$REG19"
+LOG19="${WORK}/log19"
+: > "$LOG19"
+t19_out=$(
+  RC_TEST_CAGE_REGISTRY="$REG19" RC_STUB_LOG="$LOG19" RC_STUB_EXIT=0 \
+  bash -c '
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_cage_register "T-tmp.dr19"
+    set -e
+    scratch_cage_deregister "T-tmp.dr19"
+    echo CALLER-SURVIVED
+  ' 2>&1
+)
+if grep -q CALLER-SURVIVED <<<"$t19_out" && [[ ! -s "$REG19" && ! -s "$LOG19" ]]; then
+  pass "T19: the caller survives, the registry is empty, and the trap destroys nothing"
+else
+  fail "T19: deregister of the last name aborted a set -e caller" \
+       "out='${t19_out}' reg='$(cat "$REG19")' calls='$(tr '\n' ';' < "$LOG19")'"
+fi
+
+echo ""
+echo "=== T20: a PRIOR INT/TERM trap body is captured and still runs (rip-cage-b8kd.64 minor a) ==="
+# `trap -p INT` prints the signal as SIGINT, so a pattern anchored on ' INT$'
+# never captured the prior body; it was silently replaced.
+for _t20_sig in INT TERM; do
+  REG20="${WORK}/reg20-${_t20_sig}"
+  : > "$REG20"
+  LOG20="${WORK}/log20-${_t20_sig}"
+  : > "$LOG20"
+  RC_TEST_CAGE_REGISTRY="$REG20" RC_STUB_LOG="$LOG20" RC_STUB_EXIT=0 \
+  bash -c '
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    trap '"'"'echo "prior-'"$_t20_sig"'-body" >> "$RC_STUB_LOG"'"'"' '"$_t20_sig"'
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_cage_register "T-tmp.pr20"
+    kill -'"$_t20_sig"' $$
+    sleep 2
+  ' >/dev/null 2>&1
+  if [[ "$(cat "$LOG20")" == "rc destroy T-tmp.pr20"$'\n'"prior-${_t20_sig}-body" ]]; then
+    pass "T20 (${_t20_sig}): the cage is destroyed first, then the prior ${_t20_sig} body runs"
+  else
+    fail "T20 (${_t20_sig}): expected the destroy then the prior body" "calls='$(tr '\n' ';' < "$LOG20")'"
+  fi
+done
 
 echo ""
 echo "=== Summary: $FAILURES/$TOTAL failed ==="

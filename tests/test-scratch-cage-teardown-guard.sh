@@ -125,8 +125,12 @@ _scan_one_file() {
   # whose sandbox is already gone still reaps its rc-state-/rc-history-/
   # rc-mise-cache- volumes (cli/down_destroy.sh, the no-sandbox branch), so a
   # destroy after a bare remove is a real reap, not a no-op.
+  # The variable is the first one AFTER `destroy`, the same cut the swallow
+  # detector below makes: the first on the line resolves `"$RC" destroy "$X"`
+  # to RC (rip-cage-b8kd.64).
   while IFS=: read -r _dline _dtext; do
-    var=$(echo "$_dtext" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | head -1 | tr -d '${}')
+    var=$(echo "$_dtext" | sed -E 's/.*destroy([[:space:]]+--force)?[[:space:]]+//' \
+            | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | head -1 | tr -d '${}')
     [[ -n "$var" ]] && reaped["$var"]=1
   done < <(grep -nE 'destroy([[:space:]]+--force)?[[:space:]]+"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?' "$f" 2>/dev/null)
 
@@ -581,15 +585,43 @@ else
 fi
 FIXEOF
 
+# 1h'. LEAKING fixture, rule (b)'s NEGATIVE CONTROL (rip-cage-b8kd.64): the
+# file destroys a DIFFERENT variable. Rule (b) pairs by variable, so a destroy
+# of OTHER_CAGE must not clear the bare remove of RCL_CAGE.
+cat > "${FIXTURE_DIR}/test-fixture-leaking-destroy-other-var.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+UP_OUT=$(run_rc up "$WS" 2>&1)
+RCL_CAGE=$(echo "$UP_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
+OTHER_CAGE=$(echo "$UP_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
+msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+run_rc destroy "$OTHER_CAGE" >/dev/null 2>&1
+FIXEOF
+
+# 1h''. CLEAN fixture (rip-cage-b8kd.64): the destroy line carries a $VAR
+# BEFORE the destroyed one -- the `"$RC" destroy "$X"` wrapper spelling. Rule
+# (b) must read the variable AFTER `destroy`, not the first one on the line
+# (which is RC).
+cat > "${FIXTURE_DIR}/test-fixture-clean-destroy-via-rc-var.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+UP_OUT=$(run_rc up "$WS" 2>&1)
+X_CAGE=$(echo "$UP_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
+msb remove --force "$X_CAGE" >/dev/null 2>&1
+"$RC" destroy "$X_CAGE" >/dev/null 2>&1
+FIXEOF
+
 scan_dir_for_leaks "$FIXTURE_DIR"
 
 _leaking_flagged=0
+_other_var_flagged=0
 _ambiguous_clean_flagged=1
 _ambiguous_leak_flagged=0
 _clean_flagged=""
 for _entry in "${LEAK_LINES[@]+"${LEAK_LINES[@]}"}"; do
   case "$_entry" in
     test-fixture-leaking.sh:*) _leaking_flagged=1 ;;
+    test-fixture-leaking-destroy-other-var.sh:*) _other_var_flagged=1 ;;
     test-fixture-clean-ambiguous-no-rc-up-evidence.sh:*) _ambiguous_clean_flagged=0 ;;
     test-fixture-leaking-ambiguous-with-rc-up-evidence.sh:*) _ambiguous_leak_flagged=1 ;;
     test-fixture-clean-*|test-fixture-prose-only.sh:*) _clean_flagged="${_clean_flagged}${_entry}; " ;;
@@ -602,6 +634,12 @@ else
   fail "negative control: the detector did NOT flag the synthetic leaking fixture -- detector is not red-capable"
 fi
 
+if [[ "$_other_var_flagged" -eq 1 ]]; then
+  pass "negative control: rule (b) pairs by VARIABLE -- a destroy of a different variable does not clear a bare msb remove"
+else
+  fail "negative control: a destroy of OTHER_CAGE cleared the bare msb remove of RCL_CAGE -- rule (b) is not matching by variable"
+fi
+
 if [[ "$_ambiguous_clean_flagged" -eq 1 && "$_ambiguous_leak_flagged" -eq 1 ]]; then
   pass "negative control: ambiguous-provenance var resolved by the file's OWN rc-up-evidence (sweep var in a direct-msb-only file stays clean; a preflight var in an rc-up-using file is flagged)"
 else
@@ -609,7 +647,7 @@ else
 fi
 
 if [[ -z "$_clean_flagged" ]]; then
-  pass "positive controls: registered / paired / rc-destroy / destroy-after-remove / bespoke-net / prose-only fixtures are all correctly left clean"
+  pass "positive controls: registered / paired / rc-destroy / destroy-after-remove / destroy-via-\$RC / bespoke-net / prose-only fixtures are all correctly left clean"
 else
   fail "positive controls: detector false-positived on a correctly-paired or prose-only fixture" "$_clean_flagged"
 fi
