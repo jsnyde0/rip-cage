@@ -3150,13 +3150,26 @@ cmd_up() {
         local _UP_RUN_ARGS=()
         local _UP_DRY_RUN_NO_SIDE_EFFECTS=1
         local _UP_MSB_ARGV=()
-        if _up_prepare_docker_mounts "$path" "$name" >/dev/null 2>&1 \
-            && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>&1 \
+        # The preparation's stderr is held back (the "Would mount" lines above
+        # already preview it), but a refusal inside it `exit 1`s rc itself, so
+        # the EXIT trap replays the held stderr: the operator sees the refusal's
+        # Error line, not a bare exit 1 (rip-cage-otj1). A clean run prints
+        # nothing extra. The trap fires while the call's 2>> is still in
+        # effect, so it writes to fd 7, the real stderr saved here.
+        _UP_DRY_PREP_ERR=$(mktemp "${TMPDIR:-/tmp}/rc-dry-prep.XXXXXX")
+        exec 7>&2
+        _rc_dry_status=0
+        trap '_rc_dry_status=$?; if [[ $_rc_dry_status -ne 0 ]]; then cat "$_UP_DRY_PREP_ERR" >&7 || true; fi; rm -f "$_UP_DRY_PREP_ERR"; exit $_rc_dry_status' EXIT
+        if _up_prepare_docker_mounts "$path" "$name" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
+            && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
             && _up_build_msb_create_argv "$name" "$path"; then
           echo "Would run: ${_UP_MSB_ARGV[*]}"
         else
           echo "Would run: msb create --conf ${_UP_CAGE_CONF} --name ${name} --log-level trace [mounts]"
         fi
+        trap - EXIT
+        exec 7>&-
+        rm -f "$_UP_DRY_PREP_ERR"
       fi
     fi
     return 0

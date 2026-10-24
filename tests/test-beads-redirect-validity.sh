@@ -22,9 +22,10 @@ set -uo pipefail
 # Each refused case fails exactly ONE rule and passes the others, so a refusal
 # proves that rule: D is a real .beads with metadata.json (only the dotdir rule
 # refuses it), N likewise outside every dotdir (only the control-char rule), M
-# is named .beads without metadata.json. The refusal text is not asserted:
-# --dry-run drops mount-preparation stderr (cli/up.sh dry-run branch), so the
-# exit code and the absent mount are the observable signal.
+# is named .beads without metadata.json. Every refusal must also print its
+# "Error: .beads/redirect" line on dry-run (rip-cage-otj1: the dry-run branch
+# used to drop mount-preparation stderr, so a refusal exited 1 with no reason),
+# and the legitimate case L must print no Error line at all.
 #
 # Every `rc up` is --dry-run behind fake docker + msb PATH shims under a temp
 # HOME and XDG_CONFIG_HOME; the call log is asserted free of mutating calls.
@@ -104,6 +105,11 @@ _no_mutation() {
 _expect_refuse() {
   local _l="$1"
   if [[ $RCODE -ne 0 ]]; then pass "${_l} rc up --dry-run refuses (exit ${RCODE})"; else fail "${_l} exit 0 — redirect was not refused"; fi
+  if grep -q '^Error: \.beads/redirect' <<<"$OUT"; then
+    pass "${_l} the refusal's Error line is printed"
+  else
+    fail "${_l} refused with no 'Error: .beads/redirect' line: $(tail -2 <<<"$OUT")"
+  fi
   if ! grep -q ':/workspace/.beads' <<<"$OUT"; then
     pass "${_l} no /workspace/.beads mount emitted"
   else
@@ -119,6 +125,11 @@ if grep -Eq -- "-v ${H}/code/main/\.beads:/workspace/\.beads( |$)" <<<"$ARGV"; t
   pass "L argv mounts the real .beads rw at /workspace/.beads"
 else
   fail "L legitimate redirect lost its mount: ${ARGV:-<no argv line>}"
+fi
+if ! grep -q 'Error' <<<"$OUT"; then
+  pass "L dry-run prints no Error line"
+else
+  fail "L clean dry-run printed: $(grep 'Error' <<<"$OUT" | head -2)"
 fi
 _no_mutation L
 
