@@ -453,7 +453,7 @@ _symlink_follow_fingerprint() {
     done < <(_collect_dangling_symlinks "$pi_root" "$on_dangling" 2>/dev/null || true)
   fi
   # Sort for stability, then hash
-  printf '%s' "$lines" | sort | shasum -a 256 | awk '{print $1}'
+  printf '%s' "$lines" | sort | _up_sha256
 }
 
 
@@ -1126,11 +1126,29 @@ _up_prepare_environment() {
 }
 
 
+# _up_sha256 [FILE] -- hex SHA-256 of FILE, or of stdin; the one hash helper.
+# shasum ships with perl, and Arch keeps it at /usr/bin/core_perl, off the
+# default PATH (rip-cage-vw7c: a bare `shasum` killed rc up with exit 127).
+# GNU coreutils' sha256sum covers every Linux; shasum covers macOS.
+_up_sha256() {
+  local _out
+  if command -v shasum >/dev/null 2>&1; then
+    _out=$(shasum -a 256 "$@") || return 1
+  elif command -v sha256sum >/dev/null 2>&1; then
+    _out=$(sha256sum "$@") || return 1
+  else
+    echo "Error: rc needs shasum or sha256sum on PATH to fingerprint the cage config and mounts; install perl (shasum) or coreutils (sha256sum), or add the directory holding one to PATH." >&2
+    return 1
+  fi
+  printf '%s\n' "${_out%% *}"
+}
+
+
 # _up_cage_conf_sha CONF -- content hash of the cage config, or "" if unreadable.
 _up_cage_conf_sha() {
   local _conf="$1"
   [[ -r "$_conf" ]] || { printf ''; return 0; }
-  shasum -a 256 "$_conf" 2>/dev/null | awk '{print $1}'
+  _up_sha256 "$_conf"
 }
 
 
