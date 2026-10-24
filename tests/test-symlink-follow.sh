@@ -102,6 +102,7 @@ setup_sandbox() {
   # permitted. On a Linux host this test is NOT run under --host-only: every
   # writable top-level (/home, /tmp, /var) is in rc's FHS-reserved set, leaving
   # no non-reserved scratch dir — see the NEEDS_CONTAINER entry in run-host.sh.
+  # The cases that need one self-SKIP there (run_needs_unreserved_scratch).
   TEST_HOME=$(mktemp -d)
   mkdir -p "${TEST_HOME}/.pi/agent"
 }
@@ -951,22 +952,59 @@ test_s23_fingerprint_gate_is_silent() {
 # ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Scratch-dir platform gate (rip-cage-b8kd.60).
+#
+# S8/S9/S11/S13/S20/S21 need a symlink TARGET that rc's reserved-cage-path
+# check (_SFL_RESERVED_CAGE_PATHS in cli/up.sh) does not refuse. Fixtures live
+# under mktemp -d: on macOS that canonicalizes to /private/var/..., which the
+# check permits; on a stock Linux host it is /tmp/..., and every writable
+# top-level (/home, /tmp, /var) is reserved, so rc aborts before the case's
+# observable exists. Those cases SKIP with the reserved root named; point
+# TMPDIR at an unreserved writable dir to run them on Linux.
+# The list is read from cli/up.sh, so a change to it moves this gate too.
+# ---------------------------------------------------------------------------
+_scratch_reserved_root() {
+  local probe canon rp
+  probe=$(mktemp -d)
+  canon=$(readlink -f "$probe")
+  rmdir "$probe"
+  while read -r rp; do
+    if [[ "$canon" == "$rp" || "$canon" == "${rp}/"* ]]; then
+      printf '%s' "$rp"
+      return 0
+    fi
+  done < <(sed -n '/_SFL_RESERVED_CAGE_PATHS=(/,/)/p' "${REPO_ROOT}/cli/up.sh" | tr -s ' ' '\n' | grep '^/')
+  return 1
+}
+_SCRATCH_RESERVED=$(_scratch_reserved_root) || true
+
+# Run a case that needs an unreserved scratch target, or SKIP it with the reason.
+run_needs_unreserved_scratch() {
+  local id="$1" fn="$2"
+  if [[ -n "$_SCRATCH_RESERVED" ]]; then
+    echo "SKIP S${id}: temp dir is under rc-reserved cage path ${_SCRATCH_RESERVED} (stock Linux host); set TMPDIR to an unreserved writable dir to run"
+  else
+    "$fn"
+  fi
+}
+
 echo "=== test-symlink-follow.sh — mounts.symlinks.* config + rc up synthesis ==="
 test_s1_collect_absolute_symlinks
 test_s2_skip_relative_symlinks
 test_s3_skip_inroot_symlinks
 test_s4_broken_symlink_chain_aborts
 test_s5_workspace_not_scanned
-test_s8_on_dangling_follow
-test_s9_on_dangling_warn
-test_s11_mode_rw
-test_s13_scope_file
+run_needs_unreserved_scratch 8 test_s8_on_dangling_follow
+run_needs_unreserved_scratch 9 test_s9_on_dangling_warn
+run_needs_unreserved_scratch 11 test_s11_mode_rw
+run_needs_unreserved_scratch 13 test_s13_scope_file
 test_s14_fhs_reserved_collision
 test_s15_fingerprint_deterministic
 test_s17_d5_label_invariant
 test_s_adr019_pi_mount_preserved
-test_s20_denylist_blocks_aws_symlink_target
-test_s21_denylist_allows_non_matching_target
+run_needs_unreserved_scratch 20 test_s20_denylist_blocks_aws_symlink_target
+run_needs_unreserved_scratch 21 test_s21_denylist_allows_non_matching_target
 test_s22_fingerprint_excludes_denylisted_targets
 test_s23_fingerprint_gate_is_silent
 test_s25_broken_chain_skip
