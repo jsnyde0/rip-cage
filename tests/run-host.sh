@@ -1043,10 +1043,13 @@ _host_sandbox_setup
 #      never destroy (neu7.9). It is the backstop for what the sweep refuses
 #      or never knew about: a cage from before the registry existed, or one
 #      whose registry file was wiped.
+#   3. scratch_image_list_leftovers — READ-ONLY, same rule as 2: names the
+#      rip-cage-x-* scratch images a killed run left in msb's cache.
 # shellcheck source=tests/_scratch-cage-lib.sh
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 scratch_cage_sweep_registry
 _warn_leftover_scratch_cages
+scratch_image_list_leftovers
 
 # EXIT/INT/TERM handler: config-fixture cleanup ONLY. rip-cage-neu7.9: the
 # former scratch-cage sweep is NOT run here — it ran an enumerate-and-destroy

@@ -81,18 +81,12 @@ TEST_HOME=$(cd "$TEST_HOME" && pwd -P)
 WS="${TEST_HOME}/workspace"
 mkdir -p "${TEST_HOME}/.config/rip-cage" "$WS"
 CAGE_NAME=""
+# The cage is destroyed by the lib, not here (rip-cage-sygz.7.7):
+# scratch_cage_register below composes this trap behind the lib's own, which
+# runs `rc destroy` on the exact registered name FIRST and is loud on failure.
+# A second destroy here could only fail on a cage already gone and print a
+# false leak warning.
 cleanup() {
-  # rc destroy, by the EXACT name this probe created, never a bare msb remove:
-  # removing the sandbox without rc orphans its rc-state-/rc-history- volumes
-  # forever (the shape tests/test-scratch-cage-teardown-guard.sh exists to
-  # catch). rc destroy reaps both.
-  if [[ -n "$CAGE_NAME" ]]; then
-    _tlp_d_out=$("$RC" destroy "$CAGE_NAME" 2>&1)
-    _tlp_d_rc=$?
-    if [[ "$_tlp_d_rc" -ne 0 ]]; then
-      echo "WARNING: failed to destroy '${CAGE_NAME}' (exit ${_tlp_d_rc}): ${_tlp_d_out}" >&2
-    fi
-  fi
   rm -rf "$TEST_HOME"
 }
 trap cleanup EXIT

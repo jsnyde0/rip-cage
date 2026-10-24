@@ -236,17 +236,11 @@ _fm_cleanup() {
   if [[ "${_FM_CLEANUP_CALLED:-0}" -eq 1 ]]; then return; fi
   _FM_CLEANUP_CALLED=1
 
-  # Destroy the scratch cage by its EXACT name — rc destroy, never an
-  # enumeration, and never a bare msb remove (which would orphan the cage's
-  # rc-state-/rc-history- volumes forever).
-  if [[ -n "${FM_CAGE:-}" ]]; then
-    _fm_d_out=$("${RC}" destroy "${FM_CAGE}" 2>&1)
-    _fm_d_rc=$?
-    if [[ "$_fm_d_rc" -ne 0 ]]; then
-      echo "WARNING: failed to destroy '${FM_CAGE}' (exit ${_fm_d_rc}): ${_fm_d_out}" >&2
-    fi
-    FM_CAGE=""
-  fi
+  # The scratch cage is destroyed by the lib, not here (rip-cage-sygz.7.7):
+  # scratch_cage_register composes this trap behind the lib's own, which runs
+  # `rc destroy` on the exact registered name FIRST and is loud on failure, so
+  # the cage is gone before its image is reaped below. A second destroy here
+  # could only fail on a cage already gone and print a false leak warning.
 
   # Reap the scratch image from BOTH stores. `rc build` loads what it builds
   # into msb's cache as well as docker's, so removing only the docker tag

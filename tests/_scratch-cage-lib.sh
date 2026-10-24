@@ -385,3 +385,22 @@ scratch_image_is_production() {
   [[ "$_n" == *:* ]] || _n="${_n}:latest"
   [[ "$_n" == "rip-cage:latest" ]]
 }
+
+# scratch_image_list_leftovers — name every rip-cage-x-* image in msb's cache
+# on ONE stderr line (rip-cage-sygz.7.7). Suites build their scratch images
+# under that prefix and reap them in their own traps, so a killed run strands
+# them as it strands cages. READ-ONLY, deliberately: it ENUMERATES, so by
+# neu7.9's rule it may never feed a removal; an operator decides. Matches the
+# reference with any registry prefix stripped. Silent when nothing matches or
+# msb is absent; returns 0 always (a report, never a gate).
+scratch_image_list_leftovers() {
+  command -v msb >/dev/null 2>&1 || return 0
+  local _ref _found=""
+  while IFS= read -r _ref; do
+    [[ "${_ref##*/}" == rip-cage-x-* ]] && _found="${_found} ${_ref}"
+  done < <(msb image ls -q 2>/dev/null || true)
+  if [[ -n "$_found" ]]; then
+    echo "WARNING: leftover scratch image(s) in msb's cache:${_found} -- this runner will NOT remove them; if stale: msb image remove <ref>" >&2
+  fi
+  return 0
+}

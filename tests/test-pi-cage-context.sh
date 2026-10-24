@@ -39,6 +39,17 @@ fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
 skip() { echo "SKIP: $1"; SKIPPED=$((SKIPPED + 1)); }
 
 _track() { CREATED_CAGES+=("$1"); }
+# _untrack <name> — after this suite's OWN successful destroy, so the exit
+# trap does not destroy it again and print "failed to destroy ... not found"
+# for a cage already gone (rip-cage-sygz.7.7; the same job as
+# scratch_cage_deregister in tests/_scratch-cage-lib.sh).
+_untrack() {
+  local _c _keep=()
+  for _c in "${CREATED_CAGES[@]+"${CREATED_CAGES[@]}"}"; do
+    [[ "$_c" == "$1" ]] || _keep+=("$_c")
+  done
+  CREATED_CAGES=("${_keep[@]+"${_keep[@]}"}")
+}
 
 # shellcheck source=tests/_cage-conf-lib.sh
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
@@ -404,6 +415,8 @@ else
   _d_rc=$?
   if [[ "$_d_rc" -ne 0 ]]; then
     echo "WARNING: failed to destroy '$CONTAINER2' (exit ${_d_rc}): ${_d_out}" >&2
+  else
+    _untrack "$CONTAINER2"
   fi
 fi
 

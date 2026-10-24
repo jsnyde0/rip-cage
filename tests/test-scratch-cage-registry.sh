@@ -63,6 +63,9 @@
 #       EXIT body runs and sees it
 #   T19 deregistering the last name under `set -e` keeps the caller alive
 #   T20 a prior INT/TERM trap body is captured and still runs
+#   T21 leftover rip-cage-x-* images are listed on one line, never removed
+#   T22 NEGATIVE CONTROL for T21: silent with no scratch image or no msb;
+#       run-host.sh prints the image line right after the cage warning
 
 set -uo pipefail
 
@@ -713,6 +716,88 @@ for _t20_sig in INT TERM; do
     fail "T20 (${_t20_sig}): expected the destroy then the prior body" "calls='$(tr '\n' ';' < "$LOG20")'"
   fi
 done
+
+echo ""
+echo "=== T21: leftover rip-cage-x-* scratch images are LISTED, never removed (rip-cage-sygz.7.7) ==="
+# A killed run strands its scratch image tags as well as its cages. The image
+# line is read-only: it names them, and an operator decides. A fake msb on
+# PATH answers `image ls -q` and logs every call, so a removal would show.
+IMG_BIN="${WORK}/img-bin"
+mkdir -p "$IMG_BIN"
+cat > "${IMG_BIN}/msb" <<'MSBIMGEOF'
+#!/usr/bin/env bash
+echo "msb $*" >> "$RC_STUB_LOG"
+if [[ "$1 $2" == "image ls" || "$1 $2" == "image list" ]]; then
+  printf '%s\n' ${MSB_FAKE_IMAGES:-}
+fi
+exit 0
+MSBIMGEOF
+chmod +x "${IMG_BIN}/msb"
+LOG21="${WORK}/log21"
+: > "$LOG21"
+t21_rc=0
+t21_err=$(
+  PATH="${IMG_BIN}:$PATH" RC_STUB_LOG="$LOG21" \
+  MSB_FAKE_IMAGES="rip-cage:latest alpine rip-cage-x-floor-asroot:1 localhost/rip-cage-x-bootdesc:1 rip-cage-xyz:1" \
+  bash -c '
+    set -euo pipefail
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_image_list_leftovers
+    echo CALLER-SURVIVED >&2
+  ' 2>&1 >/dev/null
+) || t21_rc=$?
+if [[ "$t21_rc" -eq 0 ]] && grep -q CALLER-SURVIVED <<<"$t21_err" \
+   && grep -qF "rip-cage-x-floor-asroot:1" <<<"$t21_err" \
+   && grep -qF "localhost/rip-cage-x-bootdesc:1" <<<"$t21_err"; then
+  pass "T21: both rip-cage-x-* images are named, under the caller's set -e"
+else
+  fail "T21: expected both rip-cage-x-* refs named and the caller alive" "exit=${t21_rc} stderr='${t21_err}'"
+fi
+if ! grep -qE "rip-cage:latest|alpine|rip-cage-xyz" <<<"$t21_err"; then
+  pass "T21b: rip-cage:latest, alpine and rip-cage-xyz (no 'x-' prefix) are not named"
+else
+  fail "T21b: a non-scratch image was named" "$t21_err"
+fi
+if [[ "$(cat "$LOG21")" == "msb image ls -q" ]]; then
+  pass "T21c: the one msb call is the listing -- nothing is removed"
+else
+  fail "T21c: expected exactly 'msb image ls -q'" "calls='$(tr '\n' ';' < "$LOG21")'"
+fi
+
+echo ""
+echo "=== T22: NEGATIVE CONTROL for T21: no scratch image, or no msb, prints nothing ==="
+: > "$LOG21"
+t22_err=$(
+  PATH="${IMG_BIN}:$PATH" RC_STUB_LOG="$LOG21" MSB_FAKE_IMAGES="rip-cage:latest alpine" \
+  bash -c '
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_image_list_leftovers
+  ' 2>&1
+)
+t22_nomsb=$(
+  PATH="/usr/bin:/bin" bash -c '
+    SCRIPT_DIR="'"${STUB_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_image_list_leftovers
+    echo "rc=$?"
+  ' 2>&1
+)
+if [[ -z "$t22_err" && "$t22_nomsb" == "rc=0" ]]; then
+  pass "T22: silent with no scratch image, and silent (exit 0) with no msb on PATH"
+else
+  fail "T22: expected silence in both" "no-scratch='${t22_err}' no-msb='${t22_nomsb}'"
+fi
+_rh_driver2="run-host"
+RH2="${REPO_ROOT}/tests/${_rh_driver2}.sh"
+rh_img_line=$(grep -n '^scratch_image_list_leftovers$' "$RH2" | head -1 | cut -d: -f1)
+rh_warn_line2=$(grep -n '^_warn_leftover_scratch_cages$' "$RH2" | head -1 | cut -d: -f1)
+if [[ -n "$rh_img_line" && -n "$rh_warn_line2" && "$rh_img_line" -eq $((rh_warn_line2 + 1)) ]]; then
+  pass "T22b: run-host.sh prints the image line right after the leftover-cage warning"
+else
+  fail "T22b: the image line is not wired next to the cage warning in run-host.sh" "img=${rh_img_line} warn=${rh_warn_line2}"
+fi
 
 echo ""
 echo "=== Summary: $FAILURES/$TOTAL failed ==="
