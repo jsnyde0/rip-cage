@@ -514,8 +514,7 @@ fi
 # a built cage contains it depends entirely on the operator's manifest
 # (~/.config/rip-cage/tools.yaml), NOT on a base-image invariant — this suite builds from
 # that manifest, so it cannot assert recipe presence/absence stably. Recipe wiring is
-# covered where a KNOWN manifest is composed: examples/dcg/smoke.sh, the
-# demotion tests, and test-mount-seam-integration.sh SE7. (rip-cage-1ssw)
+# covered where a KNOWN manifest is composed: examples/dcg/smoke.sh. (rip-cage-1ssw)
 # (ssh-bypass recipe retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5.)
 
 # Check 11: Pi verify line appears in init log (ADR-019 B3).

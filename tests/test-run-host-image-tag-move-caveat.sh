@@ -45,7 +45,7 @@
 #
 # Host-only, no live container: run-host.sh is invoked as a real subprocess
 # (same idiom as tests/test-run-host-driver.sh) but with fake docker+msb on
-# PATH (same idiom as tests/test-build-flag-override.sh) so the mid-run tag
+# PATH (same idiom as tests/test-build-msb-load.sh) so the mid-run tag
 # move is SIMULATED via a stateful fake `docker image inspect`, never a real
 # retag against the real docker daemon. `--only` is pointed at a basename
 # that matches no registered test file, so run-host.sh's real test-execution
@@ -143,7 +143,7 @@ FAKEEOF
   chmod +x "${MOCK_BIN}/docker"
   # Fake msb: run-host.sh's _warn_leftover_scratch_cages calls `msb list` /
   # `msb inspect` before the real pass. Shimmed the same way
-  # tests/test-build-flag-override.sh shims msb alongside docker, so a host
+  # tests/test-build-msb-load.sh shims msb alongside docker, so a host
   # with a real msb installed is never consulted by this probe.
   cat > "${MOCK_BIN}/msb" <<'FAKEEOF'
 #!/usr/bin/env bash

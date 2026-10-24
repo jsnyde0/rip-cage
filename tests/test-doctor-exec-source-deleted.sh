@@ -13,8 +13,7 @@
 # Host-only: drives the REAL `rc` binary (the doctor verb) against a
 # fake `msb` on PATH -- no live cage, no docker, no msb daemon, no `rc
 # build`/`msb load`/`msb create`. Mirrors the FAKE_BIN / RC_TEST_CALL_LOG
-# PATH-shim idiom from tests/test-build-msb-load.sh and the setup_fake_msb
-# shape from tests/test-build-flag-override.sh.
+# PATH-shim idiom from tests/test-build-msb-load.sh.
 #
 # `rc doctor` cases use a STOPPED cage deliberately: the new
 # source-path-missing check (_rc_source_path_missing_hint,

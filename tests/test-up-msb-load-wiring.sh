@@ -20,8 +20,7 @@
 # cases) via a unique, exact-match anchor line, and evals it in a
 # controlled shell with:
 #   - _pull_or_build stubbed to succeed (this file is not about provisioning
-#     itself, T-suite of tests/test-build-flag-override.sh already owns
-#     that)
+#     itself; the rc build tests in tests/test-rc-commands.sh own that)
 #   - the REAL _build_msb_load and _msb_warn_image_layer_drift, sourced from
 #     rc itself, running against PATH-stubbed fake docker/msb -- the same
 #     fixture idiom tests/test-build-msb-load.sh's T6/T7 use: docker

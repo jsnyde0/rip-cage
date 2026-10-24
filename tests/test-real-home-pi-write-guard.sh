@@ -36,7 +36,7 @@
 # never matched by the ${HOME}/.pi pattern at all.
 #
 # SCOPE: files that already sandbox their own $HOME (test-credential-mounts.sh,
-# test-pi-substrate-mounts.sh, test-symlink-follow.sh -- all via a
+# test-symlink-follow.sh -- all via a
 # TEST_HOME/NOEXT_HOME variable, never literal $HOME) are unaffected: this
 # guard only ever matches the literal $HOME/${HOME} token, never a
 # differently-named variable that merely contains "HOME" as a substring.

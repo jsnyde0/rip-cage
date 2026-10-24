@@ -1165,7 +1165,7 @@ E49_CONF
 # protected-path fixture is therefore a fake ".ssh" under the scratch root
 # rather than the real ~/.ssh — matching is by path COMPONENT, so it exercises
 # the identical branch without ever naming the operator's own key directory.
-# shellcheck disable=SC2030,SC2031  # env is scoped to the subshell on purpose
+# shellcheck disable=SC2030  # env is scoped to the subshell on purpose
 e49_run_rc() {
   ( export PATH="${E49_BIN}:${PATH}"
     export XDG_CONFIG_HOME="${E49_HOME}/.config"

@@ -79,8 +79,7 @@ case "${1:-}" in
         # rip-cage-528o: the layer-diff_id comparator's docker-side probe
         # (`docker image inspect $IMAGE --format '{{json .RootFS.Layers}}'`,
         # _msb_image_layer_drift_status). Content-keyed on the --format
-        # template (the same idiom tests/test-build-flag-override.sh's
-        # setup_fake_docker uses) so every other `image inspect` caller keeps
+        # template, so every other `image inspect` caller keeps
         # the plain '{}' default. Serving a REAL layer array here is what
         # drives the comparator to status 3 (msb-side missing) instead of
         # status 2 (docker-side missing) -- T6/T7 both need status 3.
@@ -123,8 +122,7 @@ case "${1:-}" in
         # exit 1, which is the real `msb image inspect` contract for an image
         # that is NOT in msb's cache (probed live under rip-cage-7bs3) --
         # i.e. exactly the "the load did not land" state this bead exists to
-        # make loud. Same shim shape as
-        # tests/test-build-flag-override.sh's setup_fake_msb.
+        # make loud.
         if [[ -n "${RC_TEST_MSB_IMAGE_INSPECT:-}" ]]; then
           echo "$RC_TEST_MSB_IMAGE_INSPECT"
           exit 0
@@ -175,8 +173,7 @@ case "${1:-}" in
         # rip-cage-528o: the layer-diff_id comparator's docker-side probe
         # (`docker image inspect $IMAGE --format '{{json .RootFS.Layers}}'`,
         # _msb_image_layer_drift_status). Content-keyed on the --format
-        # template (the same idiom tests/test-build-flag-override.sh's
-        # setup_fake_docker uses) so every other `image inspect` caller keeps
+        # template, so every other `image inspect` caller keeps
         # the plain '{}' default. Serving a REAL layer array here is what
         # drives the comparator to status 3 (msb-side missing) instead of
         # status 2 (docker-side missing) -- T6/T7 both need status 3.
@@ -437,8 +434,7 @@ fi
 # that is the whole reason _msb_warn_image_layer_drift prints to stderr.
 #
 # Harness shape: a minimal manifest sandbox plus stubbed root-owned
-# validators, the same convention tests/test-build-flag-override.sh's
-# setup_sandbox/run_cmd_build uses (this suite is about the load/verify
+# validators (this suite is about the load/verify
 # wiring, not the validators). The PATH fakes are this file's own: real-sized
 # `docker save` + a real `docker image inspect ... RootFS.Layers` array, and
 # an `msb` whose `load` exits 0 but whose `image inspect` exits 1 -- i.e. the
@@ -475,8 +471,7 @@ run_cmd_build_e2e() {
     source "'"${RC}"'"
     SCRIPT_DIR="'"${REPO_ROOT}"'"
     OUTPUT_FORMAT="${RC_TEST_OUTPUT_FORMAT:-}"
-    # Positive-control stubs (same convention as
-    # tests/test-build-flag-override.sh:run_cmd_build) -- the safety-floor
+    # Positive-control stubs: the safety-floor
     # validators are not what these cases are about, and they need a real
     # built image to inspect.
     _manifest_check_binary_root_owned() { return 0; }

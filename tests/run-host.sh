@@ -156,14 +156,14 @@ SKIPPED_TESTS=()
 # RC_IMAGE unchanged only to files listed here and unset it for every other file,
 # so a host-tier test behaves the same whatever the operator exported.
 NEEDS_CONTAINER=(
-  # test-agent-cli.sh: RETIRED with the verbs it tested (rip-cage-ely4.7.3 /
+  # the agent-CLI test: RETIRED with the verbs it tested (rip-cage-ely4.7.3 /
   # ADR-031 D3). Its subject was the agent-facing CLI contract, and six of its
   # fifteen cases drove `rc ls` or `rc down`, plus one asserting an
   # allowed-roots warning whose guard ADR-031 D2 deleted. Every SURVIVING
   # subject is already covered in the HOST tier, which is strictly better --
   # this file was container-gated and therefore invisible to --host-only:
   # path hardening, the destroy dry-run and the AGENTS.md rules section in
-  # test-dg6.2.sh; `rc build --output json` in test-build-flag-override.sh and
+  # test-dg6.2.sh; `rc build --output json` in
   # test-build-msb-load.sh; `rc test --output json` in test-rc-commands.sh
   # (Test 15); `rc up --dry-run` JSON in test-json-output.sh. Nothing was
   # dropped without a home.
@@ -841,13 +841,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-dotpi-factory-reach.sh" # rip-cage-8jg5.8: examples/dotpi-factory/cage-reach against a fake msb -- stdin closed, multiplexer env read from the boot descriptor (not hardcoded), argv verbatim, exit status propagated, usage refusal; README reach line + cage-ops cite -- host-only
   run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seeds ~/.pi/agent/auth.json on cold start
   # Also retired with the manifest, for the same reason -- every case called a
-  # deleted _manifest_* function, and deleted from tests/ (rip-cage-b8kd.16):
-  # test-mount-seam-integration.sh,
-  # test-pi-recipe-lifecycle.sh, test-pi-substrate-mounts.sh,
-  # test-dcg-demotion.sh, test-pi-wrapper-glob.sh, test-skill-manifest-author.sh,
-  # test-multiplexer-registry-bake.sh,
-  # test-build-flag-override.sh (the flag allowlist it tested is gone) and
-  # test-seed-drift-stderr-scoping.sh.
+  # deleted _manifest_* function; nine such tests were deleted from tests/ (rip-cage-b8kd.16, commit f2ee51c).
   # The whole manifest test corpus (19 files), the manifest-authoring skill
   # test, the multiplexer registry-bake test, the build-flag-override test and
   # the seed-drift stderr-scoping test all retired with the manifest itself

@@ -703,17 +703,17 @@ echo ""
 #     Detection is line-continuation-joined + filtered, not a bare grep, so it
 #     is robust against comments, `echo`/`pass`/`fail` prose strings, and the
 #     many non-invocation mentions of "rc build" elsewhere in tests/ (see
-#     tests/run-host.sh, tests/test-build-flag-override.sh for the noise this
+#     tests/run-host.sh for the noise this
 #     guards against). A build counts as SAFE if the joined invocation line
 #     carries -t/--tag OR sets RC_IMAGE= (rc:69 -- both set the same $IMAGE
 #     cmd_build acts on; RC_IMAGE is the env-var spelling of the same escape).
 #
 #     SCOPE: originally the four e2e files named in rip-cage-q4t6's producer
-#     inventory; rip-cage-d2bo widened this ratchet, per-site, onto 7 more
+#     inventory; rip-cage-d2bo widened this ratchet, per-site, onto 7 more (two since deleted, rip-cage-b8kd.16)
 #     files with GENUINE bare-build defects (test-manifest-cross.sh,
 #     test-manifest-herdr.sh, test-manifest-source.sh,
-#     test-mount-seam-integration.sh, test-multiplexer-composable.sh,
-#     test-multiplexer-config-dynamic.sh, test-multiplexer-registry-bake.sh --
+#     test-multiplexer-composable.sh,
+#     test-multiplexer-config-dynamic.sh --
 #     each now builds to a pinned per-run scratch tag via -t/RC_IMAGE, reaped
 #     by exact name, never rip-cage:latest). rip-cage-d2bo also read every
 #     OTHER out-of-scope site repo-wide and classified each: harmless
@@ -753,7 +753,7 @@ BEGIN { buf=""; startno=0 }
 _h_invoke_re='(\$\{REPO_ROOT\}/rc|\$\{RC\}|\$RC)"?[[:space:]]+build([[:space:]]|$)|\./rc[[:space:]]+build([[:space:]]|$)'
 _h_exclude_re='echo|printf|pass[[:space:]]*"|fail[[:space:]]*"|check[[:space:]]*"'
 _h_safe_re='(--tag|[[:space:]]-t[[:space:]]|RC_IMAGE=)'
-_h_in_scope_files="test-manifest-daemon.sh test-manifest-agent-mail.sh test-manifest-cm.sh test-manifest-security.sh test-manifest-cross.sh test-manifest-herdr.sh test-manifest-source.sh test-mount-seam-integration.sh test-multiplexer-composable.sh test-multiplexer-config-dynamic.sh test-multiplexer-registry-bake.sh"
+_h_in_scope_files="test-manifest-daemon.sh test-manifest-agent-mail.sh test-manifest-cm.sh test-manifest-security.sh test-manifest-cross.sh test-manifest-herdr.sh test-manifest-source.sh test-multiplexer-composable.sh test-multiplexer-config-dynamic.sh"
 
 _h_justify_re='(rip-cage-[a-z0-9.]+ kind-[12] \(|build-ok\()'
 
@@ -855,7 +855,7 @@ echo "=== (i) mktemp templates substitute correctly on macOS/BSD (rip-cage-043d)
 
 _i_suffix_re='mktemp[^|;&]*X{3,}[^X"'"'"')`[:space:]]'
 _i_justify_re='mktemp-ok\([a-zA-Z0-9.-]+\)'
-_i_in_scope_files="test-skills.sh test-manifest-agent-mail.sh test-manifest-mount-mode.sh test-rc-commands.sh test-mount-seam-integration.sh test-manifest-payload-audit.sh test-manifest-security.sh test-doctor-runnability.sh test-prerequisites.sh"
+_i_in_scope_files="test-skills.sh test-manifest-agent-mail.sh test-manifest-mount-mode.sh test-rc-commands.sh test-manifest-payload-audit.sh test-manifest-security.sh test-doctor-runnability.sh test-prerequisites.sh"
 
 _i_in_scope_hits=""
 _i_out_of_scope_hits=""
