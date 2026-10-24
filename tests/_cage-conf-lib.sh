@@ -21,6 +21,31 @@
 # cage mounts. A fixture written into the project would be refused before the
 # test reached its own subject.
 
+# CLEANUP (rip-cage-b8kd.59). cage_conf_for writes beside the project, and the
+# project is usually a bare mktemp dir directly under TMPDIR, so the config
+# lands directly in TMPDIR where no caller's workspace cleanup reaches it.
+# An EXIT trap cannot own this: cage_conf_for runs inside $(...) in nearly
+# every caller (a subshell's trap dies with the subshell), and nearly every
+# caller installs its own `trap cleanup EXIT` AFTER sourcing this file, which
+# would replace ours. So ownership is by PROCESS: each config path is appended
+# to a registry file, and a detached watcher removes the registered files once
+# the sourcing script's shell has exited, however it exited and whatever traps
+# it set (removal lags the exit by up to ~1s). The watcher is disowned (a
+# caller's bare `wait` does not block on it) and holds no inherited fds (a
+# caller piping this script's output does not hang on it).
+_CAGE_CONF_OWNER_PID=$$
+_CAGE_CONF_REGISTRY="${TMPDIR:-/tmp}/.rc-cage-conf-reg.$$"
+if [[ -z "${_CAGE_CONF_WATCHER_STARTED:-}" ]]; then
+  _CAGE_CONF_WATCHER_STARTED=1
+  : > "$_CAGE_CONF_REGISTRY"
+  (
+    while kill -0 "$_CAGE_CONF_OWNER_PID" 2>/dev/null; do sleep 1; done
+    while IFS= read -r _f; do rm -f -- "$_f"; done < "$_CAGE_CONF_REGISTRY"
+    rm -f -- "$_CAGE_CONF_REGISTRY"
+  ) </dev/null >/dev/null 2>&1 &
+  disown $! 2>/dev/null || true
+fi
+
 # _cage_conf_claude_json_line
 #
 # Echo the read-only host-Claude-config mount line the shipped template
@@ -111,6 +136,7 @@ cage_conf_for() {
   # the sandbox, so the existing scrubber handles it.
   local _conf
   _conf="$(dirname "$_proj")/.rc-test-cage-$(basename "$_proj").yaml"
+  printf '%s\n' "$_conf" >> "$_CAGE_CONF_REGISTRY"
 
   cat > "$_conf" <<CAGE_CONF
 image: ${_image}
