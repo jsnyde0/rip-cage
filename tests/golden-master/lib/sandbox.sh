@@ -65,6 +65,16 @@ GM_HOME="${GM_ROOT}/home"
 GM_XDG="${GM_HOME}/.config"
 GM_WS="${GM_ROOT}/workspace"
 
+# gm_sandbox_cleanup — remove this process's scratch tree at exit (rip-cage-b8kd.67).
+# Removes the whole $$-tagged PARENT of GM_ROOT, but only when GM_ROOT is the
+# default per-process path this file computed; a GM_ROOT_OVERRIDE root belongs
+# to the caller, who removes it. Safe to call twice or with nothing created.
+# Callers: `trap gm_sandbox_cleanup EXIT` (or call it from their own cleanup).
+gm_sandbox_cleanup() {
+  [[ -z "${GM_ROOT_OVERRIDE:-}" ]] || return 0
+  rm -rf "${TMPDIR:-/tmp}/rc-golden-master-root.$$"
+}
+
 # gm_sandbox_reset — wipe and recreate the fixture tree: global config
 # (denylist floor, matches tests/run-host.sh driver fixture), an empty
 # host config dir, and a bare workspace directory with no

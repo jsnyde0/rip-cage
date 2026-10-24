@@ -20,6 +20,8 @@ source "${GM_DIR}/lib/scrub.sh"
 # shellcheck source=cases.sh
 source "${GM_DIR}/cases.sh"
 
+trap gm_sandbox_cleanup EXIT
+
 MODE="check"
 case "${1:-}" in
   --record) MODE="record" ;;

@@ -132,6 +132,7 @@ while [[ "$i" -le "$ITERS" ]]; do
   i=$((i + 1))
 done
 
+gm_sandbox_cleanup
 echo "DONE corrupt=${CORRUPT}" >> "$RESULT_FILE"
 WORKER
 chmod +x "$WORKER_SCRIPT"
