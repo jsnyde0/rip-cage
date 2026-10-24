@@ -50,6 +50,17 @@ HOST_PROJECTS_DIR=""
 # -- never enumerated/pattern-matched (see /tmp/msb-port-canonical.md).
 CREATED_CAGES=()
 _track() { CREATED_CAGES+=("$1"); }
+# _untrack <name> — after this suite's OWN destroy has verifiably removed the
+# cage, so the exit trap does not destroy it again and print "failed to
+# destroy ... not found" for a cage already gone (rip-cage-wft7; same shape as
+# test-pi-cage-context.sh, rip-cage-sygz.7.7).
+_untrack() {
+  local _c _keep=()
+  for _c in "${CREATED_CAGES[@]+"${CREATED_CAGES[@]}"}"; do
+    [[ "$_c" == "$1" ]] || _keep+=("$_c")
+  done
+  CREATED_CAGES=("${_keep[@]+"${_keep[@]}"}")
+}
 
 CLEANUP() {
   local _d_out _d_rc
@@ -203,6 +214,7 @@ if cage_exists "$CONTAINER_NAME"; then
   check "rc destroy removes container" fail
 else
   check "rc destroy removes container" pass
+  _untrack "$CONTAINER_NAME"
 fi
 if [[ -f "$HOST_PROJECTS_DIR/dn2-probe.jsonl" ]]; then
   check "session file survives rc destroy" pass
@@ -210,10 +222,8 @@ else
   check "session file survives rc destroy" fail "lost $HOST_PROJECTS_DIR/dn2-probe.jsonl"
 fi
 
-# CONTAINER_NAME stays in CREATED_CAGES, so the CLEANUP trap re-runs
-# `rc destroy` on it. With the cage and its volumes already gone, that call
-# refuses ("container ... not found", exit 2) and CLEANUP prints a
-# "WARNING: failed to destroy" line to stderr; the test verdict is unaffected.
+# On a verified destroy the cage was untracked above, so the CLEANUP trap does
+# not destroy it a second time; on a failed one it stays tracked as the backstop.
 rm -f "$UP_OUT"
 
 echo ""
