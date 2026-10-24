@@ -32,7 +32,6 @@ on:
       - cage/Dockerfile
       - cli/lib/msb_flags.sh
       - tests/spike-uuh9-port443.sh
-      - .rip-cage.yaml
       - .github/workflows/linux-kvm-port-tight-proof.yml
   push:
     branches:
@@ -41,7 +40,6 @@ on:
       - cage/Dockerfile
       - cli/lib/msb_flags.sh
       - tests/spike-uuh9-port443.sh
-      - .rip-cage.yaml
       - .github/workflows/linux-kvm-port-tight-proof.yml
 
 jobs:
