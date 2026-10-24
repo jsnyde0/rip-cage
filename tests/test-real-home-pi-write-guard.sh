@@ -82,7 +82,7 @@ _RE_HOME_PI='(\$\{?HOME\}?|~)/\.pi'
 # Command start: a separator, then any per-command `VAR=value ` prefixes.
 # `HOME=$tmp rm -rf "$HOME/.pi"` is a write at command start: bash expands
 # $HOME with the REAL value before the prefix applies (rip-cage-b8kd.42).
-_RE_CMD_START='(^|[;&|({`])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"']+)*[[:space:]]+)*'
+_RE_CMD_START='(^|[;&|({`])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'"'[^'"'"']*'"'"'|\$\(([^()]|\([^()]*\))*\)|[^[:space:]"'"'"']+)*[[:space:]]+)*'
 _RE_MV_TEE="${_RE_CMD_START}(mv|tee)[[:space:]]"
 # Any rm is a write: `rm -r`, `rm -f`, `rm -rf` and a bare `rm` all delete
 # (rip-cage-b8kd.8.2 -- the first draft required an f/F flag).
@@ -381,10 +381,20 @@ tmp=$(mktemp -d)
 HOME=$tmp rm -r "$HOME/.pi"
 FIXEOF
 
+# 1o. LEAKING: a same-line HOME= prefix whose value is a $(...) containing a
+# space -- the prefix grammar must take the substitution as one value
+# (rip-cage-b8kd.61).
+cat > "${FIXTURE_DIR}/test-fixture-leaking-subst-prefix-rm.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+HOME=$(mktemp -d) rm -rf "$HOME/.pi"
+FIXEOF
+
 scan_dir_for_leaks "$FIXTURE_DIR"
 
 _direct_flagged=0 _chained_flagged=0 _mv_flagged=0 _inline_flagged=0
 _comment_rm_flagged=0 _prefix_flagged=0 _sameline_prefix_flagged=0
+_subst_prefix_flagged=0
 _clean_flagged=""
 for _entry in "${WRITE_LEAKS[@]+"${WRITE_LEAKS[@]}"}"; do
   case "$_entry" in
@@ -395,6 +405,7 @@ for _entry in "${WRITE_LEAKS[@]+"${WRITE_LEAKS[@]}"}"; do
     test-fixture-leaking-comment-home-rm-r.sh:*) _comment_rm_flagged=1 ;;
     test-fixture-leaking-prefix-home.sh:*) _prefix_flagged=1 ;;
     test-fixture-leaking-sameline-prefix-rm.sh:*) _sameline_prefix_flagged=1 ;;
+    test-fixture-leaking-subst-prefix-rm.sh:*) _subst_prefix_flagged=1 ;;
     test-fixture-clean-*|test-fixture-prose-only.sh:*) _clean_flagged="${_clean_flagged}${_entry}; " ;;
   esac
 done
@@ -441,6 +452,12 @@ else
   fail "negative control: 'HOME=x rm ... \$HOME/.pi' on one line escaped detection"
 fi
 
+if [[ "$_subst_prefix_flagged" -eq 1 ]]; then
+  pass "negative control: a HOME=\$(cmd with space) prefix before rm of \$HOME/.pi is flagged"
+else
+  fail "negative control: 'HOME=\$(mktemp -d) rm ... \$HOME/.pi' (space inside \$(...)) escaped detection"
+fi
+
 if [[ -z "$_clean_flagged" ]]; then
   pass "positive controls: sandboxed / read-only / differently-named-var / prose-only fixtures are all correctly left clean"
 else
@@ -454,14 +471,13 @@ trap - EXIT
 # Case 2: REAL SCAN of tests/*.sh -- the actual recurrence guard.
 # ============================================================================
 echo ""
-echo "--- Case 2: live scan of tests/*.sh for unsandboxed \$HOME/.pi writes ---"
-
 # RC_HOME_PI_GUARD_SCAN_DIR aims the live scan at another directory -- the
 # positive control for this guard itself: aimed at a scratch dir holding a
 # planted leak, the whole test must exit non-zero naming it. Default: tests/.
 # This file is excluded: its Case 1 fixtures are quoted heredoc text written
 # into a mktemp dir, and they leak on purpose.
 _SCAN_DIR="${RC_HOME_PI_GUARD_SCAN_DIR:-$SCRIPT_DIR}"
+echo "--- Case 2: live scan of ${_SCAN_DIR}/*.sh for unsandboxed \$HOME/.pi writes ---"
 scan_dir_for_leaks "$_SCAN_DIR" "$(basename "${BASH_SOURCE[0]}")"
 
 if [[ "${#WRITE_LEAKS[@]}" -eq 0 ]]; then
