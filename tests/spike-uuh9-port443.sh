@@ -434,7 +434,7 @@ echo ""
 echo "=== Q2-baseline: example.com with allow@example.com (all ports), probing :80 ==="
 if msb create "$IMAGE" --name "$CAGE_Q2_BASELINE" --log-level trace \
     --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
-    --net-default deny --net-rule "allow@example.com" >/tmp/spike-uuh9-q2base-boot.err 2>&1; then
+    --net-default deny --tls-intercept --net-rule "allow@example.com" >/tmp/spike-uuh9-q2base-boot.err 2>&1; then
   pass "Q2-baseline setup: cage boots with allow@example.com (all ports)"
 else
   fail "Q2-baseline setup: cage failed to boot" "$(cat /tmp/spike-uuh9-q2base-boot.err)"
@@ -452,13 +452,23 @@ fi
 
 # ===========================================================================
 # Q2-scoped: example.com, :tcp:443 ONLY (hand-built). Positive control on
-# :443 (must be real data) + block probe on :80 (must be zero bytes).
+# :443 (must be real data) + block probe on :80 (must be zero bytes, or
+# msb's own policy-denial page -- see the :80 probe below).
+#
+# --tls-intercept on both Q2 cages (rip-cage-nmkt): msb 0.7.3+ runs strict
+# hostname policy by default, which checks an HTTPS host allowed by name
+# against the request's real authority and so needs TLS interception. The
+# shipped template gets interception from its bound CCTOK secret; these
+# hand-built cages bind no secret, so without the flag every :443 call dies
+# at the handshake ("TCP egress denied by strict hostname policy") and the
+# positive control can never pass. The flag reproduces the template's
+# effective posture: strict on, interception on.
 # ===========================================================================
 echo ""
 echo "=== Q2-scoped: example.com with allow@example.com:tcp:443 ==="
 if msb create "$IMAGE" --name "$CAGE_Q2_SCOPED" --log-level trace \
     --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
-    --net-default deny --net-rule "allow@example.com:tcp:443" >/tmp/spike-uuh9-q2scoped-boot.err 2>&1; then
+    --net-default deny --tls-intercept --net-rule "allow@example.com:tcp:443" >/tmp/spike-uuh9-q2scoped-boot.err 2>&1; then
   pass "Q2-scoped setup: cage boots with allow@example.com:tcp:443"
 else
   fail "Q2-scoped setup: cage failed to boot" "$(cat /tmp/spike-uuh9-q2scoped-boot.err)"
@@ -474,15 +484,30 @@ else
   fail "Q2-scoped-443-control: expected real data from example.com:443 under the :443-scoped rule (positive control)" "${Q2_SCOPED_443} err=$(cat /tmp/spike-uuh9-q2scoped-443.err)"
 fi
 
-Q2_SCOPED_80=$(msb exec "$CAGE_Q2_SCOPED" -- curl -sS -o /dev/null -w '%{http_code} %{size_download}' --max-time 8 http://example.com:80 2>/tmp/spike-uuh9-q2scoped-80.err)
+# The body is captured, not discarded: msb 0.7.9+ answers a policy-denied
+# plain-HTTP request with its OWN 403 JSON page by default (upstream PR #1825,
+# "return JSON policy denials by default"; docs/networking/overview.mdx:
+# "Network-policy denials never reach the upstream server"). msb <0.7.9
+# refused the connect instead (zero bytes). Either is a block. Any other
+# body -- above all example.com's own HTML -- is upstream bytes leaking
+# past a :443-only rule and FAILS. (rip-cage-nmkt)
+Q2_SCOPED_80_RAW=$(msb exec "$CAGE_Q2_SCOPED" -- curl -sS -w '\n%{http_code} %{size_download}' --max-time 8 http://example.com:80 2>/tmp/spike-uuh9-q2scoped-80.err)
 Q2_SCOPED_80_CURL_RC=$?
+Q2_SCOPED_80="${Q2_SCOPED_80_RAW##*$'\n'}"
+Q2_SCOPED_80_BODY="${Q2_SCOPED_80_RAW%$'\n'*}"
+[[ "$Q2_SCOPED_80_RAW" == *$'\n'* ]] || Q2_SCOPED_80_BODY=""
 echo "Q2-scoped example.com:80 (block probe) result: ${Q2_SCOPED_80} (curl rc=${Q2_SCOPED_80_CURL_RC})"
+echo "Q2-scoped example.com:80 response body (verbatim): ${Q2_SCOPED_80_BODY}"
 echo "Q2-scoped example.com:80 curl stderr (verbatim, from curl's OWN client-side perspective on the block): $(cat /tmp/spike-uuh9-q2scoped-80.err)"
+Q2_SCOPED_80_CODE="${Q2_SCOPED_80%% *}"
 Q2_SCOPED_80_SIZE="${Q2_SCOPED_80##* }"
 if [[ "$Q2_SCOPED_80_SIZE" == "0" ]]; then
   pass "Q2-scoped-80-block: example.com:80 returned ZERO bytes under the :443-scoped rule (${Q2_SCOPED_80}) -- confirmed BLOCKED, not a dead network (baseline+443-control both delivered real data)"
+elif [[ "$Q2_SCOPED_80_CODE" == "403" ]] && [[ "${#Q2_SCOPED_80_BODY}" == "$Q2_SCOPED_80_SIZE" ]] \
+    && printf '%s' "$Q2_SCOPED_80_BODY" | jq -e '(keys == ["code","domain","message"]) and .code == "network_policy_denied" and .domain == "example.com"' >/dev/null 2>&1; then
+  pass "Q2-scoped-80-block: example.com:80 got msb's OWN policy-denial page under the :443-scoped rule (${Q2_SCOPED_80}, body is exactly msb's network_policy_denied JSON, no upstream bytes) -- confirmed BLOCKED, not a dead network (baseline+443-control both delivered real data)"
 else
-  fail "Q2-scoped-80-block: expected zero bytes from example.com:80 under the :443-scoped rule" "${Q2_SCOPED_80}"
+  fail "Q2-scoped-80-block: expected zero bytes or msb's own network_policy_denied page from example.com:80 under the :443-scoped rule" "${Q2_SCOPED_80} body=${Q2_SCOPED_80_BODY}"
 fi
 
 # ===========================================================================
@@ -555,11 +580,16 @@ echo "    system, which is the only source the real fix-hint miner reads). Under
 echo "    curl's stderr and msb's trace stream are captured concurrently and can interleave"
 echo "    mid-line, corrupting/truncating the 'curl: (7) Failed to' prefix -- the"
 echo "    'example\.com port 80' fragment plus a bare hypervisor-trace tail is that corruption,"
-echo "    not a new signal."
-GAPB_FILTERED_HITS=$(printf '%s\n' "$GAPB_BROAD_HITS" | grep -viE 'virtio::mmio\[block\]|virtio::console::(device|process_rx|process_tx)|hickory_(proto|net)::udp::udp_stream: binding UDP socket port=|curl: \(7\) Failed to|Connection refused|msb_krun_vmm::|msb_krun_hvf:|example\.com port 80' || true)
+echo "    not a new signal. Added for msb 0.7.9+ (rip-cage-nmkt): msb's own 403 policy-denial"
+echo "    body, which is my curl probe's stdout (asserted in Q2-scoped-80-block), not an msb"
+echo "    log line; the TLS interceptor's rustls:: handshake trace and its multi-line"
+echo "    'Supported<X> {' struct-dump continuation lines, from the :443 positive control"
+echo "    under --tls-intercept; and the host<->guest 'agent relay:' lifecycle lines, which"
+echo "    name the agent channel's own port and dual_port, not guest egress."
+GAPB_FILTERED_HITS=$(printf '%s\n' "$GAPB_BROAD_HITS" | grep -viE 'virtio::mmio\[block\]|virtio::console::(device|process_rx|process_tx)|hickory_(proto|net)::udp::udp_stream: binding UDP socket port=|curl: \(7\) Failed to|Connection refused|msb_krun_vmm::|msb_krun_hvf:|example\.com port 80|"code":"network_policy_denied","domain":"example\.com"|rustls::|^[[:space:]]+[a-z_]+: Supported[A-Za-z]+ \{|microsandbox_runtime::runner::relay: agent relay:' || true)
 if [[ -z "$GAPB_FILTERED_HITS" ]]; then
   echo "(after filtering known non-network noise: ZERO remaining lines)"
-  pass "Gap-B broad-scan: verbatim raw dump above is entirely KNOWN non-network noise (virtio block-device interrupts, guest console lifecycle lines, the DNS resolver's own UDP-bind log, msb_krun_vmm/msb_krun_hvf hypervisor-internals trace lines, and my own curl probe's client-side 'Connection refused' stderr -- sometimes interleaved/corrupted with a hypervisor trace line under --source all's concurrent capture) -- once that noise is excluded, msb ITSELF emits ZERO log lines of any kind, on any source (system, all), attributable to the example.com:80 wrong-port block. The one substantive finding: curl's OWN client-side view of the wrong-port block is an immediate 'Connection refused' (rc=7) -- NOT a hang -- but that is curl's exec-session stderr, not an msb diagnostic, and is invisible on --source system. The D4 fix-hint miner's exact-pattern check (Gap-B.2, also PASS) already confirmed the miner sees nothing; this broader scan confirms there is no OTHER msb-emitted log line anywhere a smarter miner could key on either -- a wrong-port block on an allowed domain is genuinely invisible to msb's own log output at trace level, not just to the miner's specific DNS-domain pattern."
+  pass "Gap-B broad-scan: verbatim raw dump above is entirely KNOWN non-network noise (virtio block-device interrupts, guest console lifecycle lines, the DNS resolver's own UDP-bind log, msb_krun_vmm/msb_krun_hvf hypervisor-internals trace lines, my own curl probe's client-side 'Connection refused' stderr or msb's 403 policy-denial body on its stdout -- sometimes interleaved/corrupted with a hypervisor trace line under --source all's concurrent capture -- the TLS interceptor's rustls handshake trace, and the agent-relay lifecycle lines) -- once that noise is excluded, msb ITSELF emits ZERO log lines of any kind, on any source (system, all), attributable to the example.com:80 wrong-port block. The one substantive finding: curl's OWN client-side view of the wrong-port block is immediate -- 'Connection refused' (rc=7) on msb <0.7.9, msb's own 403 network_policy_denied page on 0.7.9+ -- NOT a hang -- but that is curl's exec-session output, not an msb diagnostic, and is invisible on --source system. The D4 fix-hint miner's exact-pattern check (Gap-B.2, also PASS) already confirmed the miner sees nothing; this broader scan confirms there is no OTHER msb-emitted log line anywhere a smarter miner could key on either -- a wrong-port block on an allowed domain is genuinely invisible to msb's own log output at trace level, not just to the miner's specific DNS-domain pattern."
 else
   echo "$GAPB_FILTERED_HITS"
   fail "Gap-B broad-scan: found line(s) NOT matching the known noise patterns -- inspect verbatim, this may be a genuine msb-emitted network-deny signal the miner's pattern misses" "$GAPB_FILTERED_HITS"
