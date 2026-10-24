@@ -747,7 +747,7 @@ _up_prepare_docker_mounts() {
           echo "[rip-cage] Warning: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; skipping mount (mounts.symlinks.on_dangling=skip)." >&2
           continue
         fi
-        echo "[rip-cage] Error: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; refuse to mount. Remove the symlink or set mounts.symlinks.on_dangling=skip to unblock." >&2
+        echo "[rip-cage] Error: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; refuse to mount. Remove the symlink or repoint it at a copy outside the reserved path, then re-run rc up." >&2
         exit 1
       fi
 

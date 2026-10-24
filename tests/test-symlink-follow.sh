@@ -500,6 +500,14 @@ test_s14_fhs_reserved_collision() {
 
     if [[ "$exit_code" -ne 0 ]] && echo "$out" | grep -q "reserved cage path"; then
       pass "14" "FHS reserved path collision (/etc/hosts) → abort loud"
+      # rip-cage-36w6: the remedy must not name the knob ADR-031 D2 retired.
+      if echo "$out" | grep -q "on_dangling"; then
+        fail "14b" "refusal names retired on_dangling knob" "out=$out"
+      elif echo "$out" | grep -q "Remove the symlink or repoint it"; then
+        pass "14b" "refusal names a remedy that works today (no retired knob)"
+      else
+        fail "14b" "refusal lacks the remedy text" "out=$out"
+      fi
     else
       fail "14" "FHS reserved collision check" "exit=$exit_code out=$out"
     fi
