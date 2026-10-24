@@ -143,9 +143,19 @@ echo "=== Test 8: rc up accepts a valid path (dry-run, no Docker side-effects) =
 # unbound variable behind.
 test_dir=$(mktemp -d)
 # --dry-run: validation passes, no docker pull/build/create; image-agnostic.
-valid_err=$(RC_CAGE_CONF="$(cage_conf_for "$test_dir")" "$RC" --dry-run up "$test_dir" 2>&1) || true
-# Should NOT contain path validation errors
-if echo "$valid_err" | grep -q "does not exist\|not a directory\|control characters"; then
+# Runs under a throwaway HOME (never the operator's real ~/.claude): rc reads
+# $HOME/.claude/skills, and a broken symlink there makes rc print a
+# "Warning: asset symlink ... does not exist" line that is not a path rejection
+# (rip-cage-fjz6). T8_HOME_PLANT=dangling plants one to prove the grep ignores it.
+t8_home=$(mktemp -d)
+mkdir -p "$t8_home/.claude/skills"
+[[ "${T8_HOME_PLANT:-}" == dangling ]] && ln -s /nonexistent-fjz6-target "$t8_home/.claude/skills/dangling"
+valid_err=$(HOME="$t8_home" RC_CAGE_CONF="$(cage_conf_for "$test_dir")" "$RC" --dry-run up "${T8_PATH:-$test_dir}" 2>&1) || true
+rm -f "$t8_home/.claude/skills/dangling"
+rmdir "$t8_home/.claude/skills" "$t8_home/.claude" "$t8_home" 2>/dev/null || true
+# Anchored to validate_path's own refusal text (cli/lib/path.sh), not any line
+# that merely mentions "does not exist".
+if echo "$valid_err" | grep -Eq "^Error: (path contains control characters|.* does not exist\.|.* is not a directory)"; then
   fail "rc up rejected valid path. Got: $valid_err"
 else
   pass "rc up accepted valid path (dry-run previews action without Docker)"
