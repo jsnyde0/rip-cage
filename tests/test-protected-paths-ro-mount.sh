@@ -32,7 +32,7 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not on PATH"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 
-T=$(mktemp -d /private/tmp/rc-pp-ro-XXXXXX)
+T=$(mktemp -d /tmp/rc-pp-ro-XXXXXX) && T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 
 export RC_PROTECTED_PATHS="${REPO_ROOT}/share/rip-cage/protected-paths"

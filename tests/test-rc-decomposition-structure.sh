@@ -1207,6 +1207,43 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# (m) rip-cage-0sit: no mktemp template under /private/. /private/tmp exists
+#     only on macOS; on Linux (CI) mktemp fails, the var is empty, and every
+#     fixture path collapses to /proj, /bin/msb, ... A follow-on
+#     `T=$(cd "$T" && pwd -P)` then yields the CURRENT dir, and the EXIT trap's
+#     `rm -rf "$T"` deleted the CI checkout. Template under /tmp and resolve
+#     with pwd -P instead -- same physical path on macOS, valid on Linux.
+# ---------------------------------------------------------------------------
+echo "=== (m) no mktemp template under /private/ (macOS-only; rip-cage-0sit) ==="
+
+_M_RE='mktemp[^#]*/private/'
+_m_offenders=""
+# Match only the code before the first `#`, so prose naming the shape is not a hit.
+while IFS=: read -r _m_file _m_lineno _m_text; do
+  [[ -n "$_m_lineno" ]] || continue
+  [[ "$(basename "$_m_file")" == test-rc-decomposition-structure.sh ]] && continue
+  if printf '%s\n' "${_m_text%%#*}" | grep -qE "$_M_RE"; then
+    _m_offenders="${_m_offenders}$(basename "$_m_file"):${_m_lineno} "
+  fi
+done < <(grep -nE "$_M_RE" "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh \
+  "${REPO_ROOT}"/tests/*.sh "${REPO_ROOT}"/tests/*/*.sh "${REPO_ROOT}"/tests/*/*/*.sh 2>/dev/null || true)
+if [[ -z "$_m_offenders" ]]; then
+  pass "(m)" "no mktemp template under /private/ in rc, cli/ or tests/"
+else
+  echo "    fix: T=\$(mktemp -d /tmp/<name>-XXXXXX) && T=\$(cd \"\$T\" && pwd -P) || { echo \"FAIL: cannot create a temp dir\"; exit 1; }"
+  fail "(m)" "mktemp template(s) under /private/ -- fails on Linux" "${_m_offenders% }"
+fi
+
+# NEGATIVE CONTROL: the matcher must fire on the shape that broke CI.
+if printf '%s\n' 'T=$(mktemp -d /private/tmp/rc-x-XXXXXX)' | grep -qE "$_M_RE"; then
+  pass "(m2)" "the matcher fires on a planted /private/tmp template -- (m) is not vacuous"
+else
+  fail "(m2)" "the matcher did NOT fire on a planted /private/tmp template -- (m) proves nothing" "canary missed"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo "=== Results ==="

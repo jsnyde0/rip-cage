@@ -37,8 +37,7 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 command -v git >/dev/null 2>&1 || { echo "SKIP: git not on PATH"; exit 0; }
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not on PATH"; exit 0; }
 
-T=$(mktemp -d /private/tmp/rc-wt-validity-XXXXXX)
-T=$(cd "$T" && pwd -P)
+T=$(mktemp -d /tmp/rc-wt-validity-XXXXXX) && T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 
 CALL_LOG="${T}/calls.log"

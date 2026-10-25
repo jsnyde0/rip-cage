@@ -25,7 +25,7 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-T=$(mktemp -d /private/tmp/rc-sha256-XXXXXX)
+T=$(mktemp -d /tmp/rc-sha256-XXXXXX) && T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 
 # SHA-256 of the three bytes "abc" (FIPS 180-2 test vector).

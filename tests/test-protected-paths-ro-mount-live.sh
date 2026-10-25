@@ -55,10 +55,10 @@ source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 
 # The WORKSPACE comes from the short scratch root, so the cage name rc derives
 # from it is rc-t-* -- the only shape _scratch_cage_name_is_ours will sweep
-# after a SIGKILL. The fixtures live apart from it under /private/tmp (never
-# /tmp: msb does not follow a host-side symlink in a mount source).
+# after a SIGKILL. The fixtures live apart from it under /tmp, resolved with
+# pwd -P (msb does not follow a host-side symlink in a mount source).
 WS=$(_host_scratch_mktemp_d dnwv)
-T=$(mktemp -d /private/tmp/rc-dnwv-live-XXXXXX)
+T=$(mktemp -d /tmp/rc-dnwv-live-XXXXXX) && T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 cleanup() { rm -rf "$T" "$WS"; }
 trap cleanup EXIT
 

@@ -73,7 +73,7 @@ _link_real_docker() {
 # invoked. Echoes the bin dir.
 _fake_runtime_bin() {
   local _log="$1" _bin
-  _bin=$(mktemp -d /private/tmp/rc-auth-secret-fakebin-XXXXXX)
+  _bin=$(mktemp -d /tmp/rc-auth-secret-fakebin-XXXXXX)
   cat > "${_bin}/docker" <<FAKEEOF
 #!/usr/bin/env bash
 echo "docker \$*" >> "${_log}"
@@ -100,11 +100,11 @@ FAKEEOF
 # suite has no code path left that would even try).
 _fresh_home() {
   local _h
-  # /private/tmp, never /tmp: msb does not follow a host-side symlink in a
-  # bind source, and on macOS /tmp IS a symlink to /private/tmp (measured,
-  # msb 0.6.18, spike rip-cage-ely4.16). rc up's mount-side floor resolves
-  # paths before this matters for --dry-run too, so stay consistent.
-  _h=$(mktemp -d /private/tmp/rc-auth-secret-XXXXXX)
+  # Resolved with pwd -P: msb does not follow a host-side symlink in a bind
+  # source, and on macOS /tmp IS a symlink to /private/tmp (measured, msb
+  # 0.6.18, spike rip-cage-ely4.16). /tmp, not a /private/tmp template:
+  # Linux has no /private (rip-cage-0sit).
+  _h=$(mktemp -d /tmp/rc-auth-secret-XXXXXX) && _h=$(cd "$_h" && pwd -P) || return 1
   _link_real_docker "$_h"
   printf '%s\n' "$_h"
 }
@@ -412,7 +412,7 @@ mkdir -p "$PROJ_E" "${HOME_E}/.claude"
 git -C "$PROJ_E" init -q >/dev/null 2>&1
 echo '{"fake":"creds"}' > "${HOME_E}/.claude/.credentials.json"
 CONF_E=$(_plain_conf "$HOME_E" "$PROJ_E")
-CALL_LOG_E=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_E=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_E=$(_fake_runtime_bin "$CALL_LOG_E")
 out_e=$(HOME="$HOME_E" XDG_CONFIG_HOME="${HOME_E}/.config" RC_CAGE_CONF="$CONF_E" PATH="${FAKE_BIN_E}:${PATH}" bash "$RC" up --dry-run "$PROJ_E" 2>&1)
 rc_e=$?
@@ -448,7 +448,7 @@ PROJ_F="${HOME_F}/proj"
 mkdir -p "$PROJ_F"
 git -C "$PROJ_F" init -q >/dev/null 2>&1
 CONF_F=$(_cctok_conf "$HOME_F" "$PROJ_F")
-CALL_LOG_F=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_F=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_F=$(_fake_runtime_bin "$CALL_LOG_F")
 out_f=$(HOME="$HOME_F" XDG_CONFIG_HOME="${HOME_F}/.config" RC_CAGE_CONF="$CONF_F" PATH="${FAKE_BIN_F}:${PATH}" bash "$RC" up "$PROJ_F" 2>&1 </dev/null)
 rc_f=$?
@@ -485,7 +485,7 @@ mkdir -p "$PROJ_F2"
 git -C "$PROJ_F2" init -q >/dev/null 2>&1
 _write_cctok "$HOME_F2" 600 "$DUMMY_TOKEN"
 CONF_F2=$(_cctok_conf "$HOME_F2" "$PROJ_F2")
-CALL_LOG_F2=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_F2=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_F2=$(_fake_runtime_bin "$CALL_LOG_F2")
 out_f2=$(HOME="$HOME_F2" XDG_CONFIG_HOME="${HOME_F2}/.config" RC_CAGE_CONF="$CONF_F2" PATH="${FAKE_BIN_F2}:${PATH}" bash "$RC" up --dry-run "$PROJ_F2" 2>&1)
 if printf '%s\n' "$out_f2" | grep -q '^Would run: msb create'; then
@@ -566,7 +566,7 @@ echo ""
 echo "=== Test (h): rc auth passes on a 0600 file under a GNU-shaped fake stat ==="
 HOME_H=$(_fresh_home)
 _write_cctok "$HOME_H" 600 "$DUMMY_TOKEN"
-STAT_BIN_H=$(mktemp -d /private/tmp/rc-auth-secret-fakestat-XXXXXX)
+STAT_BIN_H=$(mktemp -d /tmp/rc-auth-secret-fakestat-XXXXXX)
 _fake_stat_gnu "$STAT_BIN_H"
 out_h=$(HOME="$HOME_H" XDG_CONFIG_HOME="${HOME_H}/.config" PATH="${STAT_BIN_H}:${PATH}" bash "$RC" auth 2>&1)
 rc_h=$?
@@ -581,7 +581,7 @@ echo ""
 echo "=== Test (i): rc auth passes on a 0600 file under a BSD-shaped fake stat ==="
 HOME_I=$(_fresh_home)
 _write_cctok "$HOME_I" 600 "$DUMMY_TOKEN"
-STAT_BIN_I=$(mktemp -d /private/tmp/rc-auth-secret-fakestat-XXXXXX)
+STAT_BIN_I=$(mktemp -d /tmp/rc-auth-secret-fakestat-XXXXXX)
 _fake_stat_bsd "$STAT_BIN_I"
 out_i=$(HOME="$HOME_I" XDG_CONFIG_HOME="${HOME_I}/.config" PATH="${STAT_BIN_I}:${PATH}" bash "$RC" auth 2>&1)
 rc_i=$?
@@ -632,7 +632,7 @@ PROJ_J="${HOME_J}/proj"
 mkdir -p "$PROJ_J" "${HOME_J}/.config/rip-cage/secrets"
 git -C "$PROJ_J" init -q >/dev/null 2>&1
 CONF_J=$(_conf_with_extra_mount "$HOME_J" "$PROJ_J" "${HOME_J}/.config" "/home/agent/.config-leak")
-CALL_LOG_J=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_J=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_J=$(_fake_runtime_bin "$CALL_LOG_J")
 out_j=$(HOME="$HOME_J" XDG_CONFIG_HOME="${HOME_J}/.config" RC_CAGE_CONF="$CONF_J" PATH="${FAKE_BIN_J}:${PATH}" bash "$RC" --output json up --dry-run "$PROJ_J" 2>&1)
 rc_j=$?
@@ -668,7 +668,7 @@ git -C "$PROJ_J2" init -q >/dev/null 2>&1
 # API-key-only user's plain "~/.config for nvim" case the over-broad half of
 # the old check refused with no way past it.
 CONF_J2=$(_conf_with_extra_mount "$HOME_J2" "$PROJ_J2" "${HOME_J2}/.config" "/home/agent/.config-leak")
-CALL_LOG_J2=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_J2=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_J2=$(_fake_runtime_bin "$CALL_LOG_J2")
 out_j2=$(HOME="$HOME_J2" XDG_CONFIG_HOME="${HOME_J2}/.config" RC_CAGE_CONF="$CONF_J2" PATH="${FAKE_BIN_J2}:${PATH}" bash "$RC" up --dry-run "$PROJ_J2" 2>&1)
 rc_j2=$?
@@ -697,7 +697,7 @@ PROJ_K="${HOME_K}/proj"
 mkdir -p "$PROJ_K"
 git -C "$PROJ_K" init -q >/dev/null 2>&1
 CONF_K=$(_plain_conf "$HOME_K" "$PROJ_K")
-CALL_LOG_K=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_K=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_K=$(_fake_runtime_bin "$CALL_LOG_K")
 out_k=$(HOME="$HOME_K" XDG_CONFIG_HOME="${HOME_K}/.config" RC_CAGE_CONF="$CONF_K" PATH="${FAKE_BIN_K}:${PATH}" bash "$RC" up --dry-run "$PROJ_K" 2>&1)
 rc_k=$?
@@ -728,7 +728,7 @@ mkdir -p "$PROJ_L" "${HOME_L}/.claude/skills" "${HOME_L}/.config/skill-target" "
 git -C "$PROJ_L" init -q >/dev/null 2>&1
 ln -s "${HOME_L}/.config/skill-target" "${HOME_L}/.claude/skills/my-skill"
 CONF_L=$(_plain_conf "$HOME_L" "$PROJ_L")
-CALL_LOG_L=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_L=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_L=$(_fake_runtime_bin "$CALL_LOG_L")
 out_l=$(HOME="$HOME_L" XDG_CONFIG_HOME="${HOME_L}/.config" RC_CAGE_CONF="$CONF_L" PATH="${FAKE_BIN_L}:${PATH}" bash "$RC" up --dry-run "$PROJ_L" 2>&1)
 rc_l=$?
@@ -763,7 +763,7 @@ mkdir -p "$PROJ_L2" "${HOME_L2}/.claude/skills" "${HOME_L2}/.config/skill-target
 git -C "$PROJ_L2" init -q >/dev/null 2>&1
 ln -s "${HOME_L2}/.config/skill-target" "${HOME_L2}/.claude/skills/my-skill"
 CONF_L2=$(_plain_conf "$HOME_L2" "$PROJ_L2")
-CALL_LOG_L2=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_L2=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_L2=$(_fake_runtime_bin "$CALL_LOG_L2")
 out_l2=$(HOME="$HOME_L2" XDG_CONFIG_HOME="${HOME_L2}/.config" RC_CAGE_CONF="$CONF_L2" PATH="${FAKE_BIN_L2}:${PATH}" bash "$RC" up --dry-run "$PROJ_L2" 2>&1)
 rc_l2=$?
@@ -797,7 +797,7 @@ PROJ_M="${HOME_M}/proj"
 mkdir -p "$PROJ_M" "${HOME_M}/.config/worktrees/wt1" "${HOME_M}/.config/rip-cage/secrets"
 echo "gitdir: ${HOME_M}/.config/worktrees/wt1" > "${PROJ_M}/.git"
 CONF_M=$(_plain_conf "$HOME_M" "$PROJ_M")
-CALL_LOG_M=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+CALL_LOG_M=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_M=$(_fake_runtime_bin "$CALL_LOG_M")
 out_m=$(HOME="$HOME_M" XDG_CONFIG_HOME="${HOME_M}/.config" RC_CAGE_CONF="$CONF_M" PATH="${FAKE_BIN_M}:${PATH}" bash "$RC" up --dry-run "$PROJ_M" 2>&1)
 argv_line_m=$(printf '%s\n' "$out_m" | grep '^Would run: msb create' || true)
