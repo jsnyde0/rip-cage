@@ -116,7 +116,8 @@ echo "=== Test 2: RC_MULTIPLEXER naming a multiplexer the image lacks refuses pr
 # Resolved with pwd -P: msb does not follow a host-side symlink in a bind
 # source, and on macOS /tmp IS a symlink to /private/tmp. Linux has no
 # /private, so a /private/tmp template fails there (rip-cage-0sit).
-T2_ROOT=$(mktemp -d /tmp/rc-ely472-XXXXXX) && T2_ROOT=$(cd "$T2_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T2_ROOT=$(mktemp -d /tmp/rc-ely472-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T2_ROOT=$(cd "$T2_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T2_BIN="${T2_ROOT}/bin"
 T2_PROJ="${T2_ROOT}/proj"
 T2_LOG="${T2_ROOT}/msb-invocations.log"

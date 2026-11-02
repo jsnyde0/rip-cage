@@ -45,7 +45,8 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-T=$(mktemp -d /tmp/rc-reach-XXXXXX) && T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T=$(mktemp -d /tmp/rc-reach-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 mkdir -p "${T}/bin"
 

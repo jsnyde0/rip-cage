@@ -1117,7 +1117,8 @@ echo "=== Test 60: native cage config + protected-paths floor (rip-cage-ely4.9) 
 # spike rip-cage-ely4.16). An unresolved /tmp fixture would fail at boot, not
 # here. Linux has no /private, so a /private/tmp template fails there
 # (rip-cage-0sit).
-E49_ROOT=$(mktemp -d /tmp/rc-ely49-XXXXXX) && E49_ROOT=$(cd "$E49_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+E49_ROOT=$(mktemp -d /tmp/rc-ely49-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+E49_ROOT=$(cd "$E49_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 E49_HOME="${E49_ROOT}/home"
 E49_PROJ="${E49_ROOT}/proj"
 E49_BIN="${E49_ROOT}/bin"
@@ -1330,7 +1331,8 @@ fi
 echo ""
 echo "=== Test 61: rc up --replace recreates a STOPPED cage (rip-cage-ely4.10) ==="
 
-T61_ROOT=$(mktemp -d /tmp/rc-ely410-XXXXXX) && T61_ROOT=$(cd "$T61_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T61_ROOT=$(mktemp -d /tmp/rc-ely410-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T61_ROOT=$(cd "$T61_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T61_BIN="${T61_ROOT}/bin"
 T61_PROJ="${T61_ROOT}/proj"
 T61_LOG="${T61_ROOT}/msb-invocations.log"
@@ -1564,7 +1566,8 @@ echo "=== Test 63: no --net-default in the argv; a config without network.policy
 
 # Resolved with pwd -P for the same reason as Test 60: on macOS /tmp is a
 # symlink and msb does not follow one in a bind source.
-T63_ROOT=$(mktemp -d /tmp/rc-ely477-XXXXXX) && T63_ROOT=$(cd "$T63_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T63_ROOT=$(mktemp -d /tmp/rc-ely477-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T63_ROOT=$(cd "$T63_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T63_HOME="${T63_ROOT}/home"
 T63_PROJ="${T63_ROOT}/proj"
 T63_BIN="${T63_ROOT}/bin"

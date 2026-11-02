@@ -21,7 +21,8 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-T=$(mktemp -d /tmp/rc-exec-stdin-XXXXXX) && T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T=$(mktemp -d /tmp/rc-exec-stdin-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 mkdir -p "${T}/bin"
 cat > "${T}/bin/msb" <<'FAKEEOF'

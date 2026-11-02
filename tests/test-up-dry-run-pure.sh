@@ -29,7 +29,8 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not on PATH"; exit 0; }
 
-T=$(mktemp -d /tmp/rc-dry-run-pure-XXXXXX) && T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T=$(mktemp -d /tmp/rc-dry-run-pure-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 
 RC_VER=$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")

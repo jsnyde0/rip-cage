@@ -1235,6 +1235,7 @@ else
 fi
 
 # NEGATIVE CONTROL: the matcher must fire on the shape that broke CI.
+# shellcheck disable=SC2016 # literal fixture text: the single quotes must not expand
 if printf '%s\n' 'T=$(mktemp -d /private/tmp/rc-x-XXXXXX)' | grep -qE "$_M_RE"; then
   pass "(m2)" "the matcher fires on a planted /private/tmp template -- (m) is not vacuous"
 else
