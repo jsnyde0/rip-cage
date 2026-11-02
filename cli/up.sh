@@ -2653,6 +2653,15 @@ cmd_up() {
     exit 1
   fi
 
+  # rip-cage-3nzx: every mount check below reads the config through
+  # _protected_paths_conf_bind_mounts, which refuses a mount path holding ':'.
+  # Run it once first, so that refusal carries its own code rather than the
+  # first caller's.
+  if ! _protected_paths_conf_bind_mounts "$_UP_CAGE_CONF" >/dev/null; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} has a mount line rc cannot read unambiguously (see stderr)" "MOUNT_PATH_AMBIGUOUS"
+    exit 1
+  fi
+
   # rip-cage-ely4.7.17 fix round 4: this used to be one combined check
   # (fix round 3) sharing CAGE_CONFIG_INSIDE_MOUNT for two different
   # refusals; split back into two calls with their own JSON error codes so a

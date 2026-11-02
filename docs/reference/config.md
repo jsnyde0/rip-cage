@@ -57,6 +57,8 @@ mounts:
   - "HOST_PATH:GUEST_PATH:ro"     # read-only
 ```
 
+`GUEST_PATH` is absolute. The options field after it is comma-separated: `ro`, `rw`, or `key=value` (`ro,uid=1000,gid=1000`). Neither path may contain `:` — msb rejects it in both forms and has no escape, so `rc up` refuses such a line before any msb call (`MOUNT_PATH_AMBIGUOUS`). Rename the directory, or mount a `:`-free parent or subdirectory.
+
 The set that earns its place in almost every cage:
 
 ```yaml
@@ -189,6 +191,7 @@ The config is the whole project config, but a few things are computed from the h
 - **refuses to launch** a config that mounts a listed path directly;
 - **covers** any listed path found inside a mounted tree (an empty read-only file over a file, an empty tmpfs over a directory);
 - **refuses to launch** when a listed *file* sits inside a *read-only* mount, naming the file and the mount. msb cannot create a file cover inside a read-only mount, and the cage would die at boot. Narrow the mount so the file sits outside it (`examples/dotpi-factory` mounts `dotpi/scripts` and `dotpi/agent`, not the whole checkout), or move the file. A listed directory inside a read-only mount is still covered;
+- **refuses to launch** a mount line it cannot read unambiguously — a `:` inside a host or guest path — rather than scan the wrong tree;
 - **aborts** if the list is unreadable.
 
 You do not declare this, and a cage config cannot point at the list. It is operator-editable *configuration* — `$RC_PROTECTED_PATHS`, then `$XDG_CONFIG_HOME/rip-cage/protected-paths`, then the copy shipped beside `rc` — but it is not part of a cage's composition ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D5d, [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)).

@@ -160,11 +160,20 @@ _protected_paths_path_match() {
 # Echo one TAB-separated "HOST<TAB>GUEST<TAB>MODE" row per BIND mount declared
 # in the native msb config, MODE being "ro" or "rw". Both declaration forms are
 # read:
-#   - string form: "HOST:GUEST[:opts]"                 (":ro" -> ro)
+#   - string form: "HOST:/GUEST[:opts]"  (ro when "ro" is one of the
+#                  comma-separated opts, e.g. ":ro" or ":ro,uid=1000,gid=1000")
 #   - map form:    { bind: HOST, target: GUEST, ... }   (any readonly value but
 #                  absent/false -> ro: "yes" or "true" fail closed, not open)
 # Named-volume and tmpfs entries have no host path, so they carry nothing to
 # protect and are skipped.
+#
+# FAILS CLOSED (non-zero, every offending line named on stderr) when a bind
+# mount's host or guest path contains ':' (rip-cage-3nzx). A string form is
+# then ambiguous: splitting on the first ':' read "/x/a:b:/ref" as host /x/a,
+# so the protected-paths scan walked the wrong tree. msb 0.7.8 refuses every
+# such path in both forms and has no escape syntax (measured, on the bead),
+# so rc refuses the same lines by name rather than guessing a parse. Every
+# caller of this reader inherits the refusal.
 # --------------------------------------------------------------------------
 _protected_paths_conf_bind_mounts() {
   local _conf="$1"
@@ -174,15 +183,40 @@ _protected_paths_conf_bind_mounts() {
     return 1
   fi
 
-  # Both forms are normalized in jq rather than in shell: the string form's
-  # trailing option field is stripped first, so the split never mistakes ":ro"
-  # for a guest path.
+  # A string form is unambiguous only as exactly HOST:/GUEST or
+  # HOST:/GUEST:OPTS, every comma-separated OPTS element "ro", "rw" or
+  # key=value -- msb's own rule; anything else may be a guest-path fragment
+  # ("/x:/ref/a:b"), and rc could not classify the mount ro or rw from it.
+  local _bad
+  _bad="$(printf '%s\n' "${_json}" | jq -r '
+    .[]?
+    | if type == "string" then
+        split(":") as $f
+        | select(($f | length) > 1)
+        | select(($f | length) > 3
+                 or ($f[1] | startswith("/") | not)
+                 or (($f | length) == 3
+                     and ($f[2] | split(",") | any(. != "ro" and . != "rw" and (test("^[^=]+=") | not)))))
+      elif type == "object" and (.bind // null) != null then
+        select(((.bind | tostring) + "\n" + ((.target // "") | tostring)) | contains(":"))
+        | "bind: \(.bind), target: \(.target // "")"
+      else empty end
+  ')" || { echo "Error: could not read the mounts list in the cage config ${_conf}." >&2; return 1; }
+  if [[ -n "${_bad}" ]]; then
+    echo "Error: the cage config ${_conf} has a mount whose host or guest path contains ':' (or whose guest path is not absolute), so rc cannot tell where its host path ends:" >&2
+    printf '  %s\n' "${_bad}" >&2
+    echo "Refusing to launch before any msb call: rc's protected-paths scan could walk the wrong tree (ADR-031 D2, fail closed), and msb itself rejects ':' in a mount path, with no escape syntax. Rename the directory so its path carries no ':', or mount a ':'-free parent or subdirectory instead." >&2
+    return 1
+  fi
+
+  # Both forms are normalized in jq rather than in shell. A string form is now
+  # HOST:/GUEST[:OPTS] with no ':' inside either path.
   printf '%s\n' "${_json}" | jq -r '
     .[]?
     | if type == "string" then
-        (sub(":(ro|rw)$"; "")) as $t
-        | [ ($t | split(":")[0]), ($t | split(":")[1:] | join(":")),
-            (if test(":ro$") then "ro" else "rw" end) ]
+        split(":") as $f
+        | [ $f[0], ($f[1] // ""),
+            (if (($f[2] // "") | split(",") | index("ro")) != null then "ro" else "rw" end) ]
       elif type == "object" and (.bind // null) != null then
         [ .bind, (.target // ""), (if (.readonly // false) != false then "ro" else "rw" end) ]
       else empty end
