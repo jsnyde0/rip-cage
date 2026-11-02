@@ -1739,12 +1739,43 @@ _up_start_container() {
 _up_init_container() {
   local _name="$1"
   _UP_INIT_OK=true
+  _up_apply_guest_file_covers "$_name" || { _UP_INIT_OK=false; return 0; }
   log "Running init script..."
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     _msb_exec "$_name" -- /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || _UP_INIT_OK=false
   else
     _msb_exec "$_name" -- /usr/local/bin/init-rip-cage.sh || _UP_INIT_OK=false
   fi
+}
+
+
+# _up_apply_guest_file_covers NAME (rip-cage-849o) — cover, as guest root,
+# every protected FILE inside a read-only mount (_UP_GUEST_FILE_COVERS, from
+# _protected_paths_enforce), by running share/rip-cage/guest-file-covers.sh's
+# text with the targets as argv. Runs on every create and every resume, after
+# boot and BEFORE init, so the floor probe stays init's first act (ADR-031
+# D5b) and no agent starts beside an uncovered file. The script and its list
+# come from the host at each call, never from the guest. A missing script or
+# any failed cover returns non-zero, and the caller stops the cage (fail
+# closed). Always runs, with zero targets too, so the guest's record is
+# rewritten and a stale one never survives a resume.
+# Globals read: _UP_GUEST_FILE_COVERS, SCRIPT_DIR, OUTPUT_FORMAT
+_up_apply_guest_file_covers() {
+  local _name="$1" _script="${SCRIPT_DIR}/share/rip-cage/guest-file-covers.sh" _text _rc=0
+  local -a _targets=(${_UP_GUEST_FILE_COVERS[@]+"${_UP_GUEST_FILE_COVERS[@]}"})
+  if ! _text=$(cat "$_script" 2>/dev/null) || [[ -z "$_text" ]]; then
+    echo "Error: cannot read ${_script}, the in-guest cover for protected files inside read-only mounts. Refusing to run init (ADR-031 D2, fail closed). Reinstall rc." >&2
+    return 1
+  fi
+  if [[ ${#_targets[@]} -gt 0 ]]; then
+    log "Covering ${#_targets[@]} protected file(s) inside read-only mounts (in-guest; msb cannot, rip-cage-849o)..."
+  fi
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    _msb_exec "$_name" -u root -- bash -c "$_text" rc-cover ${_targets[@]+"${_targets[@]}"} >/dev/null 2>&1 || _rc=$?
+  else
+    _msb_exec "$_name" -u root -- bash -c "$_text" rc-cover ${_targets[@]+"${_targets[@]}"} || _rc=$?
+  fi
+  [[ "$_rc" -eq 0 ]]
 }
 
 
@@ -2696,11 +2727,22 @@ cmd_up() {
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Protected-paths check refused the cage config ${_UP_CAGE_CONF}" "PROTECTED_PATH_REFUSED"
     exit 1
   fi
+  # A "--rc-guest-file-cover GUEST" pair is a protected file inside a
+  # read-only mount, which msb cannot cover (rip-cage-849o): it never reaches
+  # the msb argv, and _up_init_container covers it in-guest before init.
   _UP_PROTECTED_COVERS=()
+  _UP_GUEST_FILE_COVERS=()
   if [[ -n "$_covers_out" ]]; then
-    local _cover_line
+    local _cover_line _cover_guest_next=false
     while IFS= read -r _cover_line; do
-      _UP_PROTECTED_COVERS+=("$_cover_line")
+      if [[ "$_cover_guest_next" == true ]]; then
+        _UP_GUEST_FILE_COVERS+=("$_cover_line")
+        _cover_guest_next=false
+      elif [[ "$_cover_line" == "--rc-guest-file-cover" ]]; then
+        _cover_guest_next=true
+      else
+        _UP_PROTECTED_COVERS+=("$_cover_line")
+      fi
     done <<< "$_covers_out"
   fi
 
@@ -3078,6 +3120,9 @@ cmd_up() {
         case "$_dry_gc" in
           *"/.git/config:ro"|*"/.git/info:ro"|*"/.git/hooks:ro") echo "Would mount ${_dry_gc} (D11)" ;;
         esac
+      done
+      for _dry_gc in ${_UP_GUEST_FILE_COVERS[@]+"${_UP_GUEST_FILE_COVERS[@]}"}; do
+        echo "Would cover ${_dry_gc} in-guest before init (protected file inside a read-only mount, rip-cage-849o)"
       done
       if [[ -d "${HOME}/.claude/skills" ]]; then
         echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"

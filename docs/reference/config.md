@@ -118,7 +118,7 @@ mounts:
   - "/Users/you/.config/rip-cage/empty:/workspace/config/local-secrets.toml:ro"
 ```
 
-The covered file must sit inside a **read-write** mount. msb cannot create a file cover inside a read-only mount, and the cage dies at boot.
+The covered file must sit inside a **read-write** mount. msb cannot create a file cover inside a read-only mount, and the cage dies at boot. For a secret inside a read-only mount, add its name to your protected-paths copy instead: `rc` covers listed files there from inside the cage (below).
 
 These are **belt and braces**: the protected-paths rule already covers the well-known names automatically (see below). Write a line here for a secret whose name is *not* on that list and is specific to this project. This is Tier 1 of the [secret posture gradient](secret-posture.md).
 
@@ -190,9 +190,11 @@ The config is the whole project config, but a few things are computed from the h
 
 - **refuses to launch** a config that mounts a listed path directly;
 - **covers** any listed path found inside a mounted tree (an empty read-only file over a file, an empty tmpfs over a directory);
-- **refuses to launch** when a listed *file* sits inside a *read-only* mount, naming the file and the mount. msb cannot create a file cover inside a read-only mount, and the cage would die at boot. Narrow the mount so the file sits outside it (`examples/dotpi-factory` mounts `dotpi/scripts` and `dotpi/agent`, not the whole checkout), or move the file. A listed directory inside a read-only mount is still covered;
+- **covers a listed *file* inside a *read-only* mount from inside the cage.** msb cannot create a file cover there (the cage would die at boot; upstream [microsandbox#2000](https://github.com/superradcompany/microsandbox/issues/2000)), so `rc` mounts the tree without one and, after boot and before init, runs `mount --bind -o ro <empty> <file>` as guest root for each such file. Every resume re-applies them. If any cover fails, `rc up` stops the cage before init and names the file; the floor probe then asserts each covered file reads empty (`file-covers`). `rc up --dry-run` lists them as `Would cover <path> in-guest`. A listed directory inside a read-only mount is covered by msb, as before;
 - **refuses to launch** a mount line it cannot read unambiguously — a `:` inside a host or guest path — rather than scan the wrong tree;
 - **aborts** if the list is unreadable.
+
+**Strength.** A cover is a visibility default, not a boundary — in-guest or msb-native alike. It stops the accident and the injected instruction; in-guest root can `umount` any cover and read what is underneath, and the agent's scoped sudo (apt-get, dpkg) reaches root. A cover nothing in the cage can undo is an open question, not a shipped property.
 
 You do not declare this, and a cage config cannot point at the list. It is operator-editable *configuration* — `$RC_PROTECTED_PATHS`, then `$XDG_CONFIG_HOME/rip-cage/protected-paths`, then the copy shipped beside `rc` — but it is not part of a cage's composition ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D5d, [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)).
 

@@ -9,8 +9,10 @@
 # empty tmpfs mount over a directory -- so the guest sees the name and none of
 # the content; (c) ABORTS before any msb call if the list file is unreadable.
 # If a cover cannot be expressed for an entry, `rc up` refuses rather than
-# launching uncovered -- a listed FILE inside a read-only mount is one such
-# case (rip-cage-dnwv). Fail closed, never fail open. There is no opt-out.
+# launching uncovered. Fail closed, never fail open. There is no opt-out. One
+# cover msb cannot place -- a listed FILE inside a read-only mount -- is
+# applied from inside the cage instead, as root before init, and a failure
+# there stops the cage (rip-cage-849o; share/rip-cage/guest-file-covers.sh).
 #
 # WHERE THE LIST LIVES (ADR-031 D5(a), amended 2026-09-15 by rip-cage-ely4.9).
 # The list file is a COMPOSITION INPUT alongside the Dockerfile, the boot
@@ -555,14 +557,20 @@ _protected_paths_enforce() {
         # cannot do this job: msb creates a tmpfs target as a DIRECTORY, so a
         # tmpfs over an existing file aborts the boot (measured, ely4.16 Q7).
         #
-        # Inside a READ-ONLY mount the file cover is inexpressible: msb must
-        # create the bind target in the ro share, and agentd dies at boot
-        # ("failed to create bind target ...: Read-only file system", measured
-        # on msb 0.7.4, rip-cage-dnwv). A directory cover over an existing dir
-        # boots fine there, so only the file case refuses.
+        # Inside a READ-ONLY mount msb cannot place this cover: it must create
+        # the bind target in the ro share, and agentd dies at boot ("failed to
+        # create bind target ...: Read-only file system", msb 0.7.4-0.7.13,
+        # rip-cage-dnwv / rip-cage-2wsi). So the file becomes an IN-GUEST
+        # cover target instead (rip-cage-849o): the token pair below never
+        # reaches msb; rc applies it as root before init, fail closed
+        # (share/rip-cage/guest-file-covers.sh). A directory cover over an existing
+        # dir boots fine in an ro share, so only the file case goes in-guest.
+        # When msb fixes superradcompany/microsandbox#2000, delete this branch
+        # and guest-file-covers.sh: the --mount-file line below then serves
+        # ro mounts too.
         if [[ "${_mode}" == "ro" ]]; then
-          echo "Error: the cage config ${_conf} has the read-only mount ${_host}:${_guest}, and that tree holds the protected file ${_found}. rc covers a protected file with an empty file mount, and msb cannot create that mount inside a read-only mount — the cage would die at boot. Refusing to launch before any msb call (ADR-031 D2, fail closed). Narrow the mount to the subdirectories the cage needs, so ${_found} stays outside it (examples/ has a recipe that mounts subdirectories rather than a whole checkout), or move the file out of the mounted tree." >&2
-          return 1
+          _covers+=(--rc-guest-file-cover "${_guest_target}")
+          continue
         fi
         if [[ -z "${_breadcrumb}" ]]; then
           _breadcrumb="$(_protected_paths_breadcrumb)" || return 1

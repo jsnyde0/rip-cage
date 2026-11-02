@@ -30,7 +30,7 @@ Host (macOS/Linux)
 │   ├── cage.yaml.template      The shipped project-config template — a native msb --conf file
 │   └── protected-paths         Fail-closed list of credential locations rc refuses to mount
 ├── cage/Dockerfile             The base image, built via `docker build`, loaded into msb
-├── cage/floor/floor-probe.sh   Fail-closed containment check ON THE BUILT IMAGE (20 checks)
+├── cage/floor/floor-probe.sh   Fail-closed containment check ON THE BUILT IMAGE (21 checks)
 ├── cage/boot/boot.json         Boot descriptor — daemons + multiplexers; schema in its _readme key
 ├── cage/init/init-rip-cage.sh  Runs in the sandbox at start: floor probe first, then auth,
 │                               settings, git identity, beads

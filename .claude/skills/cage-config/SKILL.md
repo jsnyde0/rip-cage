@@ -114,6 +114,10 @@ this project (`config/local-secrets.toml`, a `.env` the agent has no business
 reading) is yours to cover: mount an empty read-only file over it. The cage
 sees the name and zero bytes. The file must sit inside a read-write mount:
 msb cannot create a file cover inside a read-only mount, and the boot dies.
+For a secret inside a read-only mount, add its name to your protected-paths
+copy instead: `rc` covers listed files there from inside the cage, before
+init. Every cover, either kind, is a visibility default that in-guest root
+can undo, not a boundary.
 
 These are belt and braces — declare a cover for a name NOT on the
 protected-paths list. The template's mounts block shows the line shape.

@@ -14,7 +14,9 @@
 #   C4  a write into the mount fails, even as guest root
 #   C5  the guest's cover record lists the file; when the image's floor probe
 #       knows the file-covers check, init printed it PASS
-#   C6  resume (a fresh boot) re-applies the cover: still empty
+#   C7  guest root can umount the cover (the stated strength), and then the
+#       floor probe's file-covers check FAILs (only on an image that has it)
+#   C6  resume (a fresh boot) re-applies the cover: empty again
 #   F1  FORCED FAILURE: the protected file is a symlink to a host-only path, so
 #       the in-guest bind cannot land. rc up exits non-zero naming the file,
 #       init never starts, and the cage is left stopped
@@ -163,6 +165,20 @@ else
   echo "--- note: ${IMAGE}'s floor probe predates the file-covers check; C5's probe half not exercised"
 fi
 
+# --- C7: guest root can undo the cover, and the floor probe sees it ----------
+# The stated strength (a visibility default, not a boundary), measured, and the
+# probe's check proven non-vacuous. C6's resume then restores the cover.
+if grep -q "floor: file-covers" "$UP_LOG"; then
+  _um=$(gexec -u root -- umount "/mnt/ro/${S}")
+  _probe=$(gexec -- /usr/local/lib/rip-cage/floor-probe.sh)
+  if gexec -- cat "/mnt/ro/${S}" | grep -qF "$MARKER" \
+     && printf '%s\n' "$_probe" | grep -qE "^FAIL .*floor: file-covers"; then
+    pass "C7 after guest root umounts the cover, the content shows and the floor probe's file-covers check FAILs"
+  else
+    fail "C7 undo + probe" "umount: '${_um}'; probe: $(printf '%s\n' "$_probe" | grep file-covers)"
+  fi
+fi
+
 # --- C6: resume is a fresh boot; the cover must come back --------------------
 perl -e 'alarm 120; exec @ARGV' msb stop "$NAME" </dev/null >/dev/null 2>&1
 RES_LOG="${T}/resume.log"
@@ -213,6 +229,7 @@ else
 fi
 
 # --- P: every other shipped name, as a file in an ro mount -------------------
+# shellcheck disable=SC2094  # rc only reads the list it is handed; nothing writes it
 while IFS= read -r _entry; do
   _entry="${_entry#"${_entry%%[![:space:]]*}"}"; _entry="${_entry%"${_entry##*[![:space:]]}"}"
   [[ -z "$_entry" || "$_entry" == \#* || "$_entry" == .env* ]] && continue

@@ -109,10 +109,10 @@ mounts:
     create: ensure-exists
 ```
 
-**Mount only `scripts/` and `agent/`, never the whole checkout.** A read-only
-mount of the whole checkout is refused at `rc up`: the checkout holds a
-protected `.env`, and rc cannot cover a protected file inside a read-only
-mount (rip-cage-dnwv).
+**Mount only `scripts/` and `agent/`, never the whole checkout.** The cage
+needs those two trees and nothing else in the checkout. (A read-only mount of
+the whole checkout would boot: rc covers its protected `.env` from inside the
+cage, rip-cage-849o. Narrow mounts still show the cage less.)
 
 **Why the named volumes.** The factory writes its grant registry to
 `~/.grants`, its mail store to `~/.dotpi-mail`, pacemaker state to
