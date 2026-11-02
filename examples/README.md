@@ -116,6 +116,7 @@ base image already installs (`claude`, `pi`).
 |---|---|
 | [examples/claude/](claude/) | Claude Code session-isolation wrapper. See [claude/README.md](claude/README.md). |
 | [examples/pi/](pi/) | pi cage-topology doc + the extensions-dir boot hook herdr's integration install needs. Running pi with no guard and no launch wrapping needs nothing composed at all — see [pi/README.md](pi/README.md). |
+| [examples/pi-providers/](pi-providers/) | Host helper for in-cage pi on the OpenAI (ChatGPT) subscription: copies the host pi's openai-codex token into an msb secret and writes the guest's placeholder auth.json. Steps live in the cage-config skill's pi-providers recipe. See [pi-providers/README.md](pi-providers/README.md). |
 
 ---
 

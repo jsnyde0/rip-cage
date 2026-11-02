@@ -714,8 +714,7 @@ fi
 # IMPORTANT: the temp HOME means rc up will create fresh config dirs under it. The isolated
 # XDG_CONFIG_HOME from the a5dk setup above is already exported and takes precedence over
 # any $HOME-derived default, so rc's host config dir stays the sandbox, never the temp HOME's
-# ~/.config/rip-cage/. The pi-seed creates <tmphome>/.pi/agent/auth.json — that is expected
-# and fine.
+# ~/.config/rip-cage/.
 _aws5="${AUTH_TMP}/rc-auth/case5"
 _ac5_out="${AUTH_TMP}/case5-up.out"
 _ac5_home=$(_host_scratch_mktemp_d h5)

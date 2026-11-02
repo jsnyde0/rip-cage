@@ -220,8 +220,8 @@ unset RC_KL4R_SENTINEL "$SYNTH_HTTPBIN" "$SYNTH_POSTMAN"
 
 # ===========================================================================
 # C4: possession mount -- the real credential file is PRESENT in-guest
-# (D5 mixed posture: pi keeps a real mounted auth.json even under a
-# non-possession default elsewhere)
+# (D5 mixed posture: a possession mount can sit beside a
+# non-possession default elsewhere; rc itself mounts none for pi now)
 # ===========================================================================
 echo ""
 echo "=== C4: possession_mounts -> real credential file present in-guest (mixed posture, D5) ==="

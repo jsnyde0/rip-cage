@@ -842,7 +842,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-herdr-roster-resume-recipe.sh" # rip-cage-46s5 / rip-cage-8jg5.1: the herdr recipe's pin (derived from the snippet), durable-mount line, socket relocation, scripted-attach wiring, herdr-pi twin equality and the start hook's pi extension dir (stub-run), read from the snippet + boot fragments; claude wrapper CLAUDE_CODE_CHILD_SESSION scrub on both copies — host-only
   run_test "${SCRIPT_DIR}/test-dotpi-factory-recipe.sh" # rip-cage-8jg5.2: the examples/dotpi-factory recipe -- five CLI symlinks into the ro checkout (no dotpi code copied), USER agent last, boot fragment merges with no clock loop, README config lines match the snippet state dirs, reach-in facts (socket path derived from the herdr recipe), no literal secret placeholder -- host-only
   run_test "${SCRIPT_DIR}/test-dotpi-factory-reach.sh" # rip-cage-8jg5.8: examples/dotpi-factory/cage-reach against a fake msb -- stdin closed, multiplexer env read from the boot descriptor (not hardcoded), argv verbatim, exit status propagated, usage refusal; README reach line + cage-ops cite -- host-only
-  run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seeds ~/.pi/agent/auth.json on cold start
   # Also retired with the manifest, for the same reason -- every case called a
   # deleted _manifest_* function; nine such tests were deleted from tests/ (rip-cage-b8kd.16, commit f2ee51c).
   # The whole manifest test corpus (19 files), the manifest-authoring skill

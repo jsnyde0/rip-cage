@@ -135,6 +135,11 @@ to avoid.
 `~/.config/rip-cage/secrets/<NAME>` when that file exists. Otherwise export it
 yourself before `rc up`, or msb fails loud naming it.
 
+**pi's model credential rides this same shape**; rc never mounts the host's
+`~/.pi/agent/auth.json`. OpenRouter (API key) and openai-codex (OpenAI
+subscription) are proven, and pi never uses the Anthropic subscription — see
+[`recipes/pi-providers.md`](recipes/pi-providers.md).
+
 ## Egress: default-deny plus a list you maintain
 
 `network.policy: none` is msb's default-DENY. Only the hosts under
@@ -201,6 +206,8 @@ which is how the skill this one replaced went stale.
   an agent running unattended for hours.
 - [`recipes/multi-account.md`](recipes/multi-account.md) — two cages on one
   host under different accounts, without either seeing the other's credential.
+- [`recipes/pi-providers.md`](recipes/pi-providers.md) — in-cage pi on
+  OpenRouter or the OpenAI subscription, each credential an msb secret.
 
 ## References
 

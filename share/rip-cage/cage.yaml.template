@@ -87,6 +87,11 @@ mounts:
     target: /home/agent/.local/share/mise
     create: ensure-exists
 
+  # pi on the OpenAI subscription only (see secrets: CODEX below): the
+  # placeholder auth.json examples/pi-providers/codex-secret.sh writes. It
+  # holds no real token; read-only, so the guest never rewrites a host file.
+  # - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.config/rip-cage/pi-codex/auth.json:/home/agent/.pi/agent/auth.json:ro"
+
   # --- secret covers (ADR-030 class-C masking, as plain config) ----------
   # An empty read-only file mounted over a secret the cage has no business
   # reading. The cage sees the name and zero bytes. Point the source at any
@@ -118,12 +123,35 @@ secrets:
     allow:
       - "api.anthropic.com"
 
+  # pi on an API-key provider, e.g. OpenRouter. Save the key at
+  # ~/.config/rip-cage/secrets/OPENROUTER, uncomment this entry, its env line
+  # and its egress line below. pi reads the key from OPENROUTER_API_KEY, so it
+  # needs no auth.json in the cage.
+  # OPENROUTER:
+  #   allow:
+  #     - "openrouter.ai"
+
+  # pi on the OpenAI (ChatGPT) subscription, provider openai-codex. pi decodes
+  # its token in the guest, so the placeholder must be a token too: run the
+  # host helper examples/pi-providers/codex-secret.sh before each `rc up`; it
+  # writes ~/.config/rip-cage/secrets/CODEX and a placeholder auth.json, and
+  # prints the value for `placeholder:`. Uncomment this entry, the auth.json
+  # mount line it names, and the egress line below. The cage-config skill's
+  # pi-providers recipe walks it.
+  # CODEX:
+  #   allow:
+  #     - "chatgpt.com"
+  #   placeholder: "<PRINTED_BY_codex-secret.sh>"
+  #
+  # Never pi on the Anthropic subscription: no pi provider rides CCTOK.
+
 # "\x24" is YAML for "$": the value is the CCTOK placeholder. It is escaped so
 # the placeholder never appears verbatim in this file, because msb drops any
 # request whose body carries it (microsandbox#1354) -- a caged agent that
 # quoted this file would lose its session.
 env:
   CLAUDE_CODE_OAUTH_TOKEN: "\x24MSB_CCTOK"
+  # OPENROUTER_API_KEY: "\x24MSB_OPENROUTER"
 
 # --- egress --------------------------------------------------------------
 # `policy: none` is msb's default-DENY: nothing leaves the cage except the
@@ -160,3 +188,7 @@ network:
 
     # Beads sync (Dolt remote), if this project tracks work in beads.
     - "doltremoteapi.dolthub.com:tcp:443"
+
+    # pi providers, one line per provider you enabled under secrets: above.
+    # - "openrouter.ai:tcp:443"
+    # - "chatgpt.com:tcp:443"

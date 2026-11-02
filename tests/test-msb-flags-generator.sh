@@ -219,8 +219,8 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# T6: possession_mounts emits --mount-file SRC:DST (D5 mixed posture -- pi
-# keeps a real mounted auth.json even under a non-possession default
+# T6: possession_mounts emits --mount-file SRC:DST (D5 mixed posture -- a possession mount
+# beside a non-possession default
 # elsewhere).
 # ---------------------------------------------------------------------------
 echo ""

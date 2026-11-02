@@ -405,18 +405,15 @@ _collect_dangling_symlinks() {
 #   $2  mode       — ro|rw
 #   $3  on_dangling — follow|skip|warn|error (default: follow)
 #   $4  scope      — file|parent (default: file)
-#   $5  cred_mounts — real|none (default: real). F1 (rip-cage-seqc.4): when
-#                    none, excludes the pi_root/auth.json leaf from the hash —
-#                    IDENTICAL predicate to the mount-loop leaf-filter in
-#                    _up_prepare_docker_mounts, so the fingerprint never drifts
-#                    from the honest post-filter mount set (label-lock /
-#                    filter-the-fingerprint-too). ADR-023 D2 FIRM still holds:
-#                    the fingerprint reflects the POST-protected-paths mount set,
-#                    since skipped targets never reach the hash. That check needs
-#                    no workspace — the protected-paths list is host-global.
+# The pi_root/auth.json leaf is always excluded from the hash — IDENTICAL
+# predicate to the mount-loop leaf-filter in _up_prepare_docker_mounts, so the
+# fingerprint never drifts from the honest post-filter mount set (label-lock /
+# filter-the-fingerprint-too). ADR-023 D2 FIRM still holds: the fingerprint
+# reflects the POST-protected-paths mount set, since skipped targets never reach
+# the hash. That check needs no workspace — the protected-paths list is host-global.
 # Output: sha256 hex string on stdout (always; empty set hashes to a fixed value)
 _symlink_follow_fingerprint() {
-  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}" cred_mounts="${5:-real}"
+  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}"
   # Prepend a policy header so that policy changes produce a different
   # fingerprint even when the scanned symlink set is identical.
   local lines="policy: on_dangling=${on_dangling}, scope=${scope}, mode=${mode}"$'\n'
@@ -424,10 +421,9 @@ _symlink_follow_fingerprint() {
     local link target mount_src
     while IFS='|' read -r link target; do
       [[ -z "$link" ]] && continue
-      # F1: identical predicate to the mount-loop leaf-filter — skip the
-      # credential leaf under none so the fingerprint reflects the honest
-      # post-filter mount set.
-      if [[ "$cred_mounts" == "none" && "$link" == "${pi_root}/auth.json" ]]; then
+      # Identical predicate to the mount-loop leaf-filter — the credential leaf
+      # never mounts, so the fingerprint reflects the honest post-filter set.
+      if [[ "$link" == "${pi_root}/auth.json" ]]; then
         continue
       fi
       # Compute the actual mount source — mirrors the scope branch in the mount loop
@@ -591,16 +587,11 @@ _up_prepare_docker_mounts() {
     log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
   fi
 
-  # auth.per_tool.pi (rip-cage-xhgr): real (default) preserves today's
-  # behavior bit-for-bit; none skips pi's credential surface (auth.json mount +
-  # symlink-follow leaf). Callers that don't set it default to "real".
-  # The Claude-side twin of this switch is gone (rip-cage-ely4.7.10): a cage
-  # that wants NON-POSSESSION declares a `secrets:` binding in its own config,
-  # which is stronger than suppressing a mount, and the one thing that switch
-  # still gated — the host Claude config file — is now an ordinary mount line
-  # in the cage config where an operator can read it (ADR-031 D2). See the
-  # mount block in share/rip-cage/cage.yaml.template for the line itself.
-  local _UP_CRED_MOUNTS_PI="${_UP_CRED_MOUNTS_PI:-real}"
+  # No credential-mount switch remains: neither the Claude config file nor pi's
+  # auth.json is mounted by rc. A cage that wants a credential declares a
+  # `secrets:` binding in its own config — msb injects the real value on the
+  # wire and the guest holds only the placeholder (ADR-031 D2; ADR-029 D3/D5).
+  # See the mount block in share/rip-cage/cage.yaml.template.
   # rip-cage-ely4.7.17: the macOS-keychain extraction that used to run here
   # (real launch only, skipped under _UP_DRY_RUN_NO_SIDE_EFFECTS) is deleted
   # with the possession path it fed -- non-possession has no host-side
@@ -709,18 +700,15 @@ _up_prepare_docker_mounts() {
     while IFS='|' read -r _sfl_link _sfl_target; do
       [[ -z "$_sfl_link" ]] && continue
 
-      # F1 (rip-cage-seqc.4, CRITICAL) / effective(pi) (rip-cage-xhgr):
-      # auth.credential_mounts=none (or per-tool pi:none) must also gate the
-      # symlink-follow synthesis path — it is a SECOND, previously-ungated
-      # mount route for the pi credential when auth.json is an absolute
-      # dotpi-managed symlink. Filter the specific credential LEAF (not the
-      # whole scan root: ~/.pi/agent may contain other legitimate absolute
-      # dangling symlinks that must keep mounting under none). This is the
-      # pi-only scan root — claude's effective value is irrelevant here.
+      # The pi credential is never mounted (pi rides msb `secrets:`), and this
+      # symlink-follow synthesis path is a SECOND mount route to it when
+      # auth.json is an absolute dotpi-managed symlink. Filter the specific
+      # credential LEAF (not the whole scan root: ~/.pi/agent may contain other
+      # legitimate absolute dangling symlinks that must keep mounting).
       # IDENTICAL predicate to the fingerprint filter in _symlink_follow_fingerprint
-      # (B1a) — the two must never diverge (label-lock / filter-the-fingerprint-too).
-      if [[ "$_UP_CRED_MOUNTS_PI" == "none" && "$_sfl_link" == "${HOME}/.pi/agent/auth.json" ]]; then
-        log "auth.credential_mounts=none — symlink-follow auth.json leaf intentionally skipped (non-possession posture)"
+      # — the two must never diverge (label-lock / filter-the-fingerprint-too).
+      if [[ "$_sfl_link" == "${HOME}/.pi/agent/auth.json" ]]; then
+        log "symlink-follow auth.json leaf intentionally skipped (pi credentials ride msb secrets)"
         continue
       fi
 
@@ -814,31 +802,17 @@ _up_prepare_docker_mounts() {
   unset _sfl_reserved _sfl_rp _sfl_collision _sfl_arg _sfl_dest
   unset _sfl_mount_src _sfl_mode_suffix
 
-  # Pi state: container-local cage-owned dir + narrow durable sub-mounts (ADR-019 D1 evolved).
-  # PI_CODING_AGENT_DIR points to the container-local dir; only auth.json is
-  # bind-mounted from the host (RW, cold-start-seeded so first-run pi /login persists —
-  # rip-cage-wo9 / ADR-019 D1).  bin/ is intentionally NOT mounted: host macOS binaries
-  # (fd/rg) don't work in Linux; the container regenerates them on first pi run.
+  # Pi state: container-local cage-owned dir (ADR-019 D1 evolved). The host's
+  # auth.json is NEVER mounted: it carries the operator's real logins (including
+  # the Anthropic subscription) and a read-write bind would let the guest rewrite
+  # a host file. Pi credentials ride msb `secrets:` in the cage config instead
+  # (docs/reference/auth.md, cage-config skill). bin/ is intentionally NOT
+  # mounted: host macOS binaries (fd/rg) don't work in Linux; the container
+  # regenerates them on first pi run.
   # PI_CODING_AGENT_DIR: explicit set equals pi's own default (config.ts getAgentDir()
   # returns join(homedir(), ".pi", "agent") when the env var is unset), so a pi-less
   # cage behaves identically — the explicit set just makes the value visible in `env`.
-  # Seed an empty auth.json when absent so the bind mount below always fires (normal path).
-  # A dangling symlink is left to the symlink-follow machinery (D1).
-  # auth.credential_mounts=none (rip-cage-seqc.4) / effective(pi) (rip-cage-xhgr):
-  # the pi auth.json bind is gated under non-possession; PI_CODING_AGENT_DIR
-  # stays unconditional (it's a container-local dir pointer, not a host
-  # credential mount).
   _UP_RUN_ARGS+=(-e PI_CODING_AGENT_DIR=/home/agent/.pi/agent)
-  if [[ "$_UP_CRED_MOUNTS_PI" == "none" ]]; then
-    log "auth.credential_mounts=none — pi credential mount (auth.json) intentionally skipped (non-possession posture)"
-  else
-    _ensure_pi_auth_seed
-    if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
-      _UP_RUN_ARGS+=(-v "${HOME}/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json")
-    else
-      log "Warning: ${HOME}/.pi/agent/auth.json not mounted (absent and could not be seeded, or a dangling symlink) — pi will require login on first request."
-    fi
-  fi
 
   # Pi substrate projection (rip-cage-kstk): mount pi instruction-content assets
   # read-only into .rc-context/ for init-rip-cage.sh to symlink.
@@ -2000,19 +1974,15 @@ _up_resolve_resume_symlink_fingerprint() {
   # the recompute below differs from the stored label only when the MOUNT SET
   # itself changed on the host filesystem — which is the drift this guard was
   # always really about.
-  local _sfl_cur_cred_mounts="real"
   local _current_fp
-  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope" "$_sfl_cur_cred_mounts")
+  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope")
 
   # Missing label: pre-c1p.2 container. Only block if current state has
   # dangling symlinks (non-trivial fingerprint would mean a new second mount
   # that was never wired into the container).
   if [[ -z "$_stored_fp" ]]; then
     local _empty_fp
-    # B1a call-site 3: pi_root is empty so the loop body never runs and the
-    # cred_mounts filter is INERT here — pass current for signature
-    # consistency only (behavior is identical either way).
-    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file" "$_sfl_cur_cred_mounts")  # empty set fp
+    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file")  # empty set fp
     if [[ "$_current_fp" == "$_empty_fp" ]]; then
       return 0  # Both empty — no mismatch
     fi
@@ -3459,32 +3429,20 @@ cmd_up() {
   mkdir -p "$_rc_cache_dir"
 
 
-  # auth.credential_mounts (rip-cage-seqc.4 / E2) + auth.per_tool.{claude,pi}
-  # (rip-cage-xhgr / D1): resolve the effective values BEFORE the
-  # symlink-follow fingerprint call below (B1a) — the fingerprint's leaf-filter
-  # (F1) must be computed with the SAME effective(pi) value that determines
-  # the mount set, or the create-time fingerprint label would not match the
-  # honest post-filter mount set. _UP_CREDENTIAL_MOUNTS / _UP_CRED_MOUNTS_PI
-  # are globals (not `local`) so _up_prepare_docker_mounts can read them below.
-  # The global label stays unchanged (byte-identical to today); the two
-  # per-tool labels are emitted unconditionally alongside it (D5a) so resume
-  # can detect a per-tool mount-shape flip. The claude one is the constant
-  # "none": its switch went with the mount it gated (rip-cage-ely4.7.10), so
-  # no Claude credentials file is ever mounted and the label says so. Readers
-  # that gate possession-only checks on it (test-claude-concurrency.sh, the
-  # cc-managed-settings probes) take "none" as non-possession; cli/doctor.sh
-  # no longer reads it (rip-cage-b8kd.45).
-  _UP_CREDENTIAL_MOUNTS="real"
-  _UP_CRED_MOUNTS_PI="real"
-  # auth.credential_mounts / auth.per_tool retired with the schema
-  # (ADR-031 D2); "real" was that schema's own default, so an unconfigured
-  # cage keeps today's posture. A cage that wants NON-POSSESSION declares a
-  # `secrets:` binding in its own config instead — msb injects the real value
-  # on the wire and the guest holds only the placeholder, which is a stronger
-  # posture than suppressing the mount ever was (ADR-029 D3/D5).
-  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts=${_UP_CREDENTIAL_MOUNTS}")
+  # Credential-mount labels, emitted unconditionally so resume and readers can
+  # tell the posture. All three are constants: the switches (auth.credential_mounts,
+  # auth.per_tool) retired with the schema (ADR-031 D2), and neither the Claude
+  # credentials file nor pi's auth.json is ever mounted — a cage that wants a
+  # credential declares a `secrets:` binding in its own config (ADR-029 D3/D5).
+  # The global label stays "real" (byte-identical to today); the per-tool labels
+  # are "none". Readers that gate possession-only checks on the claude one
+  # (test-claude-concurrency.sh, the cc-managed-settings probes) take "none" as
+  # non-possession; cli/doctor.sh no longer reads it (rip-cage-b8kd.45). A cage
+  # created before the pi change carries pi=real and the old auth.json bind
+  # until `rc up --replace`; nothing reads the label on resume.
+  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts=real")
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.claude=none")
-  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.pi=${_UP_CRED_MOUNTS_PI}")
+  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.pi=none")
 
   # The rc.config-mode and rc.config-loaded labels are gone with the file they
   # described (ADR-031 D2). rc.cage-conf replaces them: which config file this
@@ -3508,10 +3466,9 @@ cmd_up() {
   # MOUNT SET it hashes is computed from the live host filesystem at every
   # launch, so it drifts even with the policy frozen.
   local _sfl_mode_for_fp="rw" _sfl_on_dangling_for_fp="follow" _sfl_scope_for_fp="file"
-  # effective(pi), NEVER effective(claude) (rip-cage-xhgr / D5b) — this
-  # fingerprint's scan root is ~/.pi/agent only.
+  # This fingerprint's scan root is ~/.pi/agent only.
   local _sfl_fingerprint
-  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$_UP_CRED_MOUNTS_PI")
+  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp")
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
   unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fingerprint
 
@@ -3617,38 +3574,5 @@ cmd_up() {
   _up_attach_multiplexer "$name" "${_rc_multiplexer:-none}" "$path" || _att_rc=$?
   unset _rc_multiplexer
   return "$_att_rc"
-}
-
-
-# _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).
-# Creates ~/.pi/agent/auth.json containing '{}' when it is absent so that an
-# in-cage 'pi /login' persists across rc destroy/up cycles via the single-file
-# bind mount.  The check is:
-#   - if the path does NOT exist as a regular file AND is NOT a symlink: seed it.
-#   - a (possibly dangling) symlink is left to the symlink-follow machinery (D1).
-#   - an existing regular file (even empty) is never overwritten (idempotent).
-# Seeding is transparent to _symlink_follow_fingerprint: the function hashes only
-# symlinks; a seeded regular file adds no symlink, so fingerprint is unchanged.
-# Honors ${HOME} — override it to make the function testable.
-_ensure_pi_auth_seed() {
-  local _auth_path="${HOME}/.pi/agent/auth.json"
-  # A symlink at the path (even dangling) is dotpi-managed state — leave it alone.
-  if [[ -L "$_auth_path" ]]; then
-    return 0
-  fi
-  # A regular file already exists — idempotent no-op.
-  if [[ -e "$_auth_path" ]]; then
-    return 0
-  fi
-  # Path absent — seed it.
-  if ! mkdir -p "$(dirname "$_auth_path")"; then
-    echo "rip-cage: Warning: could not create ${HOME}/.pi/agent/ — pi auth mount may be skipped." >&2
-    return 0
-  fi
-  if ! printf '{}' > "$_auth_path"; then
-    echo "rip-cage: Warning: could not seed ${_auth_path} — pi auth mount may be skipped." >&2
-    return 0
-  fi
-  echo "rip-cage: Seeded empty ${HOME}/.pi/agent/auth.json for first-run pi login persistence (rip-cage-wo9)." >&2
 }
 

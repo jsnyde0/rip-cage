@@ -718,14 +718,15 @@ test_s17_d5_label_invariant() {
 # a check that cannot fail is worse than no check.
 
 # ---------------------------------------------------------------------------
-# ADR-019 D1 alignment: auth.json narrow sub-mount present (hhh.12 evolved topology)
-# Assert the pi auth.json bind mount is wired after our symlink-follow additions
+# pi posture (rip-cage-3w82): the host's auth.json is NEVER mounted -- not as a
+# plain file, not as an absolute-symlink leaf through the symlink-follow path.
+# Pi credentials ride msb `secrets:`. Other pi-dir content keeps mounting.
 # ---------------------------------------------------------------------------
 test_s_adr019_pi_mount_preserved() {
   setup_sandbox
   local ws="${TEST_HOME}/workspace"
   mkdir -p "$ws"
-  # Create auth.json so the skip-if-missing guard passes
+  # A real auth.json on the host must not reach the run args.
   printf '{"fake":true}\n' > "${TEST_HOME}/.pi/agent/auth.json"
 
   local out exit_code=0
@@ -737,14 +738,52 @@ test_s_adr019_pi_mount_preserved() {
     source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
   " 2>&1) || exit_code=$?
 
-  # auth.json sub-mount should be present (ADR-019 D1 evolved: narrow sub-mount)
   local has_pi_mount
-  has_pi_mount=$(echo "$out" | grep "MOUNT:" | grep -c "\.pi/agent/auth\.json:/home/agent/\.pi/agent/auth\.json" || true)
+  has_pi_mount=$(echo "$out" | grep "MOUNT:" | grep -c "auth\.json" || true)
 
-  if [[ "$has_pi_mount" -gt 0 ]]; then
-    pass "adr019" "ADR-019 D1 (evolved): auth.json narrow sub-mount present after symlink-follow additions"
+  if [[ "$has_pi_mount" -eq 0 ]]; then
+    pass "pi-no-auth-mount" "no auth.json mount in run args although a host auth.json exists"
   else
-    fail "adr019" "auth.json sub-mount not found in run args" "output: $(echo "$out" | grep "MOUNT:" | head -10)"
+    fail "pi-no-auth-mount" "auth.json mount present in run args" "output: $(echo "$out" | grep "MOUNT:" | head -10)"
+  fi
+  teardown_sandbox
+}
+
+# The absolute-symlink leaf route: auth.json is a dotpi-managed absolute symlink
+# whose target lives outside the pi dir. The symlink-follow machinery must skip
+# that leaf unconditionally, and the fingerprint must agree (label-lock).
+test_s_pi_auth_leaf_never_followed() {
+  setup_sandbox
+  local ws="${TEST_HOME}/workspace" tgt_dir="${TEST_HOME}/managed"
+  mkdir -p "$ws" "$tgt_dir"
+  printf '{"fake":true}\n' > "${tgt_dir}/auth.json"
+  ln -s "${tgt_dir}/auth.json" "${TEST_HOME}/.pi/agent/auth.json"
+
+  local out exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+    source '$RC'
+    _UP_RUN_ARGS=()
+    wt_detected=false
+    _up_prepare_docker_mounts '$ws' 'testcage'
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
+  " 2>&1) || exit_code=$?
+
+  local leaked
+  leaked=$(echo "$out" | grep "MOUNT:" | grep -c "auth\.json" || true)
+  if [[ "$leaked" -eq 0 ]]; then
+    pass "pi-auth-leaf" "absolute-symlink auth.json leaf is never mounted"
+  else
+    fail "pi-auth-leaf" "symlink-follow mounted the auth.json leaf" "output: $(echo "$out" | grep "MOUNT:" | head -10)"
+  fi
+
+  local fp_with fp_without
+  fp_with=$(HOME="$TEST_HOME" bash -c "source '$RC'; _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' rw follow file" 2>/dev/null)
+  rm -f "${TEST_HOME}/.pi/agent/auth.json"
+  fp_without=$(HOME="$TEST_HOME" bash -c "source '$RC'; _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' rw follow file" 2>/dev/null)
+  if [[ -n "$fp_with" && "$fp_with" == "$fp_without" ]]; then
+    pass "pi-auth-leaf-fp" "fingerprint ignores the auth.json leaf (matches the mount filter)"
+  else
+    fail "pi-auth-leaf-fp" "fingerprint still hashes the auth.json leaf" "with=$fp_with without=$fp_without"
   fi
   teardown_sandbox
 }
@@ -1011,6 +1050,7 @@ test_s14_fhs_reserved_collision
 test_s15_fingerprint_deterministic
 test_s17_d5_label_invariant
 test_s_adr019_pi_mount_preserved
+test_s_pi_auth_leaf_never_followed
 run_needs_unreserved_scratch 20 test_s20_denylist_blocks_aws_symlink_target
 run_needs_unreserved_scratch 21 test_s21_denylist_allows_non_matching_target
 test_s22_fingerprint_excludes_denylisted_targets

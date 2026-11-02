@@ -9,7 +9,7 @@
 #
 # Implements ADR-029 D2 ("declare, don't run the engine" -- containment is
 # the runtime's job) and D5 (--secret non-possession is the default, but a
-# mixed posture survives: pi keeps a real mounted auth.json). Binding
+# mixed posture survives: a possession mount may sit beside it). Binding
 # generator constraints from D3 (acceptance-shaping):
 #   1. --secret accepts ONLY the bare ENV@HOST form -- an inline
 #      ENV=VALUE@HOST input is REJECTED at generation, before any flag is
@@ -287,8 +287,8 @@ _msb_flags_generate() {
     done
   done
 
-  # 3. Possession mounts (D5 mixed posture -- pi keeps a real mounted
-  # auth.json even under a non-possession default elsewhere).
+  # 3. Possession mounts (D5 mixed posture -- a possession mount may sit
+  # beside a non-possession default elsewhere).
   local pmount_count pi
   pmount_count=$(jq '.possession_mounts // [] | length' <<<"$cfg")
   for (( pi=0; pi<pmount_count; pi++ )); do

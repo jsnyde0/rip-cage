@@ -11,7 +11,7 @@ rc.auth.credential-mounts=real
 --label
 rc.auth.credential-mounts.claude=none
 --label
-rc.auth.credential-mounts.pi=real
+rc.auth.credential-mounts.pi=none
 --label
 rc.cage-conf=<TEST_HOME>/.rc-test-cage-workspace.yaml
 --label
@@ -26,8 +26,6 @@ rc.session.multiplexer=none
 /workspace
 -e
 PI_CODING_AGENT_DIR=/home/agent/.pi/agent
--v
-<TEST_HOME>/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json
 -e
 CAGE_HOST_ADDR=host.microsandbox.internal
 -e

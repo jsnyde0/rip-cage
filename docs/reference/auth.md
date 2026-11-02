@@ -89,28 +89,22 @@ Full model for credentials you nominate yourself, including the shapes `--secret
 
 ## pi auth
 
-pi stores credentials at `~/.pi/agent/auth.json` (mode 0600, auto-refreshed). `rc up` mounts that file read-write at `/home/agent/.pi/agent/auth.json` and sets `PI_CODING_AGENT_DIR` ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D1).
+**rc never mounts the host's `~/.pi/agent/auth.json`.** That file holds every login the operator's pi has made, the Anthropic subscription included, and a read-write bind would let the guest rewrite a host file. `rc up` sets `PI_CODING_AGENT_DIR=/home/agent/.pi/agent` (a cage-local dir, [ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D1) and stamps the constant label `rc.auth.credential-mounts.pi=none`; the symlink-follow path skips an `auth.json` leaf too.
 
-**First run:** if the host file does not exist, `rc up` seeds an empty `{}` so the mount fires. Then, inside the cage:
+**Provider API keys ride msb `secrets:`** in the project config, the same mechanism as the Claude login above: a `secrets:` entry binds the key to the provider's host, an `env:` line exposes the placeholder under the variable name pi reads (for example `OPENROUTER_API_KEY`), and `network.allow` carries the provider's `:tcp:443` line. The guest holds only the placeholder. How to write the entry and where the value lives on the host: the [`cage-config`](../../.claude/skills/cage-config/SKILL.md) skill.
 
-```
-pi /login
-```
+**Providers.** pi supports OpenAI, Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). `rc up` still forwards a fixed set of provider API-key variables from host to guest when they are set and non-empty; a `secrets:` binding is the stronger path because the guest never holds the real key.
 
-pi writes in place to the mounted file, so the credential lands on the host immediately and survives every later recreate. If seeding fails — a symlink at that path, a permissions error — `rc up` warns and skips the mount; pi's own `/login` surfaces the problem on first request. Rip cage adds no startup auth banner: banners get banner-blind fast, and pi's own prompt is the right surface ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D2).
-
-**Providers.** pi supports Anthropic, OpenAI (including Codex via ChatGPT OAuth), Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). `rc up` forwards a fixed set of provider API-key variables from host to guest when they are set and non-empty. When `auth.json` is also present it wins, which is pi's own precedence.
-
-pi refreshes its own credentials against the mounted file; no rip-cage helper is involved. Generalizing credential discovery to pi's Codex login is [roadmap](../ROADMAP.md), not a claim.
+**A cage created before this change** carries the old read-write `auth.json` mount until `rc up --replace` recreates it; `rc up` on such a cage resumes it as-is and does not flag the mount.
 
 ### Subscription auth — read before using
 
-> Two subscription OAuth flows raise policy questions.
+> Subscription OAuth logins raise policy questions, and rc provides no path for them.
 >
+> - **pi → Anthropic OAuth (Claude Max/Pro):** this sends subscription credentials through a third-party harness. Anthropic's January 2026 enforcement action against third-party Claude access tools applies; review the [Anthropic Consumer Terms](https://www.anthropic.com/legal/consumer-terms). Do not use pi with the Anthropic subscription.
 > - **pi → OpenAI Codex (ChatGPT Plus/Pro):** pi's own docs carry a "personal use only" statement for this flow. Driving automated agent sessions with it sits in a gray area under the [OpenAI Service Terms](https://openai.com/policies/service-terms/).
-> - **pi → Anthropic OAuth (Claude Max/Pro):** this sends subscription credentials through a third-party harness. Anthropic's January 2026 enforcement action against third-party Claude access tools applies; review the [Anthropic Consumer Terms](https://www.anthropic.com/legal/consumer-terms).
 >
-> There is no runtime banner for this ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D6) — you have already opted in by running `pi /login`. The callout lives here, findable and version-controlled.
+> There is no runtime banner for this ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D6). The callout lives here, findable and version-controlled.
 
 ### Why rip-cage ships no paranoid mode
 

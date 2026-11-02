@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Tests for pi state mount topology: container-local PI_CODING_AGENT_DIR +
-# narrow auth.json sub-mount (ADR-019 D1 evolved, rip-cage-hhh.12).
+# Tests for pi state mount topology: container-local PI_CODING_AGENT_DIR and
+# NO host auth.json mount (pi credentials ride msb `secrets:`, rip-cage-3w82).
 # Requires docker + rip-cage:latest image already built (./rc build).
 #
 # What this tests:
-#   1. /home/agent/.pi/agent/auth.json is mounted and readable inside container
-#   2. auth.json owned by agent:agent inside container
+#   1. the host's ~/.pi/agent/auth.json is NOT visible inside the container
+#   2. the rc.auth.credential-mounts.pi label is the constant none
 #   3. PI_CODING_AGENT_DIR=/home/agent/.pi/agent set in container env
 #   4. CAGE_HOST_ADDR passed through explicitly (for non-interactive pi -p)
 #   5. Empty OPENAI_API_KEY is NOT forwarded (empty-value filter)
 #   6. rc up succeeds when ~/.pi/agent is absent (warning, no fatal)
 #   7. /home/agent/.pi/agent/AGENTS.md content + mtime unchanged after rc up
 #      (init must not mutate container-local dotfiles)
-#   8. auth.json RW round-trip: write inside cage → visible on host (inode preserved)
+#   8. a write to the cage's auth.json path never reaches the host file
 #   9. extensions/ dir is agent-owned + writable (agent's own extension space; the pi guard is NOT auto-loaded from here — post-olen it rides an explicit -e from /etc/rip-cage/pi/; OPEN by default, ADR-027 D1, FIRM 2026-07-02 — extensions/ still auto-loads normally, --no-extensions is a LOCKED opt-in)
 
 set -uo pipefail
@@ -190,10 +190,10 @@ printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
 TEST_WS=$(mktemp -d)
 
 # ================================================================
-# Test 1: pi bind mount — /home/agent/.pi/agent/auth.json visible in container
+# Test 1: the host auth.json is NOT mounted into the cage
 # ================================================================
 echo ""
-echo "=== Test 1: /home/agent/.pi/agent/auth.json is mounted and readable ==="
+echo "=== Test 1: host ~/.pi/agent/auth.json is not visible in the cage ==="
 
 RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
 CONTAINER=$(_resolve_container "$TEST_WS")
@@ -207,22 +207,22 @@ _track "$CONTAINER"
 
 content=$(msb exec "$CONTAINER" -- cat /home/agent/.pi/agent/auth.json 2>/dev/null || true)
 if echo "$content" | grep -q "fake"; then
-  pass "/home/agent/.pi/agent/auth.json readable and contains expected content"
+  fail "host auth.json content is visible inside the cage (it must never be mounted)" "$content"
 else
-  fail "/home/agent/.pi/agent/auth.json not readable or wrong content" "$content"
+  pass "host auth.json content is not visible inside the cage"
 fi
 
 # ================================================================
-# Test 2: /home/agent/.pi/agent/auth.json owned by agent:agent
+# Test 2: credential-mounts.pi label is the constant none
 # ================================================================
 echo ""
-echo "=== Test 2: /home/agent/.pi/agent/auth.json owned by agent:agent ==="
+echo "=== Test 2: rc.auth.credential-mounts.pi label is none ==="
 
-ownership=$(msb exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/auth.json 2>/dev/null || true)
-if [[ "$ownership" == "agent:agent" ]]; then
-  pass "/home/agent/.pi/agent/auth.json owner = agent:agent"
+pi_label=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.config.labels["rc.auth.credential-mounts.pi"] // empty')
+if [[ "$pi_label" == "none" ]]; then
+  pass "rc.auth.credential-mounts.pi=none"
 else
-  fail "/home/agent/.pi/agent/auth.json owner = '$ownership' (expected agent:agent)"
+  fail "rc.auth.credential-mounts.pi label is '$pi_label' (expected none)"
 fi
 
 # ================================================================
@@ -346,17 +346,8 @@ else
   pass "rc up did not fatal on missing ~/.pi/agent (warning check inconclusive)"
 fi
 
-# Restore for cleanup trap.
-# The 'rc up' above runs rc's cold-start auto-seed (_ensure_pi_auth_seed,
-# cli/up.sh, rip-cage-wo9): since $PI_AGENT_DIR was moved away, 'rc up' sees
-# it absent and RECREATES it with a fresh auth.json='{}' (a new inode). If we
-# just 'mv' the backup back now, mv would NEST the backup dir INSIDE that
-# still-existing recreated dir instead of replacing it — silently orphaning
-# the original (correct-inode) auth.json at a nested path and leaving the
-# seeded '{}' at the top level, which starves Test 8's round-trip check
-# (rip-cage-7atw.3). Remove the auto-seeded artifact first so the restore
-# lands at the top level again.
-rm -rf "$PI_AGENT_DIR"
+# Restore for cleanup trap. rc up no longer seeds ~/.pi/agent, so the moved-away
+# backup lands back at the top level.
 mv "${PI_AGENT_DIR}.bak-test" "$PI_AGENT_DIR"
 
 # ================================================================
@@ -389,41 +380,18 @@ fi
 rm -f "$PI_AGENT_DIR/bin/host-marker.txt"
 
 # ================================================================
-# Test 8: auth.json RW round-trip — write inside cage → visible on host,
-# inode preserved (same contract as ~/.claude/.credentials.json)
+# Test 8: a write to the cage's auth.json path never reaches the host file
 # ================================================================
 echo ""
-echo "=== Test 8: auth.json RW round-trip (write inside cage visible on host) ==="
+echo "=== Test 8: cage write to auth.json does not touch the host file ==="
 
-# Get inode before
-host_inode_before=$(stat -f '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || stat -c '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
-
-# Write new content inside the container (in-place overwrite, same as OAuth refresh)
-msb exec "$CONTAINER" -- bash -c 'printf "{\"fake\":true,\"roundtrip\":true}\n" > /home/agent/.pi/agent/auth.json' 2>/dev/null
-
-# Read on host
-roundtrip_content=$(cat "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
-if echo "$roundtrip_content" | grep -q "roundtrip"; then
-  pass "auth.json write inside cage visible on host (RW round-trip works)"
+msb exec "$CONTAINER" -- bash -c 'printf "{\"cage\":true}\n" > /home/agent/.pi/agent/auth.json' 2>/dev/null || true
+host_content=$(cat "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
+if echo "$host_content" | grep -q "cage"; then
+  fail "cage write to auth.json reached the host file (rw mount still present)" "$host_content"
 else
-  fail "auth.json write inside cage NOT visible on host" "$roundtrip_content"
+  pass "cage write to auth.json did not reach the host file"
 fi
-
-# Inode must be preserved (no atomic rename — the single-file mount tracks by inode)
-host_inode_after=$(stat -f '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || stat -c '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
-if [[ -z "$host_inode_before" || -z "$host_inode_after" ]]; then
-  # Genuinely could not read inode(s) — skip rather than guess
-  echo "  SKIP: inode check skipped (could not read inode: before='$host_inode_before' after='$host_inode_after')"
-elif [[ "$host_inode_before" == "$host_inode_after" ]]; then
-  pass "auth.json inode preserved on host after cage write (no mv/rename)"
-else
-  # Both inodes read AND they differ — the write used atomic rename instead of in-place overwrite.
-  # This would break pi's OAuth token refresh (single-file bind mount tracks by inode).
-  fail "auth.json inode changed after cage write — atomic rename detected (inode before=$host_inode_before, after=$host_inode_after)"
-fi
-
-# Restore auth.json content for downstream tests
-printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
 
 # ================================================================
 # Test 9: the agent's pi extensions/ dir is correct, agent-owned, and writable
@@ -526,7 +494,7 @@ fi
 # ================================================================
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
-  echo "All pi auth mount tests passed."
+  echo "All pi state mount tests passed."
 else
   echo "$FAILURES test(s) FAILED."
 fi
