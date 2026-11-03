@@ -30,12 +30,11 @@
 # S3 (rip-cage-9odv): an AMBIENT-ENV-LEAK regression check, orthogonal to
 # S1/S2's scratch-root race. gm_capture() (sandbox.sh) launches the child
 # `rc` with plain `env` (whitelist-APPEND, not clean-slate `env -i`), so an
-# ambient RC_CAGE_CONF / RC_IMAGE exported by the calling
-# process (e.g. tests/run-host.sh's own driver fixture) leaks
-# into every sandboxed `rc` invocation and corrupts the config the
-# golden-master cases resolve against. capture.sh --check is 55/55 when run
-# standalone (no ambient var) but was 5-7/55 red when run inside the full
-# run-host.sh suite. S3 exports a bogus RC_CAGE_CONF and RC_IMAGE
+# ambient RC_* var exported by the calling process leaks into every
+# sandboxed `rc` invocation and corrupts the config the golden-master cases
+# resolve against. capture.sh --check was 55/55 standalone but 5-7/55 red
+# inside the full run-host.sh suite; the vars that leaked then have since
+# retired (see the S3 block below). S3 exports a bogus RC_CAGE_CONF and RC_IMAGE
 # in THIS process's environment and asserts capture.sh --check is still
 # 55/55 -- i.e. the golden-master outcome must be independent of ambient
 # RC_*/RIP_CAGE_* vars.
