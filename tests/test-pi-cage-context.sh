@@ -8,7 +8,8 @@
 #   - Cage ~/.claude/CLAUDE.md contains the literal string /etc/rip-cage/cage-pi.md
 #     inside the <!-- begin:rip-cage-topology --> fence
 #   - /etc/rip-cage/cage-pi.md is readable inside the cage
-#   - init exits 0 when pi auth mount is absent
+#   - init exits 0 when the host has no ~/.pi/agent, so rc up wires no pi
+#     substrate mount (AGENTS.md, skills/, ...)
 #
 # Requires docker + the rip-cage image already built (./rc build). The fence
 # itself, and therefore /etc/rip-cage/cage-pi.md and /etc/rip-cage/cage-claude.md,
@@ -375,9 +376,9 @@ fi
 
 # ---- Test 7: mount-absent guard — init exits 0, no AGENTS.md error ----
 echo ""
-echo "=== Test 7: mount-absent guard — init exits 0 when pi mount was skipped ==="
+echo "=== Test 7: mount-absent guard — init exits 0 when the pi substrate mount was skipped ==="
 
-# Temporarily rename ~/.pi/agent so rc up skips the mount
+# Temporarily rename ~/.pi/agent so rc up skips the pi substrate mount
 PI_AGENT_BACKUP_TMP="${HOME}/.pi/agent.bak-test-pi-cage-$$"
 if [[ -d "$PI_AGENT_DIR" ]]; then
   mv "$PI_AGENT_DIR" "$PI_AGENT_BACKUP_TMP"
@@ -400,17 +401,18 @@ else
   init_exit=0
   msb exec "$CONTAINER2" -- /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || init_exit=$?
   if [[ $init_exit -eq 0 ]]; then
-    pass "Test 7: init exits 0 even when pi mount was not wired"
+    pass "Test 7: init exits 0 even when the pi substrate mount was not wired"
   else
     fail "Test 7: init exited $init_exit (expected 0)" "$init_exit"
   fi
 
-  # 7b: /home/agent/.pi/agent/AGENTS.md must NOT exist when auth mount was skipped
+  # 7b: /home/agent/.pi/agent/AGENTS.md must NOT exist when the pi substrate
+  # mount was skipped
   # (init must not create host-substrate files when ~/.pi/agent is absent on the host)
   if ! msb exec "$CONTAINER2" -- test -f /home/agent/.pi/agent/AGENTS.md; then
-    pass "Test 7b: /home/agent/.pi/agent/AGENTS.md not created when auth mount was skipped"
+    pass "Test 7b: /home/agent/.pi/agent/AGENTS.md not created when the pi substrate mount was skipped"
   else
-    fail "Test 7b: /home/agent/.pi/agent/AGENTS.md exists but mount was skipped — init wrote to it"
+    fail "Test 7b: /home/agent/.pi/agent/AGENTS.md exists but the pi substrate mount was skipped — init wrote to it"
   fi
 
   # 7c: /etc/rip-cage/cage-pi.md must still be readable when it's actually
