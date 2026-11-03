@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -uo pipefail
 
 # tests/test-auth-secret.sh -- host-tier tests for the msb --secret CCTOK
 # non-possession bridge (rip-cage-ely4.7.17). The keychain -> mounted
