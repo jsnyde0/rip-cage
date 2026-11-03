@@ -44,7 +44,6 @@ rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file F
 | `--port`, `--env-file`, `--cpus`, `--memory` | Runtime overrides layered onto the config's own values, passed only when given. |
 | `--pids-limit` | Accepted and ignored: `msb create` has no PID limit. |
 | `--new` / `--session NAME` | Multiplexer session selection; see below. Mutually exclusive (exit 2 if both). |
-| `--allow-risky-mount <resolved-path>` | One-shot: let one protected path past the mount refusal for this invocation. Takes the **resolved** (realpath) form, which the error message prints. Repeatable. |
 
 ### Which recreate am I doing?
 

@@ -1,7 +1,7 @@
 # ADR-023: Secret-path denylist on host-side mount validation
 
 **Status:** Proposed
-**Date:** 2026-05-22 (revised 2026-05-29 — D5/D6 two-tier failure mode; 2026-06-03 — D6 absent-config auto-seed, rip-cage-j86)
+**Date:** 2026-05-22 (revised 2026-05-29 — D5/D6 two-tier failure mode; 2026-06-03 — D6 absent-config auto-seed, rip-cage-j86; 2026-11-03 — D6 `--allow-risky-mount` retired, rip-cage-myx8)
 **Builds on:** [ADR-003](ADR-003-agent-friendly-cli.md) (D3 allowed-roots path validation — composition layer), [ADR-021](ADR-021-layered-rip-cage-config.md) (D1+D2 config substrate this ADR consumes), [ADR-022](ADR-022-ssh-allowlist.md) (D4+D5 two-layer precedent — explicitly contrasted in D3 below)
 **Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud + actionable error), [ADR-010](ADR-010-auth-refresh.md) (OAuth credential mount — scope OUT), [ADR-014](ADR-014-push-less-cage.md) (D2 non-interactive fail-loud posture — failure mode discipline), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (SSH-agent forwarding — scope OUT), [ADR-020](ADR-020-ssh-identity-routing.md) (SSH identity routing, known_hosts mount — scope OUT), [ADR-024](ADR-024-prompt-injection-threat-model.md) (prompt-injection threat model — the secret-path mount accident this ADR closes is one exfil vector under that model), [ADR-030](ADR-030-classify-by-use-secret-posture.md) (orthogonal sibling — `mounts.mask` masks in-tree content by explicit per-path declaration vs. this ADR's pattern-match mount rejection; see canonical_refs note), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("layers, not walls", "80/20, not 100/0")
 
@@ -164,9 +164,11 @@ FLEXIBLE because empirical — the exact list will be tuned as usage data arrive
 
 **Firmness: FIRM**
 
-On a denylist match, the response depends on whether the matched mount surface (D5 IN scope) encodes *explicit user mount-intent* or is an *incidental/decoration surface*. Both tiers share the realpath-first match (D7), the same effective denylist (D1/D2), and the same escape hatches (`--allow-risky-mount`, `mounts.allow_risky`) — an allow-risky entry suppresses the response on either tier. The only difference is whether a match aborts the whole `rc up` or just drops the one mount.
+On a denylist match, the response depends on whether the matched mount surface (D5 IN scope) encodes *explicit user mount-intent* or is an *incidental/decoration surface*. Both tiers share the realpath-first match (D7), the same effective denylist (D1/D2), and the same escape hatches (see **Escape hatches** below). The only difference is whether a match aborts the whole `rc up` or just drops the one mount.
 
 **Explicit mount-intent surfaces** (`--env-file` source, `.beads/redirect` target) → **fail loud.** `rc up` exits non-zero immediately. The user explicitly asked to mount this path; a denied match means their explicit request is unsafe, and the right response is to stop and tell them. The error message (to stderr) names: (1) the matched path after realpath resolution, (2) the matched pattern, (3) the escape-hatch options.
+
+*The example below is the 2026-05-29 message shape. Its two override blocks are retired (2026-11-03, see **Escape hatches**); the live message points at the mount line and the protected-paths list file instead.*
 
 ```
 Error: --env-file path matches secret-path denylist pattern '.aws':
@@ -197,11 +199,15 @@ Warn-and-skip is **not** the rejected "warn-only" alternative below: warn-only m
 
 **Rationale (why the incidental tier does not fail loud):** On an incidental surface the secret is not mounted under *either* policy — that is the entire security win, and warn-and-skip already delivers it. Fail-loud's only additional effect would be refusing to launch the whole cage because one optional/incidental symlink happened to point at a denied path: zero extra blast-radius reduction, pure launch friction, against the CLAUDE.md autonomy posture ("autonomy is the product"; aborting a legitimate launch is the flagged anti-pattern). Explicit-intent surfaces differ because the user *asked* for that exact mount — failing loud answers their explicit request, rather than vetoing an incidental side-mount they never requested.
 
-**Escape hatches (both tiers):**
-- **`--allow-risky-mount PATH`** flag: one-shot, per-invocation bypass for the named path
-- **`mounts.allow_risky`** field in `.rip-cage.yaml` / `~/.config/rip-cage/config.yaml`: `selection_list` per ADR-021 D2 — project may list specific allowed paths persistently; project-level `allow_risky` is explicit opt-in for that project
+**Escape hatches (both tiers), evolved in place 2026-11-03 (`rip-cage-myx8`; human ruling 2026-11-03, option B, recorded on that bead):** every override is a host-side file edit.
+- **Drop the mount** — remove the mount line from the cage's config (or stop passing the `--env-file`).
+- **Edit the protected-paths list** — if the operator has decided a listed name is not a secret, remove that line from the list file `rc up` read ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2). The refusal message names the exact file.
 
-**Path-form contract:** `--allow-risky-mount` and `mounts.allow_risky` entries are matched against the **resolved (realpath) form** of the input path, not the as-typed form. This is consistent with D7's realpath-first validation model. The messages (above) show the resolved form so the user can copy-paste it directly into the flag or YAML. Users typing the symlink form into `mounts.allow_risky` will see the denylist re-fire on the next `rc up` with the resolved path in the message — the system tells them what to write.
+The two per-path exemptions this decision first named are retired. `mounts.allow_risky` went with the rip-cage config schema (ADR-031 D2, 2026-09-15). The one-shot `rc up --allow-risky-mount PATH` flag survived that retirement as parsed-but-inert: `rc up` stored the path and read it nowhere, so an operator who followed the printed hint hit the same refusal (`rip-cage-myx8`). The flag, its hint line and its reference row are deleted. `rc up` does not yet reject unknown options (`rip-cage-btgb`), so a stale invocation still launches — without the bypass it never had.
+
+*Counter-argument (FIRM rigor):* the original warrant for a one-shot bypass was autonomy — "a legitimate use case with no self-recovery path forces human intervention for every exception." *Rebuttal:* it was never a self-recovery path for the agent — `rc` is not on the cage PATH, so only the human running `rc up` could pass the flag, and that same human can edit the protected-paths list in one line. A per-run flag also leaves no trace in any file an operator can diff, against ADR-031's one-config posture where every containment-widening choice is visible host-side. The flag was dead for seven weeks with no report, which is the measured demand for it.
+
+**Path-form contract:** the denylist matches the **resolved (realpath) form** of the input path, not the as-typed form (D7). The refusal message prints the resolved path and the matched list entry, so the operator knows which line to remove.
 
 **Alternatives considered:**
 
@@ -210,6 +216,7 @@ Warn-and-skip is **not** the rejected "warn-only" alternative below: warn-only m
 | Uniform fail-loud — incidental surfaces also exit non-zero | `reasoned:` On an incidental surface the secret is not mounted either way (warn-and-skip already blocks it), so exit-non-zero buys zero added blast-radius reduction — it only refuses to launch the whole cage over an optional/incidental side-mount the user never requested. Pure friction against the CLAUDE.md autonomy posture. (This also never matched shipped behavior: the skill/agent symlink-parent loops always warn-and-skipped; the prior uniform-fail-loud wording was a contradiction this revision resolves.) |
 | Silent skip (don't mount the path, no message) | `direct:` CLAUDE.md philosophy "fail loud on risky configuration" (`CLAUDE.md:7-16`); silent skip hides that a mount was dropped, producing a harder-to-diagnose downstream failure. Rejected on *both* tiers — warn-and-skip is loud. |
 | Warn-only (print warning but continue mounting) | `reasoned:` Distinct from warn-and-skip: warn-only mounts the secret anyway, so the denylist provides zero blast-radius reduction. The only value of a denylist is stopping the mount. Rejected on both tiers. |
+| Keep a one-shot `--allow-risky-mount PATH` flag | `direct:` it shipped inert from ADR-031 D2 until 2026-11-03 and nobody reported it (`rip-cage-myx8`); only the host-side human could pass it, and that human can edit the protected-paths list instead — leaving a diffable trace a per-run flag never leaves. |
 | No escape hatch (hard block, no bypass path) | `reasoned:` Per CLAUDE.md "'It's annoying' is a design signal" — a legitimate use case with no self-recovery path forces human intervention for every exception, breaking agent autonomy. The escape hatch keeps the default protective while preserving the cage's core value proposition. |
 
 **What would invalidate this:** (a) An incidental surface is promoted to an explicit opt-in (e.g. the symlink-follow surface gains a flag by which the user explicitly requests the mount) — move it to the fail-loud tier, mirroring the explicit-intent rationale. (b) `rc config init` (rip-cage-97n) gains the ability to auto-detect and pre-populate `mounts.allow_risky` for known-legitimate paths, reducing escape-hatch friction enough that the message format needs updating — update the message, not the policy.
@@ -235,7 +242,7 @@ Symlink-escape is a well-documented bypass class: a user could construct `~/.mya
 | Validate the link path only (not the resolved target) | `external:` NanoClaw `src/modules/mount-security/index.ts:137-143` resolves first; symlink-escape is a known documented bypass class. Validating only the link path makes the denylist trivially bypassable via a single symlink layer. |
 | Validate both link path and resolved target | `reasoned:` More work, same outcome. If either matches, we deny; resolving first and checking once covers the threat without adding a second code path. |
 
-**What would invalidate this:** a use case where resolving symlinks before validation produces false positives (e.g., a symlink to a normally-secret path that the user legitimately wants to pass through after `--allow-risky-mount`). The `--allow-risky-mount` escape hatch in D6 accepts the *resolved* path to prevent bypass, so this case is already handled — user names the resolved path, not the link.
+**What would invalidate this:** a use case where resolving symlinks before validation produces false positives (e.g., a symlink to a normally-secret path that the user legitimately wants to pass through past the denylist). The D6 escape hatch is a host-side list edit keyed on the matched name, and the refusal message prints the *resolved* path, so the operator sees what actually matched rather than the link.
 
 ## Consequences
 
@@ -247,7 +254,7 @@ Symlink-escape is a well-documented bypass class: a user could construct `~/.mya
 - Composable with ADR-003 D3: allowed-roots check runs first (coarse-grained), denylist check runs second (pattern-grained). Clear layering, no entanglement.
 
 **Negative:**
-- New default-on policy will fail-loud for users who currently pass secret-path env-files to `rc up`. They need to add `--allow-risky-mount` or `mounts.allow_risky` to continue.
+- New default-on policy will fail-loud for users who currently pass secret-path env-files to `rc up`. They need to drop that mount or edit the protected-paths list to continue (D6 escape hatches, as evolved 2026-11-03).
 - Pattern maintenance: as new secret-path conventions emerge (new cloud tools, new dotfile locations), the default list needs updating. Tracked as detection-rule maintenance.
 - `additive_list` merge semantics mean project files can't remove a global default pattern. Users who need to remove a global pattern must update the global `~/.config/rip-cage/config.yaml` directly. (This is intentional — see D2.)
 
@@ -266,7 +273,7 @@ Symlink-escape is a well-documented bypass class: a user could construct `~/.mya
   This is stricter than NanoClaw's substring match (`src/modules/mount-security/index.ts:148-166`); rip-cage's tighter rule was chosen to eliminate the false-positive class identified during ADR review (e.g., `~/code/my-credentials-manager/` should not match `credentials`). First match → fail loud per D6.
 - **`mounts.allow_risky` check**: before the denylist match, check if the resolved path appears in the effective `mounts.allow_risky` selection_list; if so, skip the denylist check for this path and continue.
 - **`.beads/redirect` resolution**: after `_path_under_allowed_roots` and `realpath`, the resolved target directory passes through `_check_secret_path_denylist` before the bind-mount is added.
-- **`--allow-risky-mount PATH`** CLI flag: accepted by `rc up`. Accepts a path that will be matched against the **resolved (realpath) form** of any in-scope input path. The flag effectively pre-populates an in-process `mounts.allow_risky` entry; runs before denylist matching; equivalent to a one-invocation `.rip-cage.yaml` entry. Multiple `--allow-risky-mount` flags may be passed.
+- *(Retired 2026-11-03, `rip-cage-myx8` — see D6 escape hatches.)* **`--allow-risky-mount PATH`** CLI flag: accepted by `rc up`. Accepts a path that will be matched against the **resolved (realpath) form** of any in-scope input path. The flag effectively pre-populates an in-process `mounts.allow_risky` entry; runs before denylist matching; equivalent to a one-invocation `.rip-cage.yaml` entry. Multiple `--allow-risky-mount` flags may be passed.
 - **Schema fields** added to ADR-021 loader schema:
   - `mounts.denylist`: `additive_list`, default populated in `~/.config/rip-cage/config.yaml`
   - `mounts.allow_risky`: `selection_list`, default empty; project replaces if present
@@ -285,5 +292,7 @@ Symlink-escape is a well-documented bypass class: a user could construct `~/.mya
 - `docs/decisions/ADR-021-layered-rip-cage-config.md` — D1+D2 config substrate and `additive_list`/`selection_list` merge schema; this ADR adds `mounts.denylist` (additive_list) and `mounts.allow_risky` (selection_list) as consumers of that substrate
 - `docs/decisions/ADR-022-ssh-allowlist.md` — D3 two-layer precedent (mount layer + PreToolUse hook); explicitly contrasted in D3 of this ADR — denylist uses single-layer enforcement because no agent-runtime bypass surface exists
 - `docs/decisions/ADR-030-classify-by-use-secret-posture.md` — **orthogonal sibling, not an evolution of this ADR.** The `mounts.mask` key (ADR-030 D4) masks *content already legitimately in the mounted tree* via **explicit per-path declaration** and a boot-time `ro` overmount; this ADR's `mounts.denylist` **rejects a whole mount** via **pattern-matching** at `rc up` validation. Different surface, mechanism, and merge posture (denylist is the one replace-forbidden field per ADR-021 D2; mask is visibility-reducing and narrowable via a diff-visible `!replace`). This ADR's D1/D4/D5 stand unchanged.
+- `docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md` — D2 protected-paths list; the D6 escape hatch since 2026-11-03
+- rip-cage-myx8 — retired `--allow-risky-mount` (human ruling 2026-11-03, option B)
 - rip-cage-c1p.2 (closed) — introduced `_collect_dangling_symlinks` and the symlink-follow mount surface that D5 now lists as an incidental IN-scope surface
 - External: NanoClaw `src/modules/mount-security/index.ts:39-57` (17-pattern default list source); NanoClaw `src/modules/mount-security/index.ts:137-143` (realpath-first resolution pattern)

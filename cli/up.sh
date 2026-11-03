@@ -89,7 +89,6 @@ _emit_denylist_denial() {
   local _list
   _list=$(_protected_paths_resolve 2>/dev/null) || _list=""
   echo "Error: refusing to mount ${_rpath} — matched secret-path denylist pattern '${_pattern}'." >&2
-  echo "  Override (one-shot):   rc up --allow-risky-mount ${_rpath} ..." >&2
   if [[ -n "$_list" ]]; then
     echo "  Override (persistent): drop that mount line from this cage's config, or — if you have" >&2
     echo "                         decided '${_pattern}' is not a secret — remove that line from the" >&2
@@ -2543,10 +2542,6 @@ cmd_up() {
   # Multi-session flags: --new calls the new_session hook for a new auto-named session;
   # --session <name> forwards NAME to the attach hook.  Mutually exclusive.
   local rc_up_new_session="" rc_up_session_name=""
-  # ADR-023 D6: per-invocation denylist bypass. Repeatable flag; each value is
-  # appended to the RC_ALLOW_RISKY_MOUNT array. Matched literally against the
-  # realpath-resolved input path (no re-realpath of the flag arg).
-  RC_ALLOW_RISKY_MOUNT=()
   # ADR-024 D1 / rip-cage-hhh.5: per-invocation bypass for workspace base-URL redirect check.
   # When set, validator emits a warning instead of refusing.
   local rc_allow_config_override=""
@@ -2572,7 +2567,6 @@ cmd_up() {
       --pids-limit) [[ $# -ge 2 ]] || { echo "Error: --pids-limit requires a value" >&2; exit 1; }; rc_pids_limit="$2"; shift 2 ;;
       --new) rc_up_new_session="true"; shift ;;
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
-      --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
       --allow-config-override) rc_allow_config_override="true"; shift ;;
       --reload) rc_up_reload="true"; shift ;;
       --no-reload) rc_up_no_reload="true"; shift ;;
@@ -3271,10 +3265,6 @@ cmd_up() {
         [[ -n "$rc_up_new_session" ]] && _conv_args+=(--new)
         [[ -n "$rc_up_session_name" ]] && _conv_args+=(--session "$rc_up_session_name")
         [[ -n "$rc_allow_config_override" ]] && _conv_args+=(--allow-config-override)
-        local _conv_rm
-        for _conv_rm in "${RC_ALLOW_RISKY_MOUNT[@]+"${RC_ALLOW_RISKY_MOUNT[@]}"}"; do
-          _conv_args+=(--allow-risky-mount "$_conv_rm")
-        done
         # bash 3.2 + set -u: a bare converge leaves _conv_args empty (ADR-008 D5).
         cmd_up ${_conv_args[@]+"${_conv_args[@]}"} "$path"
         return
