@@ -39,7 +39,9 @@ _AUTH_CCTOK_MIN_LEN=80
 # _protected_paths_secrets_dir (cli/lib/protected_paths.sh), the one place
 # that derives it.
 _auth_cctok_file() {
-  echo "$(_protected_paths_secrets_dir)/CCTOK"
+  local _dir
+  _dir="$(_protected_paths_secrets_dir)" || return 1
+  echo "${_dir}/CCTOK"
 }
 
 # _auth_file_mode FILE — echo FILE's permission bits as a bare octal string
