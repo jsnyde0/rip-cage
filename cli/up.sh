@@ -2592,10 +2592,11 @@ cmd_up() {
     # below is deliberate, not duplicated work -- it re-checks AFTER the
     # resync attempt (same after-the-load ordering rip-cage-7bs3/0v47
     # already enforce in cmd_build and in the image-absent block below), so ITS
-    # status-1/status-3 branches report the POST-resync state: a load that
-    # failed, or reported success but didn't verifiably land, falls through
-    # to that existing loud status-3/528o warning on its own -- never a
-    # second copy of this notice.
+    # branches report the POST-resync state. A load that FAILED was already
+    # reported loud by _build_msb_load (and _RC_MSB_LOAD_WARNED then silences
+    # the emitter's layer-drift warning); one that reported success but
+    # didn't verifiably land falls through to the emitter's loud
+    # status-3/528o warning -- never a second copy of this notice.
     local _drift_status=0
     _msb_image_layer_drift_status || _drift_status=$?
     if [[ "$_drift_status" -eq 1 ]]; then
@@ -3164,7 +3165,11 @@ cmd_up() {
     # `rc build`. Stays advisory -- stderr only, exit status untouched. The
     # status-3 branch inside _msb_warn_image_layer_drift stays gated on
     # _RC_MSB_LOAD_SUCCEEDED, so a Docker-only host, or any of
-    # _build_msb_load's never-attempted-load paths, still emits nothing here.
+    # _build_msb_load's never-attempted-load paths (msb absent, a
+    # sub-threshold fixture archive), still emits nothing here. A load that
+    # FAILED is reported by _build_msb_load itself on this path too (its
+    # CANNOT CHECK / `msb load` failure warnings reach rc up's stderr; the
+    # emitter then skips its layer-drift warning via _RC_MSB_LOAD_WARNED).
     _msb_warn_image_layer_drift
   fi
 

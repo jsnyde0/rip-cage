@@ -360,7 +360,9 @@ _build_warn_stale_containers() {
 # below, loud). A real build's docker save is always many MB. rip-cage-7dkq: found live via the golden-master harness +
 # test-manifest-seed-drift.sh both breaking during this bead's own
 # verification (their fake-docker PATH shims never implement `save` for
-# real, so `docker save` fails/returns near-nothing on those fixtures);
+# real, so their `docker save` exits 0 and writes near-nothing; a shim whose
+# `save` exits NON-zero is a path-3 failure and warns loud when msb is on
+# PATH, rip-cage-jblx);
 # regression-guarded by tests/test-build-msb-load.sh T5.
 #
 # rip-cage-528o: publishes _RC_MSB_LOAD_SUCCEEDED (0/1) as the
@@ -375,12 +377,13 @@ _build_warn_stale_containers() {
 #
 # Parameters: none (uses global $IMAGE).
 # Returns: 0, silently, on the three non-failure paths: (1) msb is absent,
-# (4) the saved archive is implausibly small (not a real build), or (5) the
-# load succeeded. 1, with one loud stderr warning naming the image, on the
-# failure paths: (2) mktemp could not create the scratch archive,
-# (3) `docker save` failed (rip-cage-jblx: both were silent 0 before),
-# (4b) `docker save` exited 0 but wrote a truncated archive, or `msb load`
-# itself failed. The caller ignores the code either way.
+# (4a) the saved archive is implausibly small and docker reports no real
+# image size (not a real build), or (5) the load succeeded. 1, with one loud
+# stderr warning naming the image, on the failure paths: (2) mktemp could not
+# create the scratch archive, (3) `docker save` failed (rip-cage-jblx: both
+# were silent 0 before), (4b) `docker save` exited 0 but wrote a truncated
+# archive of a real-sized image, or (5b) `msb load` itself failed. The
+# caller ignores the code either way.
 #
 # Every loud return also sets _RC_MSB_LOAD_WARNED=1 (rip-cage-jblx B1), so
 # _msb_warn_image_layer_drift skips its "re-run rc build" layer-drift
@@ -436,21 +439,25 @@ _build_msb_load() {
   command -v msb >/dev/null 2>&1 || return 0
 
   local _tar
-  # The archive lands in ${TMPDIR:-/tmp}, which may be a small tmpfs; both
-  # CANNOT CHECK warnings below name TMPDIR as the knob that moves it.
-  local _stale_hint="msb's image cache was NOT refreshed, so new cages will boot the PREVIOUS '${IMAGE}'. If TMPDIR (default /tmp) is full or over quota, re-run with a roomier one, e.g. 'TMPDIR=\$HOME/.cache rc build'."
+  # The archive lands in ${TMPDIR:-/tmp}, which may be a small tmpfs; the
+  # CANNOT CHECK warnings below (paths 2, 3, 4b) name TMPDIR as the knob that
+  # moves it.
+  local _stale_hint="msb's image cache was NOT refreshed, so new cages will boot the previous '${IMAGE}' msb held, or fail to find one if it never held it. If TMPDIR (default /tmp) is full or over quota, re-run with a roomier one, e.g. 'TMPDIR=\$HOME/.cache rc build'."
 
   # CANNOT CHECK (path 2): no writable temp file, so the save->load
   # conversion cannot even be attempted -- an UNEXPECTED failure of a step
   # that should have worked. Loud but non-fatal: the Docker image (the
   # primary build artifact) is built and intact.
+  # stdout is the archive path and nothing else; mktemp's stderr is read only
+  # on failure, from a second attempt (the first discarded it), so it can
+  # never leak into the path variable.
   local _mktemp_err
-  if ! _mktemp_err=$(mktemp -t "rc-msb-load.XXXXXX" 2>&1); then
+  if ! _tar=$(mktemp -t "rc-msb-load.XXXXXX" 2>/dev/null); then
+    _mktemp_err=$(mktemp -t "rc-msb-load.XXXXXX" 2>&1 >/dev/null)
     echo "Warning: could not create a temp file for the msb load of '${IMAGE}' (mktemp: ${_mktemp_err:-no output}). ${_stale_hint}" >&2
     _RC_MSB_LOAD_WARNED=1
     return 1
   fi
-  _tar="$_mktemp_err"
 
   # CANNOT CHECK (path 3): `docker save` itself failed, so there is no
   # archive to hand to msb (rip-cage-jblx: observed as 'disk quota exceeded'

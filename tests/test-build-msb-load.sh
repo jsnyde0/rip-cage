@@ -30,6 +30,10 @@
 #       loud warning, msb load never invoked (rip-cage-jblx B2)
 #   T18 a load failure already warned -> no second, layer-drift warning; with
 #       no load in the process, layer drift still warns (rip-cage-jblx B1)
+#   T18c a load that RAN (flag 0, drift persists) still gets the layer-drift
+#       warning (rip-cage-1jgp R8)
+#   T19 rc up's two _build_msb_load call sites, extracted from cli/up.sh:
+#       a docker save failure reaches rc up's stderr (rip-cage-1jgp R5)
 #   T4  structural: cmd_build's body actually calls _build_msb_load (wiring
 #       check -- a passing T1-T3 alone wouldn't prove the verb calls the helper)
 #   T5  REGRESSION GUARD (found live during this bead's own verification,
@@ -849,11 +853,87 @@ else
   fail "T18b: expected the layer-drift warning when no load ran" "$_t18b_out"
 fi
 
+# T18c (rip-cage-1jgp R8): the load RAN and succeeded (SUCCEEDED=1, WARNED=0),
+# yet msb's cache still reports different layers -- drift persists after a
+# load, so the layer-drift warning must still print. T18 covers "failed load,
+# no second warning"; T18b "no load at all"; this is the remaining cell, the
+# rc up image-present resync that lands wrong content.
+_t18c_out=$(PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  RC_TEST_DOCKER_IMAGE_LAYERS="$_t18_layers" RC_TEST_MSB_IMAGE_INSPECT="$_t18_msb" \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _build_msb_load; _msb_warn_image_layer_drift" 2>&1)
+if grep -qF "different layer content" <<<"$_t18c_out"; then
+  pass "T18c: a load that ran and succeeded, with drift persisting, still warns"
+else
+  fail "T18c: expected the layer-drift warning after a successful load that did not fix the drift" "$_t18c_out"
+fi
+
+# ---------------------------------------------------------------------------
+# T19 (rip-cage-1jgp R5): rc up's two _build_msb_load call sites (cli/up.sh:
+# the image-absent provisioning block and the image-present drift-resync
+# block) must carry a docker-save failure to rc up's own stderr. The blocks
+# are extracted verbatim from cli/up.sh by their anchor lines (the idiom of
+# tests/test-up-msb-load-wiring.sh) and run against FAKE_BIN_FAIL_SAVE, so a
+# call site that drops or silences the warning goes red here.
+# ---------------------------------------------------------------------------
+UP_SH="${RC_TEST_UP_SH:-${REPO_ROOT}/cli/up.sh}"  # override: positive-control scratch copy
+_t19_absent_block=$(awk '
+  /^  if \[\[ "\$_image_absent" == "true" \]\]; then$/ { flag=1 }
+  flag { print }
+  flag && /^  fi$/ { exit }
+' "$UP_SH")
+_t19_present_block=$(awk '
+  /^  if \[\[ "\$_image_absent" == false && "\$\{DRY_RUN:-\}" != "true" \]\]; then$/ { flag=1 }
+  flag { print }
+  flag && /^  fi$/ { exit }
+' "$UP_SH")
+
+echo ""
+echo "=== T19: rc up's _build_msb_load call sites carry a docker save failure to rc up's stderr ==="
+_t19_script=$(mktemp)
+{
+  echo "source '${RC}' 2>/dev/null"
+  echo "IMAGE=rip-cage:latest"
+  echo "OUTPUT_FORMAT=''"
+  echo "_image_absent=true"
+  echo '_pull_or_build() { return 0; }'
+  echo "$_t19_absent_block"
+} >"$_t19_script"
+: >"$CALL_LOG"
+_t19_out=$(PATH="$FAKE_BIN_FAIL_SAVE:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 bash "$_t19_script" 2>&1 >/dev/null)
+if [[ -n "$_t19_absent_block" ]] && grep -qF "docker save rip-cage:latest" <<<"$_t19_out" && grep -qF "disk quota exceeded" <<<"$_t19_out"; then
+  pass "T19: image-absent call site -- the save-failure warning reaches rc up's stderr"
+else
+  fail "T19: expected the save-failure warning on the absent-branch stderr" "$_t19_out"
+fi
+
+# Present branch: drift (status 1) triggers the resync load, whose save
+# fails; the failure warning prints and the layer-drift warning stays quiet.
+{
+  echo "source '${RC}' 2>/dev/null"
+  echo "IMAGE=rip-cage:latest"
+  echo "OUTPUT_FORMAT=''"
+  echo "_image_absent=false"
+  echo '_rc_test_present_block() {'
+  echo "$_t19_present_block"
+  echo '}'
+  echo '_rc_test_present_block'
+} >"$_t19_script"
+: >"$CALL_LOG"
+_t19b_out=$(PATH="$FAKE_BIN_FAIL_SAVE:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  RC_TEST_DOCKER_IMAGE_LAYERS="$_t18_layers" RC_TEST_MSB_IMAGE_INSPECT="$_t18_msb" \
+  bash "$_t19_script" 2>&1 >/dev/null)
+rm -f "$_t19_script"
+if [[ -n "$_t19_present_block" ]] && grep -qF "docker save rip-cage:latest" <<<"$_t19b_out" && grep -qF "disk quota exceeded" <<<"$_t19b_out" && ! grep -qF "different layer content" <<<"$_t19b_out"; then
+  pass "T19b: image-present resync call site -- the save-failure warning reaches rc up's stderr, no second layer-drift warning"
+else
+  fail "T19b: expected the save-failure warning (and no layer-drift warning) on the present-branch stderr" "$_t19b_out"
+fi
+
 # ---------------------------------------------------------------------------
 # T4: structural wiring check -- cmd_build's body actually calls _build_msb_load
 #
 # rip-cage-zqjz.2: captured into a variable FIRST, rather than piped straight
-# into `grep -q` -- under this file's own `set -uo pipefail` (line 40), a
+# into `grep -q` -- under this file's own `set -uo pipefail` (the option line near the top), a
 # live `awk ... | grep -q ...` pipe is a real SIGPIPE race: `grep -q` exits
 # on its FIRST match and closes its read end, and if awk still has more
 # output queued (true once cmd_build's body -- now much larger under the

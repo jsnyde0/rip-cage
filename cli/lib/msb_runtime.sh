@@ -408,13 +408,13 @@ _msb_image_layer_drift_status() {
 # real `msb load` that reported success. In THAT state, status 3 means the
 # load reported success but did not land -- the image cache is unverified
 # and a cage could boot from a stale image -- so it must be loud. `rc up`'s
-# image-PRESENT call site never runs _build_msb_load in that same
-# invocation, so the flag there is whatever a prior process last left it at
-# (almost always unset/0 in a fresh shell) and this branch stays inert there
-# in practice. `rc up`'s image-ABSENT call site (rip-cage-0v47) DOES run
+# image-PRESENT call site runs _build_msb_load only when its resync fires
+# (drift status 1, rip-cage-7yvy); with no resync the flag is whatever a
+# prior call left it at (unset/0 in a fresh shell) and this branch stays
+# inert there. `rc up`'s image-ABSENT call site (rip-cage-0v47) always runs
 # _build_msb_load first, in the same process, so this branch IS live there:
-# a load that reports success but doesn't land is now loud on `rc up` too,
-# not just `rc build`. Default 0 via ${...:-0} keeps this safe under
+# a load that reports success but doesn't land is loud on `rc up` too, not
+# just `rc build`. Default 0 via ${...:-0} keeps this safe under
 # `set -u` when _build_msb_load never ran at all.
 #
 # POSTURE REMINDER for the status-3 branch: still advisory. It prints to
