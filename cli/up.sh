@@ -158,13 +158,17 @@ _up_json_output() {
 
 # _up_detect_worktree — detect and validate a git worktree at the given path.
 #
-# Sets globals: wt_detected, wt_name, wt_main_git, wt_error
+# Sets globals: wt_detected, wt_name, wt_main_git, wt_main_beads, wt_error
+# wt_main_beads is the main repo's .beads/ path -- the one resolver cmd_up and
+# cmd_test share. The main repo root is the parent of the main git dir, which
+# also holds for a bare repo (<root>/foo.git -> <root>/.beads).
 # Parameter: $1 path — the validated workspace path
 _up_detect_worktree() {
   local _path="$1"
   wt_detected=false
   wt_name=""
   wt_main_git=""
+  wt_main_beads=""
   wt_error=""
 
   if [[ ! -f "${_path}/.git" ]]; then
@@ -282,16 +286,8 @@ _up_detect_worktree() {
 
   wt_detected=true
   wt_main_git="$resolved_git_dir"
+  wt_main_beads="$(dirname "$wt_main_git")/.beads"
   log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
-}
-
-
-# _up_main_beads_dir — the main repo's .beads/ path for the worktree last
-# detected by _up_detect_worktree (needs wt_detected=true). The one resolver
-# shared by cmd_up and cmd_test: the main repo root is the parent of the main
-# git dir, which also holds for a bare repo (<root>/foo.git -> <root>/.beads).
-_up_main_beads_dir() {
-  echo "$(dirname "$wt_main_git")/.beads"
 }
 
 
@@ -1041,7 +1037,7 @@ _up_prepare_environment() {
     # use an empty embedded engine. Fix: mount the main repo's .beads/ over
     # the worktree's .beads/, same mechanism as an explicit redirect.
     local main_beads_dir resolved_main_beads
-    main_beads_dir=$(_up_main_beads_dir)
+    main_beads_dir="$wt_main_beads"
     # Resolve symlinks first: a .beads/ symlink is followed by the bind-mount,
     # so the resolved target is what actually gets shown into the cage. The
     # allowed-roots check that used to follow retired with the guard

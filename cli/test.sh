@@ -99,7 +99,7 @@ cmd_test() {
          && [[ ! -d "${preflight_beads_dir}/dolt" ]] \
          && [[ ! -d "${preflight_beads_dir}/embeddeddolt" ]]; then
         local resolved_main_beads
-        resolved_main_beads=$(realpath "$(_up_main_beads_dir)" 2>/dev/null || true)
+        resolved_main_beads=$(realpath "$wt_main_beads" 2>/dev/null || true)
         # up.sh's posture here is warn-and-skip, not refuse: a missing or
         # protected main-repo .beads leaves the worktree's own .beads mounted.
         if [[ -n "$resolved_main_beads" && -d "$resolved_main_beads" ]] \
