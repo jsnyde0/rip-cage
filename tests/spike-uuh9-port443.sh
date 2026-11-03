@@ -103,7 +103,7 @@ TOTAL=0
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 # rc.source.path label value for the three cages this script creates directly
 # via `msb run`/`msb create` (bypassing `rc up`) -- required by
-# verify_rc_container so `rc destroy --force` (below) recognizes them as
+# verify_rc_container so `rc destroy` (below) recognizes them as
 # rc-managed. Not a real workspace, just a non-empty attribution value
 # (mirrors tests/test-doctor-runnability.sh's D2/D3 fixtures).
 SPIKE_SOURCE_LABEL="${REPO_ROOT}"
@@ -142,7 +142,7 @@ REAL_CLAUDE_MTIME_BEFORE=$(stat -f "%m" "${HOME}/.claude/.credentials.json" 2>/d
 fi
 
 echo ""
-echo "=== Sweep: detecting (never destroying) any leftover spike-uuh9-* cages from a prior run ==="
+echo "=== Sweep: detecting (never destroying) any leftover rc-t-uuh9-* cages from a prior run ==="
 # rip-cage-ej6s (mirrors tests/run-host.sh's _warn_leftover_scratch_cages,
 # the rip-cage-neu7.9 fix for the exact same incident shape): this used to
 # enumerate every msb sandbox and destroy any name-prefix match -- an
@@ -157,11 +157,11 @@ while IFS= read -r _leftover; do
   echo "WARNING: leftover scratch cage detected: ${_leftover}" >&2
   echo "  This run did not create it and will NOT destroy it." >&2
   echo "  If it is stale debris from an aborted prior run, clean it up yourself: rc destroy ${_leftover}" >&2
-done < <(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null | grep '^spike-uuh9-' || true)
+done < <(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null | grep '^rc-t-uuh9-' || true)
 
-CAGE_Q1="spike-uuh9-q1-${RUN_ID}"
-CAGE_Q2_BASELINE="spike-uuh9-q2base-${RUN_ID}"
-CAGE_Q2_SCOPED="spike-uuh9-q2scoped-${RUN_ID}"
+CAGE_Q1="rc-t-uuh9-q1-${RUN_ID}"
+CAGE_Q2_BASELINE="rc-t-uuh9-q2base-${RUN_ID}"
+CAGE_Q2_SCOPED="rc-t-uuh9-q2scoped-${RUN_ID}"
 TEST_HOME=""
 SCRATCH=""
 
@@ -177,19 +177,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Register all three cage names up front (unconditionally, before any create
-# attempt) so the EXIT/INT/TERM trap tears each down by verified registered
-# name via `rc destroy --force` (tests/_scratch-cage-lib.sh, the established
-# pattern from rip-cage-4cuh/qg25) -- never bare `msb remove`, which leaves
+# Each cage is registered right before its own create, and deregistered after
+# its own mid-run destroy succeeds, so the EXIT/INT/TERM trap tears down by
+# registered name via `rc destroy` (tests/_scratch-cage-lib.sh) exactly the
+# cages still standing -- never bare `msb remove`, which leaves
 # rc-state-<name>/rc-history-<name> volumes orphaned. Composes with the
 # `cleanup` trap installed just above (lib captures + chains the prior EXIT
-# body on first registration). Safe to register a name whose cage creation
-# later fails: `rc destroy --force` on a nonexistent cage errors, and the
-# lib swallows that error same as the removed bare `msb remove -f ... || true`
-# calls did.
-scratch_cage_register "$CAGE_Q1"
-scratch_cage_register "$CAGE_Q2_BASELINE"
-scratch_cage_register "$CAGE_Q2_SCOPED"
+# body on first registration). rip-cage-neol: the names carry the rc-t-
+# prefix so the lib persists them for SIGKILL recovery, and nothing is
+# registered that --q2-only never creates (the lib warns on every failed
+# destroy, so a never-created or already-destroyed name read as a leak).
 
 if [[ "$Q2_ONLY" -ne 1 ]]; then
 # ===========================================================================
@@ -281,6 +278,7 @@ fi
 # ===========================================================================
 echo ""
 echo "=== Q1 setup: booting defaults-only cage with PORT-SCOPED (:tcp:443) net-rules ==="
+scratch_cage_register "$CAGE_Q1"
 if msb run -d --name "$CAGE_Q1" --replace --timeout 90s --log-level trace "${FLAGS443[@]}" \
   --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
   -v "${SCRATCH}/claude-dir:/home/agent/.claude" \
@@ -423,7 +421,7 @@ else
   fail "Gap-A denials: one of the newly-exercised hosts WAS denied" "$GAPA_HIT"
 fi
 
-"$RC" destroy "$CAGE_Q1" >/dev/null 2>&1 || true
+"$RC" destroy "$CAGE_Q1" >/dev/null 2>&1 && scratch_cage_deregister "$CAGE_Q1"
 fi # Q2_ONLY
 
 # ===========================================================================
@@ -432,6 +430,7 @@ fi # Q2_ONLY
 # ===========================================================================
 echo ""
 echo "=== Q2-baseline: example.com with allow@example.com (all ports), probing :80 ==="
+scratch_cage_register "$CAGE_Q2_BASELINE"
 if msb create "$IMAGE" --name "$CAGE_Q2_BASELINE" --log-level trace \
     --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
     --net-default deny --tls-intercept --net-rule "allow@example.com" >/tmp/spike-uuh9-q2base-boot.err 2>&1; then
@@ -448,7 +447,7 @@ if [[ "$Q2_BASE_80_CODE" == "200" && "$Q2_BASE_80_SIZE" -gt 0 ]]; then
 else
   fail "Q2-baseline: expected real data from example.com:80 under the all-ports allow rule" "${Q2_BASE_80} err=$(cat /tmp/spike-uuh9-q2base-80.err)"
 fi
-"$RC" destroy "$CAGE_Q2_BASELINE" >/dev/null 2>&1 || true
+"$RC" destroy "$CAGE_Q2_BASELINE" >/dev/null 2>&1 && scratch_cage_deregister "$CAGE_Q2_BASELINE"
 
 # ===========================================================================
 # Q2-scoped: example.com, :tcp:443 ONLY (hand-built). Positive control on
@@ -466,6 +465,7 @@ fi
 # ===========================================================================
 echo ""
 echo "=== Q2-scoped: example.com with allow@example.com:tcp:443 ==="
+scratch_cage_register "$CAGE_Q2_SCOPED"
 if msb create "$IMAGE" --name "$CAGE_Q2_SCOPED" --log-level trace \
     --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
     --net-default deny --tls-intercept --net-rule "allow@example.com:tcp:443" >/tmp/spike-uuh9-q2scoped-boot.err 2>&1; then
@@ -598,7 +598,7 @@ else
 fi
 echo "----------------------------------------------------------------------------"
 
-"$RC" destroy "$CAGE_Q2_SCOPED" >/dev/null 2>&1 || true
+"$RC" destroy "$CAGE_Q2_SCOPED" >/dev/null 2>&1 && scratch_cage_deregister "$CAGE_Q2_SCOPED"
 
 # ===========================================================================
 # Safety corroboration: real ~/.claude untouched. Only meaningful when Q1
