@@ -2251,7 +2251,8 @@ _up_prepare_secret_env() {
 # a composed (opt-in) mediator recipe swaps it for the real credential at
 # egress time, or msb's --secret non-possession path (ADR-029 D5) does for
 # the default posture. This pointer's contents land in the container via
-# `docker run --env-file`, i.e. in PID 1's environment, which the agent CAN
+# the --env-file arg (expanded into -e entries by
+# _up_translate_docker_args_to_msb), i.e. in PID 1's environment, which the agent CAN
 # read (/proc/1/environ) — that's the point (agent-held, non-secret by design).
 #
 # CREATE-ONLY: the call site in cmd_up invokes this ONLY on the create path,
@@ -2270,8 +2271,8 @@ _up_prepare_secret_env() {
 #      json_error under json mode + echo>&2 + exit 1, naming
 #      RC_PLACEHOLDER_ENV_FILE. Create-only call site: this can never
 #      strand a resume.
-#   d. Run _check_secret_path_denylist on the pointer with the SAME treatment
-#      the CLI --env-file path gives it (the CLI --env-file denylist check in cmd_up) — this channel IS
+#   d. Run _protected_paths_path_match on the pointer with the SAME treatment
+#      the CLI --env-file path gets (its protected-paths check in cmd_up) — this channel IS
 #      agent-readable, so an operator accidentally pointing at a real secret
 #      file (~/.aws/credentials) must be refused the same way the CLI path
 #      refuses it.

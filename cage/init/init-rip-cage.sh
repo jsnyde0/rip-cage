@@ -25,7 +25,7 @@ _rc_host_bridge_resolves() {
 # _rc_probe_host_bridge: resolves CAGE_HOST_ADDR. Prints the chosen address on
 # stdout; sets _RC_HOST_BRIDGE_STATUS (preset / resolved / fallback-literal)
 # as a side-channel global the caller reads to decide what to log. A pre-set
-# $CAGE_HOST_ADDR (rc up already computed the right value -- _up_prepare_environment in cli/up.sh)
+# $CAGE_HOST_ADDR (rc up already computed the right value -- _up_prepare_docker_mounts in cli/up.sh)
 # is honored verbatim and never overwritten. Otherwise probes
 # host.microsandbox.internal first (the runtime is msb, not Docker --
 # ADR-029), falling back to the legacy Docker/OrbStack bridge names so a
@@ -870,7 +870,7 @@ fi
 # Resolution order + preset-honoring logic lives in _rc_probe_host_bridge, at
 # the top of this file (extracted so a host-side test can unit-test it with
 # a stubbed resolver — see tests/test-cage-host-bridge-probe.sh). A pre-set
-# $CAGE_HOST_ADDR (rc up already computed the right value — _up_prepare_environment in cli/up.sh)
+# $CAGE_HOST_ADDR (rc up already computed the right value — _up_prepare_docker_mounts in cli/up.sh)
 # is honored verbatim, never overwritten. Otherwise probes
 # host.microsandbox.internal first, then the legacy Docker/OrbStack bridge
 # names; if none resolve, falls back to the literal `host.microsandbox.internal`
