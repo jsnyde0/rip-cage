@@ -441,7 +441,8 @@ _msb_warn_image_layer_drift() {
   # rip-cage-jblx B1: skip when _build_msb_load already warned in this
   # process. Its failure left msb's cache on the previous build, so the drift
   # is that same failure, and "re-run rc build" would fail the same way.
-  # Unset (rc up's image-present call site) keeps this branch live.
+  # A load that succeeded or stayed silent leaves the flag 0 (it resets on
+  # each _build_msb_load entry), so drift that persists after it still warns.
   if [[ "$_status" -eq 1 && "${_RC_MSB_LOAD_WARNED:-0}" -ne 1 ]]; then
     echo "Warning: msb's cached '${IMAGE}' image has different layer content than docker's local '${IMAGE}' image — a cage booted from msb's cache would run a STALE image. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' (or re-run 'rc build') to resync msb's cache." >&2
   fi
