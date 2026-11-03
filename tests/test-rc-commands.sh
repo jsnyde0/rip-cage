@@ -60,6 +60,8 @@ export RC_IMAGE="rip-cage-rccmds-fixture:test"
 
 # shellcheck source=tests/_fake-runtime-lib.sh
 source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 _RC_CMDS_RT_LOG=$(mktemp "${TMPDIR:-/tmp}/rc-cmds-runtime-log.XXXXXX")
 _RC_CMDS_RT_BIN=$(fake_runtime_bin "$_RC_CMDS_RT_LOG")
 export PATH="${_RC_CMDS_RT_BIN}:${PATH}"
@@ -250,7 +252,7 @@ echo "=== Test 9: skill symlink resolution in rc up --dry-run ==="
 # realpath: rc compares the RESOLVED target against $HOME, and on macOS /tmp
 # is itself a symlink. The outside target is pinned to /tmp, not TMPDIR:
 # run-host.sh points TMPDIR at ~/.cache/rc-t, which sits under the real HOME.
-T9_ROOT=$(realpath "$(mktemp -d /tmp/rc-t9.XXXXXX)")
+T9_ROOT=$(realpath "$(_host_scratch_mktemp_d rc-t9)")
 T9_HOME="${T9_ROOT}/home"
 T9_PROJ="${T9_ROOT}/proj"
 T9_BIN="${T9_ROOT}/bin"
@@ -380,7 +382,7 @@ FAKE_MSB
 echo ""
 echo "=== Test 14: rc up --dry-run includes agents mount line ==="
 if [[ -d "${HOME}/.claude/agents" ]]; then
-  TEST_DIR_T14=$(mktemp -d)
+  TEST_DIR_T14=$(_host_scratch_mktemp_d rc-t)
   mkdir -p "${TEST_DIR_T14}/.git"
 
   # rc up checks the version label, so the image rc resolves has to read
@@ -511,7 +513,7 @@ else
   # through a fake-msb PATH shim instead of staging the live cache -- see
   # the shared-helper comment above _make_fake_msb_dir for why.
   _make_fake_msb_dir "$T19_FAKE_MSB_DIR" "$T19_STALE_TAG"
-  TEST_DIR_T19=$(mktemp -d)
+  TEST_DIR_T19=$(_host_scratch_mktemp_d rc-t)
   mkdir -p "${TEST_DIR_T19}/.git"
   # Native cage config per ADR-031 D2 (see rc_test_write_cage_conf).
   T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX")
@@ -577,7 +579,7 @@ trap '
 # the shared-helper comment above _make_fake_msb_dir for why.
 _make_fake_msb_dir "$T20_FAKE_MSB_DIR" "$T20_STUB_TAG"
 
-TEST_DIR_T20=$(mktemp -d)
+TEST_DIR_T20=$(_host_scratch_mktemp_d rc-t)
 mkdir -p "${TEST_DIR_T20}/.git"
 
 # Use rename of the VERSION file so rc reads RC_VERSION="unknown".
@@ -685,7 +687,7 @@ fi
 _FLAGS_FAKE_RT=$(fake_runtime_bin "$_RC_CMDS_RT_LOG")
 echo ""
 echo "=== Test 22: rc up --new --session exits 2 with usage message ==="
-TEST_DIR_T22=$(mktemp -d)
+TEST_DIR_T22=$(_host_scratch_mktemp_d rc-t)
 mkdir -p "${TEST_DIR_T22}/.git"
 mutex_output=$(PATH="${_FLAGS_FAKE_RT}:${PATH}" "$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>&1 || true)
 if echo "$mutex_output" | grep -qi "mutually exclusive\|cannot use.*together\|--new.*--session\|--session.*--new"; then
@@ -760,7 +762,7 @@ fi
 # --- Test 32: rc up --new flag is recognized (dry-run, no-TTY) ---
 echo ""
 echo "=== Test 32: rc up --new flag recognized ==="
-TEST_DIR_T32=$(mktemp -d)
+TEST_DIR_T32=$(_host_scratch_mktemp_d rc-t)
 mkdir -p "${TEST_DIR_T32}/.git"
 new_flag_out=$(PATH="${_FLAGS_FAKE_RT}:${PATH}" "$RC" up --dry-run --new "$TEST_DIR_T32" 2>&1 </dev/null || true)
 if echo "$new_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
@@ -773,7 +775,7 @@ rm -rf "$TEST_DIR_T32"
 # --- Test 33: rc up --session flag is recognized (dry-run, no-TTY) ---
 echo ""
 echo "=== Test 33: rc up --session flag recognized ==="
-TEST_DIR_T33=$(mktemp -d)
+TEST_DIR_T33=$(_host_scratch_mktemp_d rc-t)
 mkdir -p "${TEST_DIR_T33}/.git"
 session_flag_out=$(PATH="${_FLAGS_FAKE_RT}:${PATH}" "$RC" up --dry-run --session "rip-cage" "$TEST_DIR_T33" 2>&1 </dev/null || true)
 if echo "$session_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
@@ -1117,7 +1119,7 @@ echo "=== Test 60: native cage config + protected-paths floor (rip-cage-ely4.9) 
 # spike rip-cage-ely4.16). An unresolved /tmp fixture would fail at boot, not
 # here. Linux has no /private, so a /private/tmp template fails there
 # (rip-cage-0sit).
-E49_ROOT=$(mktemp -d /tmp/rc-ely49-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+E49_ROOT=$(_host_scratch_mktemp_d rc-ely49) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 E49_ROOT=$(cd "$E49_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 E49_HOME="${E49_ROOT}/home"
 E49_PROJ="${E49_ROOT}/proj"
@@ -1331,7 +1333,7 @@ fi
 echo ""
 echo "=== Test 61: rc up --replace recreates a STOPPED cage (rip-cage-ely4.10) ==="
 
-T61_ROOT=$(mktemp -d /tmp/rc-ely410-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T61_ROOT=$(_host_scratch_mktemp_d rc-ely410) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T61_ROOT=$(cd "$T61_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T61_BIN="${T61_ROOT}/bin"
 T61_PROJ="${T61_ROOT}/proj"
@@ -1566,7 +1568,7 @@ echo "=== Test 63: no --net-default in the argv; a config without network.policy
 
 # Resolved with pwd -P for the same reason as Test 60: on macOS /tmp is a
 # symlink and msb does not follow one in a bind source.
-T63_ROOT=$(mktemp -d /tmp/rc-ely477-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T63_ROOT=$(_host_scratch_mktemp_d rc-ely477) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T63_ROOT=$(cd "$T63_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T63_HOME="${T63_ROOT}/home"
 T63_PROJ="${T63_ROOT}/proj"

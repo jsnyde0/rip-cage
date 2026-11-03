@@ -18,6 +18,8 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 
 FAILURES=0
 
@@ -116,7 +118,7 @@ echo "=== Test 2: RC_MULTIPLEXER naming a multiplexer the image lacks refuses pr
 # Resolved with pwd -P: msb does not follow a host-side symlink in a bind
 # source, and on macOS /tmp IS a symlink to /private/tmp. Linux has no
 # /private, so a /private/tmp template fails there (rip-cage-0sit).
-T2_ROOT=$(mktemp -d /tmp/rc-ely472-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+T2_ROOT=$(_host_scratch_mktemp_d rc-ely472) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T2_ROOT=$(cd "$T2_ROOT" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T2_BIN="${T2_ROOT}/bin"
 T2_PROJ="${T2_ROOT}/proj"
