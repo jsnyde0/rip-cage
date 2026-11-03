@@ -3301,13 +3301,8 @@ cmd_up() {
     # value from the host env at START time, not just at create time (live-
     # confirmed) — the same Fold-b preflight + export create uses must run
     # again here, in THIS process, before msb start.
-    if ! _up_prepare_secret_env "$path"; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        _up_json_output "$name" "resumed" "$path" "stopped" "failed"
-        return 1
-      fi
-      exit 1
-    fi
+    # JSON mode never returns on failure (json_error exits inside).
+    _up_prepare_secret_env "$path" || exit 1
     # _msb_start is a resume — a fresh kernel boot, per ADR-029 D4's
     # resume-path corollary. _up_init_container immediately after re-runs
     # the SAME init script the create path runs (cockpit
