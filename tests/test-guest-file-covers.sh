@@ -15,6 +15,8 @@ set -uo pipefail
 #       its content, and leaves no record listing it as covered
 #   G4  mount "succeeds" but the file still reads non-empty: fail closed
 #   G5  an absent target: fail closed, named
+#   G6  the floor probe on G1's record: passes intact; a listed path gone or
+#       unreadable by probe time fails it, named (rip-cage-mq11)
 #
 # Uses dummy file names only. No docker, no msb.
 
@@ -98,17 +100,22 @@ if [[ $_rc -ne 0 ]] && printf '%s' "$_out" | grep -qF "$T/mnt/p/not-there"; then
 
 # --- G6 --------------------------------------------------------------------
 # The floor probe reads this record; a listed file gone by probe time fails it
-# (rip-cage-mq11). unshare -r makes the test-owned record read root:root.
-_probe() { RC_FLOOR_COVERS_RECORD="$REC" unshare -r bash "${REPO_ROOT}/cage/floor/floor-probe.sh" 2>&1 | grep 'floor: file-covers' | head -1; }
-if unshare -r true 2>/dev/null; then
+# (rip-cage-mq11). unshare -rm puts the record at the probe's fixed path, read
+# root:root, without the probe growing a relocation knob (init: NO ESCAPE HATCH).
+mkdir -p "$T/runroot" && ln -sfn "$T/run" "$T/runroot/rip-cage"
+_probe() { unshare -rm bash -c 'mount --bind "$1" /run && bash "$2"' _ "$T/runroot" "${REPO_ROOT}/cage/floor/floor-probe.sh" 2>&1 | grep 'floor: file-covers' | head -1; }
+if unshare -rm true 2>/dev/null; then
   fixture
   run ok "$T/mnt/p/rc-dummy-secret" "$T/mnt/p/pkg/rc-dummy-secret"
   if [[ "$(_probe)" == PASS* ]]; then pass "G6 the probe passes an intact record"; else fail "G6 intact: $(_probe)"; fi
   rm -f "$T/mnt/p/pkg/rc-dummy-secret"
   _p=$(_probe)
   if [[ "$_p" == FAIL* && "$_p" == *"$T/mnt/p/pkg/rc-dummy-secret"* ]]; then pass "G6 a listed file gone by probe time fails the probe, named"; else fail "G6 absent: $_p"; fi
+  mkdir "$T/mnt/p/pkg/rc-dummy-secret"  # head cannot read it (root reads a chmod-000 file)
+  _p=$(_probe)
+  if [[ "$_p" == FAIL* && "$_p" == *"$T/mnt/p/pkg/rc-dummy-secret"* ]]; then pass "G6 a listed path head cannot read fails the probe, named"; else fail "G6 unreadable: $_p"; fi
 else
-  echo "SKIP: G6 needs unshare -r"
+  echo "SKIP: G6 needs unshare -rm (user + mount namespaces)"
 fi
 
 echo "=== test-guest-file-covers.sh: ${FAILURES} failure(s) ==="

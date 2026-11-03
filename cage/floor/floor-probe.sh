@@ -437,11 +437,10 @@ fi
 # writable, and that every listed file still reads zero bytes. No record means
 # no in-guest covers were applied this boot (a built image under test, or a
 # cage whose mounts need none). A visibility default, like every cover: in-
-# guest root can undo it (cli/lib/protected_paths.sh header). A listed file
-# that is absent or unreadable fails too: a cover the probe cannot read is one it
-# cannot confirm (rip-cage-mq11; ADR-031 D5b). RC_FLOOR_COVERS_RECORD relocates
-# the record for the host test only; rc never sets it.
-_rc_floor_covers=${RC_FLOOR_COVERS_RECORD:-/run/rip-cage/file-covers}
+# guest root can undo it (cli/lib/protected_paths.sh header). A listed path
+# head cannot read (absent, unreadable, a directory) fails too: a cover the
+# probe cannot read is one it cannot confirm (rip-cage-mq11; ADR-031 D5b).
+_rc_floor_covers=/run/rip-cage/file-covers
 if [ ! -e "$_rc_floor_covers" ]; then
   check "file-covers" "pass" "no in-guest file covers recorded"
 else
@@ -453,7 +452,7 @@ else
   while IFS= read -r _rc_floor_cf; do
     [ -z "$_rc_floor_cf" ] && continue
     _rc_floor_covers_n=$((_rc_floor_covers_n + 1))
-    if [ ! -r "$_rc_floor_cf" ]; then
+    if ! head -c 1 -- "$_rc_floor_cf" >/dev/null 2>&1; then
       _rc_floor_covers_gone="${_rc_floor_covers_gone} ${_rc_floor_cf}"
     elif [ "$(head -c 1 -- "$_rc_floor_cf" 2>/dev/null | wc -c)" -ne 0 ]; then
       _rc_floor_covers_bad="${_rc_floor_covers_bad} ${_rc_floor_cf}"
