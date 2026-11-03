@@ -108,8 +108,10 @@
 #                            rather than image content: msb cannot place these
 #                            covers (rip-cage-849o), so rc applies them as root
 #                            before init (share/rip-cage/guest-file-covers.sh)
-#                            and this is their outcome assertion. Reads one
-#                            byte of each listed file; stats nothing else.
+#                            and this is their outcome assertion. Stats the
+#                            record's owner and mode, then reads one byte of
+#                            each listed file; a listed file it cannot read
+#                            (absent, unreadable) fails, like the cover step.
 #
 # DELIBERATELY NOT CHECKED, so a later reader does not "fix" the omission:
 #
@@ -435,24 +437,32 @@ fi
 # writable, and that every listed file still reads zero bytes. No record means
 # no in-guest covers were applied this boot (a built image under test, or a
 # cage whose mounts need none). A visibility default, like every cover: in-
-# guest root can undo it (cli/lib/protected_paths.sh header).
-_rc_floor_covers=/run/rip-cage/file-covers
+# guest root can undo it (cli/lib/protected_paths.sh header). A listed file
+# that is absent or unreadable fails too: a cover the probe cannot read is one it
+# cannot confirm (rip-cage-mq11; ADR-031 D5b). RC_FLOOR_COVERS_RECORD relocates
+# the record for the host test only; rc never sets it.
+_rc_floor_covers=${RC_FLOOR_COVERS_RECORD:-/run/rip-cage/file-covers}
 if [ ! -e "$_rc_floor_covers" ]; then
   check "file-covers" "pass" "no in-guest file covers recorded"
 else
   _rc_floor_covers_owner=$(stat -c '%U:%G' "$_rc_floor_covers" 2>/dev/null || echo "?")
   _rc_floor_covers_mode=$(stat -c '%a' "$_rc_floor_covers" 2>/dev/null || echo "0")
   _rc_floor_covers_bad=""
+  _rc_floor_covers_gone=""
   _rc_floor_covers_n=0
   while IFS= read -r _rc_floor_cf; do
     [ -z "$_rc_floor_cf" ] && continue
     _rc_floor_covers_n=$((_rc_floor_covers_n + 1))
-    if [ "$(head -c 1 -- "$_rc_floor_cf" 2>/dev/null | wc -c)" -ne 0 ]; then
+    if [ ! -r "$_rc_floor_cf" ]; then
+      _rc_floor_covers_gone="${_rc_floor_covers_gone} ${_rc_floor_cf}"
+    elif [ "$(head -c 1 -- "$_rc_floor_cf" 2>/dev/null | wc -c)" -ne 0 ]; then
       _rc_floor_covers_bad="${_rc_floor_covers_bad} ${_rc_floor_cf}"
     fi
   done < "$_rc_floor_covers"
   if [ "$_rc_floor_covers_owner" != "root:root" ] || [ $(( 8#$_rc_floor_covers_mode & 8#022 )) -ne 0 ]; then
     check "file-covers" "fail" "${_rc_floor_covers} is ${_rc_floor_covers_owner} 0${_rc_floor_covers_mode} (expected root:root, no group/other write) — the agent could edit the list this check reads"
+  elif [ -n "$_rc_floor_covers_gone" ]; then
+    check "file-covers" "fail" "listed protected file(s) are missing or unreadable:${_rc_floor_covers_gone} — cannot confirm the in-guest cover"
   elif [ -n "$_rc_floor_covers_bad" ]; then
     check "file-covers" "fail" "protected file(s) inside a read-only mount read content:${_rc_floor_covers_bad} — the in-guest cover is gone"
   else

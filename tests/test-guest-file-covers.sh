@@ -96,5 +96,20 @@ fixture
 run ok "$T/mnt/p/not-there"
 if [[ $_rc -ne 0 ]] && printf '%s' "$_out" | grep -qF "$T/mnt/p/not-there"; then pass "G5 an absent target fails closed, named"; else fail "G5 rc $_rc: $_out"; fi
 
+# --- G6 --------------------------------------------------------------------
+# The floor probe reads this record; a listed file gone by probe time fails it
+# (rip-cage-mq11). unshare -r makes the test-owned record read root:root.
+_probe() { RC_FLOOR_COVERS_RECORD="$REC" unshare -r bash "${REPO_ROOT}/cage/floor/floor-probe.sh" 2>&1 | grep 'floor: file-covers' | head -1; }
+if unshare -r true 2>/dev/null; then
+  fixture
+  run ok "$T/mnt/p/rc-dummy-secret" "$T/mnt/p/pkg/rc-dummy-secret"
+  if [[ "$(_probe)" == PASS* ]]; then pass "G6 the probe passes an intact record"; else fail "G6 intact: $(_probe)"; fi
+  rm -f "$T/mnt/p/pkg/rc-dummy-secret"
+  _p=$(_probe)
+  if [[ "$_p" == FAIL* && "$_p" == *"$T/mnt/p/pkg/rc-dummy-secret"* ]]; then pass "G6 a listed file gone by probe time fails the probe, named"; else fail "G6 absent: $_p"; fi
+else
+  echo "SKIP: G6 needs unshare -r"
+fi
+
 echo "=== test-guest-file-covers.sh: ${FAILURES} failure(s) ==="
 [[ $FAILURES -eq 0 ]]
