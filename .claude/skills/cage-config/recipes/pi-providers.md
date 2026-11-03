@@ -29,10 +29,6 @@ host-side.
        - "openrouter.ai:tcp:443"
    ```
 
-3. Do **not** export `OPENROUTER_API_KEY` in the shell you run `rc up` from:
-   rc forwards that variable by real value, which puts the real key in the
-   guest (rip-cage-rsh9.4).
-
 Check: `pi -p --provider openrouter --model openai/gpt-4o-mini 'say hi'` inside
 the cage answers.
 

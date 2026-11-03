@@ -886,17 +886,14 @@ _up_prepare_docker_mounts() {
   # reachability; only the identifier name is fixed here.
   _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR=${CAGE_HOST_ADDR:-host.microsandbox.internal}")
 
-  # Provider env-var passthrough (ADR-019 D5 FLEXIBLE — fixed list, skip empty values)
+  # pi env-var passthrough (ADR-019 D5 FLEXIBLE — fixed list, skip empty values).
+  # Non-secret knobs only. Provider API keys are NOT forwarded: a host-exported
+  # key would reach the guest as a real value (rip-cage-rsh9.4, ADR-031 D1).
+  # A provider key rides a secrets: binding in the cage config instead.
   # PI_PACKAGE_DIR excluded: host dev path, breaks pi startup in cage
   local _pi_env_vars
   local _pi_var
-  _pi_env_vars=(
-    ANTHROPIC_API_KEY AZURE_OPENAI_API_KEY OPENAI_API_KEY GEMINI_API_KEY
-    MISTRAL_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY
-    OPENROUTER_API_KEY AI_GATEWAY_API_KEY ZAI_API_KEY OPENCODE_API_KEY
-    KIMI_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY
-    PI_SKIP_VERSION_CHECK PI_CACHE_RETENTION
-  )
+  _pi_env_vars=(PI_SKIP_VERSION_CHECK PI_CACHE_RETENTION)
   for _pi_var in "${_pi_env_vars[@]}"; do
     if [[ -n "${!_pi_var:-}" ]]; then
       _UP_RUN_ARGS+=(-e "${_pi_var}=${!_pi_var}")

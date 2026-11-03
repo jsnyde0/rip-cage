@@ -166,41 +166,39 @@ This evolves D8 of this ADR as well: D8's "Phase 1 deferred as learning project"
 - Pi's runtime architecture admits no usable hook surface (no PreToolUse equivalent, no wrapper point, no MCP gate). At that point the goal stands but requires a different layer (e.g., container-level seccomp profile) the current design doesn't scope. Research bead reports this as a structural finding if it surfaces.
 - Pi-in-cage demonstrates a class of accident in normal use that container-level mitigations DO catch (contradicting the threat-model assumption). Unlikely but would re-open the deferral question.
 
-### D5: Provider env vars are passed through unconditionally
+### D5: Only non-secret pi knobs are passed through; provider keys ride msb secrets
 
-**Firmness: FLEXIBLE**
+**Firmness: FLEXIBLE** *(revised 2026-11-03, rip-cage-rsh9.4 — the provider API-key passthrough is retired. The prior text, "Provider env vars are passed through unconditionally", forwarded fifteen provider key variables by real value; it is in git history.)*
 
-`rc up` forwards a fixed list of pi-relevant env vars from host to container **only when set to a non-empty value**. The list mirrors pi-less-yolo's, minus host-path-only vars:
+`rc up` forwards a fixed list of pi env vars from host to guest **only when set to a non-empty value**, and the list holds **no credential**:
 
 ```
-ANTHROPIC_API_KEY, AZURE_OPENAI_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY,
-MISTRAL_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, XAI_API_KEY,
-OPENROUTER_API_KEY, AI_GATEWAY_API_KEY, ZAI_API_KEY, OPENCODE_API_KEY,
-KIMI_API_KEY, MINIMAX_API_KEY, MINIMAX_CN_API_KEY,
 PI_SKIP_VERSION_CHECK, PI_CACHE_RETENTION
 ```
 
-`PI_PACKAGE_DIR` is **excluded** from the passthrough list — it points at a host filesystem path used in pi development and would resolve to a non-existent path inside the cage, breaking pi startup. Empty-string vars are filtered out at forward time (both `rc up` and devcontainer paths) so pi's `auth.json`-over-env priority order isn't perturbed by `OPENAI_API_KEY=""` style entries.
+A provider API key (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and the rest of pi's providers) exported in the host shell **does not reach the guest**. It rides an msb `secrets:` binding in the cage config instead: the binding names the provider's host, an `env:` line exposes the placeholder under the variable pi reads, and the guest holds only the placeholder (ADR-031 D1, D2 amendment; the CCTOK pattern). The `cage-config` skill's pi-providers recipe holds the lines.
 
-If `auth.json` is also present, it takes priority (pi behavior — see pi-mono `docs/providers.md`).
+`PI_PACKAGE_DIR` stays **excluded** — it points at a host filesystem path used in pi development and would resolve to a non-existent path inside the cage, breaking pi startup. Empty-string vars are filtered out at forward time.
+
+An operator who wants possession anyway names it explicitly: `rc up --env-file <path>` forwards that file's lines by real value (docs/reference/auth.md, "API key — still possession"). Nothing reaches the guest by real value without such an explicit act.
 
 **Rationale:**
 
-- Enables non-OAuth flows (CI, scripted runs, providers without an OAuth path).
-- Trivial to maintain — copying pi-less-yolo's list is one shell array.
-- Setting an env var on the host is an explicit user action; pass-through is not a privacy regression.
+- The old rationale — "setting an env var on the host is an explicit user action; pass-through is not a privacy regression" — does not hold. Exporting a key in a shell is a habit for host tools, not a decision to hand it to a caged agent. A steered agent reads its env and can send the key to any allowed host (rip-cage-rsh9.4).
+- Every provider has a host, so every provider key has a `secrets:` equivalent. No legitimate flow is lost; it moves into the one config file.
+- The non-secret knobs carry no credential, so forwarding them costs nothing and saves a config line.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Fixed allowlist (this decision)** | Predictable; easy to audit | List rots as pi adds providers |
-| Pass through every `*_API_KEY` env var | Self-maintaining | Surprising — leaks API keys for unrelated services |
-| Auth.json only (no env vars) | Smallest surface | Forces every user through `pi /login` even when they have an API key in shell env |
+| **Non-secret knobs only; keys via `secrets:` (this decision)** | Non-possession by default for every provider; one mechanism for every credential | A key exported in the shell is silently not used in the cage — the operator writes a `secrets:` entry once |
+| Fixed allowlist of provider keys by real value (the prior D5) | Zero config for a shell-exported key | `direct:` real keys in the guest env and in the `msb create` argv; contradicts ADR-031 D1 non-possession (rip-cage-rsh9.4) |
+| rc auto-converts each exported key into a `--secret` binding | Zero config and no possession | `reasoned:` rc would have to know each provider's host — a provider table rc owns and that rots, and a composition step frozen into the seam (ADR-005 D12) |
 
 **What would invalidate this:**
 
-- Pi provider count grows fast enough that the list rots noticeably. Switch to pattern-based passthrough (`*_API_KEY` matching pi's known providers, sourced from pi-mono).
+- A pi provider whose credential cannot ride a placeholder (e.g. one pi decodes in the guest with no fake-token workaround, or that must refresh in the guest). Revisit per provider, without re-opening a default real-value passthrough.
 
 ### D6: TOS callout lives in docs only — no runtime warning
 

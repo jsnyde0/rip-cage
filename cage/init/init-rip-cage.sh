@@ -1052,7 +1052,7 @@ fi
 # left to warn on — there is no credentials file to check for anymore.
 if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY both unset)" >&2
-  echo "[rip-cage]   On the host: run 'rc auth' (checks \$XDG_CONFIG_HOME/rip-cage/secrets/CCTOK), or set ANTHROPIC_API_KEY" >&2
+  echo "[rip-cage]   On the host: run 'rc auth' (checks \$XDG_CONFIG_HOME/rip-cage/secrets/CCTOK), or put ANTHROPIC_API_KEY in an 'rc up --env-file'" >&2
 fi
 
 # 10. Initialize beads

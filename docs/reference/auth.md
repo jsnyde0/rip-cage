@@ -95,7 +95,7 @@ Full model for credentials you nominate yourself, including the shapes `--secret
 
 **Subscription logins** (openai-codex) ride the same `secrets:` path: the operator's host pi keeps the real token fresh, and `examples/pi-providers/codex-secret.sh` copies it into a secret file and writes the placeholder `auth.json` the cage mounts `:ro`. Recipe: [`pi-providers.md`](../../.claude/skills/cage-config/recipes/pi-providers.md).
 
-**Providers.** pi supports OpenAI, Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). `rc up` still forwards a fixed set of provider API-key variables from host to guest when they are set and non-empty; a `secrets:` binding is the stronger path because the guest never holds the real key.
+**Providers.** pi supports OpenAI, Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). A provider key exported in the host shell does **not** reach the guest: `rc up` forwards no provider API-key variable, so a `secrets:` binding is the one path for a provider key ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D5). `rc up` forwards only the non-secret pi knobs `PI_SKIP_VERSION_CHECK` and `PI_CACHE_RETENTION`.
 
 **A cage created before this change** carries the old read-write `auth.json` mount until `rc up --replace` recreates it; `rc up` on such a cage resumes it as-is and does not flag the mount.
 
