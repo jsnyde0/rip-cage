@@ -1538,7 +1538,8 @@ _up_resolve_conf() {
 # the host env var must already be set, and msb fails loud naming it.
 _up_prepare_conf_secret_env() {
   local _conf="$1"
-  local _secret_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/secrets"
+  local _secret_dir
+  _secret_dir="$(_protected_paths_secrets_dir)"
   local _sname _sfile _svalue
 
   command -v yq &>/dev/null || return 0

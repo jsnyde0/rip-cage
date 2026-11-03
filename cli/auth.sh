@@ -35,11 +35,11 @@ _AUTH_CCTOK_MIN_LEN=80
 
 # _auth_cctok_file — echo the resolved host-side secret file path for the
 # CCTOK secret (ADR-031 D5(a): host-side, outside every cage mount, never a
-# path the cage config can point at). Same $XDG_CONFIG_HOME convention as
-# _up_prepare_conf_secret_env (cli/up.sh) reads its value from -- one
-# location, cited not reimplemented.
+# path the cage config can point at). The directory comes from
+# _protected_paths_secrets_dir (cli/lib/protected_paths.sh), the one place
+# that derives it.
 _auth_cctok_file() {
-  echo "${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/secrets/CCTOK"
+  echo "$(_protected_paths_secrets_dir)/CCTOK"
 }
 
 # _auth_file_mode FILE — echo FILE's permission bits as a bare octal string
