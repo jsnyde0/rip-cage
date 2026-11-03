@@ -423,6 +423,9 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 # Dropped 138 -> 137 by rip-cage-3w82: 0 added, 1 REMOVED.
 #   REMOVED (cli/up.sh, 1): (the host pi auth.json mount
 #     it seeded is retired; pi credentials ride msb secrets).
+# Bumped 137 -> 138 by rip-cage-kaqr.1: 1 ADDED, 0 removed.
+#   ADDED (cli/lib/protected_paths.sh, 1): _protected_paths_conf_rows (the
+#     one row fetch for the four config-mount readers: given rows, else parse).
 EXPECTED_FN_COUNT=138
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 

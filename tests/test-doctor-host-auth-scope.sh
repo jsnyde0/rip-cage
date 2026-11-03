@@ -89,6 +89,7 @@ _stub_msb_for_label "$H1_STUB_DIR" "{\"status\":\"Running\",\"config\":{\"labels
 
 H1_OUT=$(HOME="$H1_HOME" XDG_CONFIG_HOME="$H1_XDG" PATH="${H1_STUB_DIR}:$PATH" bash -c "
   source '$MSB_LIB'
+  source '${REPO_ROOT}/cli/lib/protected_paths.sh'
   source '$AUTH_LIB'
   $(extract_probe)
   _doctor_format_host_auth_probe 'h1-cage'
@@ -135,6 +136,7 @@ _stub_msb_for_label "$H2_STUB_DIR" "{\"status\":\"Running\",\"config\":{\"labels
 
 H2_OUT=$(HOME="$H2_HOME" XDG_CONFIG_HOME="$H2_XDG" PATH="${H2_STUB_DIR}:$PATH" bash -c "
   source '$MSB_LIB'
+  source '${REPO_ROOT}/cli/lib/protected_paths.sh'
   source '$AUTH_LIB'
   $(extract_probe)
   _doctor_format_host_auth_probe 'h2-cage'
@@ -178,6 +180,7 @@ _stub_msb_for_label "$H3_STUB_DIR" "{\"status\":\"Running\",\"config\":{\"labels
 
 H3_OUT=$(HOME="$H3_HOME" XDG_CONFIG_HOME="$H3_XDG" PATH="${H3_STUB_DIR}:$PATH" bash -c "
   source '$MSB_LIB'
+  source '${REPO_ROOT}/cli/lib/protected_paths.sh'
   source '$AUTH_LIB'
   $(extract_probe)
   _doctor_format_host_auth_probe 'h3-cage'
@@ -204,6 +207,7 @@ _stub_msb_for_label "$H4_STUB_DIR" '{"status":"Running","config":{"labels":{}}}'
 
 H4_OUT=$(PATH="${H4_STUB_DIR}:$PATH" bash -c "
   source '$MSB_LIB'
+  source '${REPO_ROOT}/cli/lib/protected_paths.sh'
   source '$AUTH_LIB'
   $(extract_probe)
   _doctor_format_host_auth_probe 'h4-cage'
