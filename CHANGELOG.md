@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The dead egress translator and secret-source preflight are gone from `rc up`** (rip-cage-wla6). `_up_build_egress_config_json` returned a constant empty contract, so `rc up` fed `_msb_flags_generate` nothing and the secret-source preflight guarded nothing. Both calls are deleted, and the `SECRET_SOURCE_ENV_UNSET` and `MSB_FLAGS_GENERATE_FAILED` JSON codes are retired. The dry-run argv is unchanged. Egress and credentials come from the cage config's `network.allow` and `secrets:` block; a conf secret with no host variable and no secrets file still fails loud at msb boot. `cli/lib/msb_flags.sh` stays as a test-only library.
 - **`rc up --allow-risky-mount` is gone** (rip-cage-myx8; [ADR-023](docs/decisions/ADR-023-secret-path-mount-denylist.md) D6 evolved). Since the layered config retired (ADR-031 D2), `rc up` parsed the flag, stored the path and read it nowhere, so it never bypassed anything, while a refusal's hint still told operators to pass it. The flag, the hint line and its `cli-reference.md` row are deleted. To mount a path the protected-paths list refuses, remove the mount line or edit the list. **Breaking, but silently:** `rc up` does not yet reject unknown options (`rip-cage-btgb`), so a script that still passes the flag launches as before — and gets the same refusal it always got.
 
 ### Fixed

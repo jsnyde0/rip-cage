@@ -816,7 +816,6 @@ _run_all_tests() {
   # router/DNS-resolver/firewall engine, deleted per ADR-029 D2
   # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_pytest "${SCRIPT_DIR}/test_skill_server.py" --with pytest python -m pytest "${SCRIPT_DIR}/test_skill_server.py" -v   # rip-cage-nu91: skill-server MCP shim unit tests
-  run_test "${SCRIPT_DIR}/test-up-msb-egress-config.sh"  # rip-cage-tsf2.8/tsf2.10.5: _up_build_egress_config_json config∪manifest egress union + post-split runtime-invariant regression (r1-F1: was missing from run-host.sh)
   run_test "${SCRIPT_DIR}/test-doctor-version-skew.sh"   # rip-cage-2cks: _doctor_bd_version_compare unit tests (host-only, no docker)
   run_test "${SCRIPT_DIR}/test-doctor-dead-mount.sh"     # rip-cage-uben: generic dead-handle detection over single-file bind mounts — stubbed docker, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-exec-source-deleted.sh"   # rip-cage-uod6 (charted from rip-cage-54q3; the rc exec half retired with the verb in rip-cage-ely4.10, so rc doctor carries the hint alone now): rc doctor names a deleted host workspace source with a Fix-hint instead of msb's misleading ENOENT-against-the-program-name text — fake msb PATH shim, host-only, no live cage needed

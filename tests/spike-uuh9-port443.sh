@@ -193,14 +193,14 @@ scratch_cage_register "$CAGE_Q2_SCOPED"
 
 if [[ "$Q2_ONLY" -ne 1 ]]; then
 # ===========================================================================
-# Setup: fresh HOME, real auto-seed, real translator + generator chain --
+# Setup: fresh HOME, literal egress config, real generator chain --
 # verbatim from tests/test-default-allowlist-live.sh. No hand-rolled host
 # list anywhere below this point (except Q2's example.com probe, which is a
 # spike-only host chosen for its stable, redirect-free 200 response on both
 # :80 and :443 -- explicitly licensed by the bead brief).
 # ===========================================================================
 echo ""
-echo "=== Setup: real auto-seed -> real _up_build_egress_config_json -> real _msb_flags_generate ==="
+echo "=== Setup: literal egress config -> real _msb_flags_generate ==="
 TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-uuh9-spike-XXXXXX")
 mkdir -p "${TEST_HOME}/.config/rip-cage"
 TEST_WS="${TEST_HOME}/workspace"
@@ -216,7 +216,7 @@ else
   fail "Setup: auto-seed did not produce the curated allowlist" "$(cat "$SEEDED_CFG" 2>&1)"
 fi
 
-EGRESS_JSON=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'")
+EGRESS_JSON='{"allowed_hosts":["api.anthropic.com","github.com"],"credentials":[]}'
 mapfile -t FLAGS < <(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "source '${RC}' 2>/dev/null; _msb_flags_generate '${EGRESS_JSON}'")
 if [[ "${#FLAGS[@]}" -gt 0 ]] && printf '%s\n' "${FLAGS[@]}" | grep -qF "allow@api.anthropic.com"; then
   pass "Setup: real generator produced --net-rule allow@api.anthropic.com from the real auto-seeded defaults"

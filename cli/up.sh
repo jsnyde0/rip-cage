@@ -1566,7 +1566,7 @@ _up_prepare_conf_secret_env() {
 }
 
 
-# _up_build_msb_create_argv NAME PATH
+# _up_build_msb_create_argv NAME
 #
 # Populate the global array _UP_MSB_ARGV with the exact `msb create` argv.
 # This is the launcher's contract: the real create runs THIS array and
@@ -1579,20 +1579,14 @@ _up_prepare_conf_secret_env() {
 #
 # Reads globals: _UP_CAGE_CONF, _UP_MSB_REPLACE, _UP_RUN_ARGS,
 # _UP_PROTECTED_COVERS.
-# Returns 0; 2 if the egress generator fails; 3 if the translator fails.
+# Returns 0; 3 if the mount/env translator fails.
 _up_build_msb_create_argv() {
-  local _name="$1" _path="$2"
+  local _name="$1"
 
   _UP_MSB_ARGV=(msb create --conf "${_UP_CAGE_CONF}" --name "$_name" --log-level trace)
   [[ "${_UP_MSB_REPLACE:-false}" == "true" ]] && _UP_MSB_ARGV+=(--replace)
 
-  local _egress_cfg _egress_out _translate_out _line
-  _egress_cfg=$(_up_build_egress_config_json "$_path")
-  _egress_out=$(_msb_flags_generate "$_egress_cfg") || return 2
-  if [[ -n "$_egress_out" ]]; then
-    while IFS= read -r _line; do _UP_MSB_ARGV+=("$_line"); done <<< "$_egress_out"
-  fi
-
+  local _translate_out _line
   _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]+"${_UP_RUN_ARGS[@]}"}") || return 3
   if [[ -n "$_translate_out" ]]; then
     while IFS= read -r _line; do _UP_MSB_ARGV+=("$_line"); done <<< "$_translate_out"
@@ -1606,20 +1600,15 @@ _up_build_msb_create_argv() {
 }
 
 
-# _up_start_container NAME PATH — create the msb sandbox with the prepared
+# _up_start_container NAME — create the msb sandbox with the prepared
 # _UP_RUN_ARGS (rip-cage-rj68, S6 — REWRITTEN onto msb; was `docker run`).
 #
 # _UP_RUN_ARGS is produced by _up_prepare_docker_mounts and
 # _up_prepare_environment and is still docker -v/-e/--label shape. This
 # function translates it to msb flags (_up_translate_docker_args_to_msb),
-# joins it with the egress/secret flags (_up_build_egress_config_json ->
-# _msb_flags_generate), and runs the `msb create` argv that
-# _up_build_msb_create_argv assembles.
-#
-# The secret-source preflight (_msb_flags_preflight_secret_env) gates this
-# BEFORE any msb invocation: a credential whose source_env is unset/empty in
-# the host env aborts loud here, naming the var, rather than silently booting
-# a cage carrying an empty secret.
+# joins it with the config-derived flags, and runs the `msb create` argv that
+# _up_build_msb_create_argv assembles. Egress and credential bindings are the
+# --conf file's own network.allow and secrets: block, not flags.
 #
 # `--log-level trace` is always passed (added by _up_build_msb_create_argv):
 # cages boot with trace logging on so the DNS-denial `domain=` log line is
@@ -1627,28 +1616,19 @@ _up_build_msb_create_argv() {
 # _msb_denied_domains_from_trace_log).
 #
 # Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT, IMAGE
-# Parameters: $1 name — container name; $2 path — validated workspace path
-#             (for the egress-config JSON build)
+# Parameters: $1 name — container name
 # Returns non-zero on failure (human mode); JSON mode calls json_error,
 # which exits internally and never returns.
 _up_start_container() {
-  local _name="$1" _path="$2"
+  local _name="$1"
 
-  _up_prepare_secret_env "$_path" || return 1
+  _up_prepare_secret_env
 
-  # The builder runs the egress generator and the mount/env translator once,
-  # and says which of them failed: 2 = generate, 3 = translate.
+  # The builder runs the mount/env translator once and returns 3 if it fails.
   local _UP_MSB_ARGV=() _argv_rc=0
-  _up_build_msb_create_argv "$_name" "$_path" || _argv_rc=$?
+  _up_build_msb_create_argv "$_name" || _argv_rc=$?
   case "$_argv_rc" in
     0) ;;
-    2)
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "Failed to generate msb egress flags for $_name" "MSB_FLAGS_GENERATE_FAILED"
-      fi
-      echo "Error: failed to generate msb egress flags for $_name" >&2
-      return 1
-      ;;
     3)
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         json_error "Failed to translate mount/env args to msb for $_name" "MSB_ARGS_TRANSLATE_FAILED"
@@ -2152,95 +2132,18 @@ _up_translate_docker_args_to_msb() {
 }
 
 
-# _up_build_egress_config_json PATH
+# _up_prepare_secret_env
 #
-# rip-cage-rj68 (S6 of the msb migration epic rip-cage-tsf2): translates the
-# manifest-declared tool egress into the normalized JSON contract
-# cli/lib/msb_flags.sh's _msb_flags_generate expects (S2, rip-cage-kl4r,
-# APPROVED as-is per the 2026-07-12 Fable fold — this function feeds it,
-# does not reshape it).
+# Export the cage config's `secrets:` credentials from the host-side secrets
+# files, shared by create (_up_start_container) and resume. msb re-resolves
+# every secret binding from the host env at EVERY sandbox start, so a resume
+# in a fresh `rc up` process needs the same exports as create.
 #
-# allowed_hosts <- network.allowed_hosts (existing schema field, unchanged).
-# credentials   <- auth.credentials (rip-cage-rj68 S6 Fold a — the NEW
-#                  credential->host binding surface; deliberately isomorphic
-#                  to the contract's own "credentials" field, so this is a
-#                  straight passthrough, not a reshaping step).
-#
-# mounts/possession_mounts/tls_body_rewrite/dind_volumes are intentionally
-# left at their contract defaults (empty/false) here: every current mount
-# (workspace, credentials, symlink-follow, DCG config, manifest mounts,
-# state volumes) is already built as a docker-shaped -v/-e/--label arg by
-# _up_prepare_docker_mounts/_up_prepare_environment (unchanged by this
-# bead) and separately translated to msb mount flags by
-# _up_translate_docker_args_to_msb — routing the SAME mounts through this
-# JSON contract's mount fields too would double-emit them. Only the
-# net-rule/secret/tls concern is genuinely new (msb primitives with no
-# pre-msb docker equivalent) and belongs in this JSON contract.
-#
-# WHAT THIS RETURNS NOW: always the empty contract. Both of its former
-# contributions moved into the cage config (ADR-031 D2/D4) — see the body.
-_up_build_egress_config_json() {
-  local _uec_path="$1"
-  # BOTH CONFIG CONTRIBUTIONS ARE THE CAGE CONFIG'S OWN NOW (ADR-031 D2).
-  # Egress hosts are its `network.allow` list and credential bindings are its
-  # `secrets:` block, so msb reads both straight off the --conf file and rc
-  # generates neither. What IS still generated here is the MANIFEST union
-  # below: a composed tool declares the hosts it needs, and those have no home
-  # in the project's own config file. Measured on msb 0.6.18: CLI --net-rule
-  # flags UNION with the --conf allow list rather than replacing it, so the
-  # manifest union still lands.
-  local _uec_allowed_hosts='[]' _uec_credentials='[]'
-
-  # THE MANIFEST EGRESS UNION IS GONE (ADR-031 D4). Tool egress used to arrive
-  # here as a second declaration source unioned into allowed_hosts; the cage
-  # config's own network.allow list is the only source now, so what an operator
-  # reads in the config is exactly what msb enforces. Its floor entries ship in
-  # the config template rather than being merged in behind the operator's back.
-  #
-  # Egress is default-deny at the VM boundary either way (ADR-029 D2/D4, FIRM).
-  # An empty contract here is therefore SAFE, not permissive: msb allows only
-  # what the --conf file names. There is no denylist gate in rip-cage and never
-  # was one — the default-deny floor is the guard.
-
-  jq -nc --argjson hosts "$_uec_allowed_hosts" --argjson creds "$_uec_credentials" \
-    '{allowed_hosts: $hosts, credentials: $creds}'
-}
-
-
-# _up_prepare_secret_env PATH
-#
-# The secret-source preflight and secret-env exports, shared by create
-# (_up_start_container) and resume (rip-cage-q8so: they were two inline
-# copies, and only create emitted SECRET_SOURCE_ENV_UNSET in JSON mode).
-#
-# msb resolves a `--secret ENV@HOST` binding's real value from the host
-# environment at EVERY sandbox start, not just at creation (rip-cage-rj68 S6,
-# confirmed live), so a resume in a fresh `rc up` process needs the same
-# preflight and exports as create. Add a new secret source here, once.
-#
-# Steps: (1) preflight -- a credential whose source_env is unset/empty aborts
-# loud, naming the var, before any msb call; (2) export each credential's real
-# value under its synthesized guest-placeholder name; (3) export the cage
-# config's own `secrets:` block from the host-side secrets files
-# (rip-cage-l18a). MUST run in the caller's shell, never via $(...), or the
-# exports are lost.
-#
-# Returns non-zero (reason on stderr) on a preflight failure in human mode;
-# JSON mode calls json_error, which exits and never returns.
+# There is no preflight: a conf secret with no host variable and no secrets
+# file fails loud at msb boot, naming it (see _up_prepare_conf_secret_env).
+# MUST run in the caller's shell, never via $(...), or the exports are lost.
 _up_prepare_secret_env() {
-  local _upse_path="$1"
-  local _upse_cfg _upse_err
-  _upse_cfg=$(_up_build_egress_config_json "$_upse_path")
-  if ! _upse_err=$(_msb_flags_preflight_secret_env "$_upse_cfg" 2>&1); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "$_upse_err" "SECRET_SOURCE_ENV_UNSET"
-    fi
-    echo "$_upse_err" >&2
-    return 1
-  fi
-  _msb_flags_prepare_secret_env "$_upse_cfg"
   _up_prepare_conf_secret_env "${_UP_CAGE_CONF}"
-  return 0
 }
 
 
@@ -3139,7 +3042,7 @@ cmd_up() {
         trap '_rc_dry_status=$?; if [[ $_rc_dry_status -ne 0 ]]; then cat "$_UP_DRY_PREP_ERR" >&7 || true; fi; rm -f "$_UP_DRY_PREP_ERR"; exit $_rc_dry_status' EXIT
         if _up_prepare_docker_mounts "$path" "$name" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
             && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
-            && _up_build_msb_create_argv "$name" "$path"; then
+            && _up_build_msb_create_argv "$name"; then
           echo "Would run: ${_UP_MSB_ARGV[*]}"
         else
           echo "Would run: msb create --conf ${_UP_CAGE_CONF} --name ${name} --log-level trace [mounts]"
@@ -3281,12 +3184,10 @@ cmd_up() {
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard — abort loud if
     # auth.credential_mounts was toggled between real and none since create.
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
-    # rip-cage-rj68 (S6): msb re-resolves every --secret binding's real
-    # value from the host env at START time, not just at create time (live-
-    # confirmed) — the same Fold-b preflight + export create uses must run
-    # again here, in THIS process, before msb start.
-    # JSON mode never returns on failure (json_error exits inside).
-    _up_prepare_secret_env "$path" || exit 1
+    # msb re-resolves every secret binding from the host env at START time,
+    # not just at create time, so the same export create uses must run again
+    # here, in THIS process, before msb start.
+    _up_prepare_secret_env
     # _msb_start is a resume — a fresh kernel boot, per ADR-029 D4's
     # resume-path corollary. _up_init_container immediately after re-runs
     # the SAME init script the create path runs (cockpit
@@ -3495,7 +3396,7 @@ cmd_up() {
   # confirmed live). _up_start_container takes $IMAGE and $path as its own
   # arguments below.
 
-  if ! _up_start_container "$name" "$path"; then
+  if ! _up_start_container "$name"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "created" "$path" "stopped" "failed"
       return 1

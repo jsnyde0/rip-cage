@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # cli/lib/msb_flags.sh -- config -> msb-flags generator (rip-cage-kl4r, S2 of
 # the msb migration epic rip-cage-tsf2).
-# NOTE: standalone translator, NOT wired into the rc shim's cli/lib sourcing
-# loop or cli/up.sh's create path -- that wiring is S6's job (rc lifecycle
-# verbs on msb). Sourced directly by this module's own tests. Must NOT set
-# -euo pipefail itself (matches the other cli/lib/*.sh convention -- a future
-# caller that sources this alongside the shim owns strict mode once).
+# NOTE: TEST-ONLY library. It is not on `rc up`'s launch path: the cage
+# config's own network.allow and secrets: block carry what this generator
+# used to emit (ADR-031 D2; rip-cage-wla6). Its consumers are the live and
+# probe suites, which build cages directly. Retiring it is rip-cage-eovq.
+# Must NOT set -euo pipefail itself (matches the other cli/lib/*.sh
+# convention -- a caller that sources this owns strict mode once).
 #
 # Implements ADR-029 D2 ("declare, don't run the engine" -- containment is
 # the runtime's job) and D5 (--secret non-possession is the default, but a
