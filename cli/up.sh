@@ -2632,9 +2632,10 @@ cmd_up() {
 
   # rip-cage-3nzx: every mount check below reads the config through
   # _protected_paths_conf_bind_mounts, which refuses a mount path holding ':'.
-  # Run it once first, so that refusal carries its own code rather than the
-  # first caller's.
-  if ! _protected_paths_conf_bind_mounts "$_UP_CAGE_CONF" >/dev/null; then
+  # Parse once here, so that refusal carries its own code rather than the
+  # first caller's, and hand the rows to each reader (rip-cage-kaqr.1).
+  local _up_mount_rows
+  if ! _up_mount_rows="$(_protected_paths_conf_bind_mounts "$_UP_CAGE_CONF")"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} has a mount line rc cannot read unambiguously (see stderr)" "MOUNT_PATH_AMBIGUOUS"
     exit 1
   fi
@@ -2644,12 +2645,12 @@ cmd_up() {
   # refusals; split back into two calls with their own JSON error codes so a
   # caller can tell "the config sits inside its own mount" apart from "a
   # mount exposes the CCTOK secrets dir".
-  if ! _protected_paths_conf_outside_mounts "$_UP_CAGE_CONF"; then
+  if ! _protected_paths_conf_outside_mounts "$_UP_CAGE_CONF" "$_up_mount_rows"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} sits inside a location it mounts into the cage (see stderr)" "CAGE_CONFIG_INSIDE_MOUNT"
     exit 1
   fi
 
-  if ! _protected_paths_conf_secrets_dir_mount "$_UP_CAGE_CONF"; then
+  if ! _protected_paths_conf_secrets_dir_mount "$_UP_CAGE_CONF" "$_up_mount_rows"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} mounts the CCTOK secrets directory (see stderr)" "SECRETS_DIR_INSIDE_MOUNT"
     exit 1
   fi
@@ -2669,7 +2670,7 @@ cmd_up() {
   # The covers this produces are appended to the create argv; a refusal here
   # exits non-zero with nothing spawned.
   local _covers_out
-  if ! _covers_out=$(_protected_paths_enforce "$_UP_CAGE_CONF"); then
+  if ! _covers_out=$(_protected_paths_enforce "$_UP_CAGE_CONF" "$_up_mount_rows"); then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Protected-paths check refused the cage config ${_UP_CAGE_CONF}" "PROTECTED_PATH_REFUSED"
     exit 1
   fi
@@ -2696,7 +2697,7 @@ cmd_up() {
   # config, info and hooks read-only, so a guest cannot write a command the
   # host's git runs (rip-cage-rsh9.2). Same before-any-msb-call floor.
   local _git_covers_out
-  if ! _git_covers_out=$(_git_exec_covers "$_UP_CAGE_CONF"); then
+  if ! _git_covers_out=$(_git_exec_covers "$_UP_CAGE_CONF" "$_up_mount_rows"); then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Git config cover refused the cage config ${_UP_CAGE_CONF}" "GIT_COVER_REFUSED"
     exit 1
   fi

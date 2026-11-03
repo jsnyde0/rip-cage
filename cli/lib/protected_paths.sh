@@ -228,6 +228,23 @@ _protected_paths_conf_bind_mounts() {
 }
 
 # --------------------------------------------------------------------------
+# _protected_paths_conf_rows CONF_FILE [ROWS]
+#
+# Echo the config's bind-mount rows (the _protected_paths_conf_bind_mounts
+# output) for a reader: ROWS verbatim when a second argument is given -- even
+# empty, which means zero mounts -- else parsed from CONF_FILE (non-zero on the
+# reader's fail-closed refusal). `rc up` parses once and passes the rows down;
+# a reader called with CONF_FILE only still parses and refuses for itself.
+# --------------------------------------------------------------------------
+_protected_paths_conf_rows() {
+  if [[ $# -ge 2 ]]; then
+    printf '%s' "$2"
+  else
+    _protected_paths_conf_bind_mounts "$1"
+  fi
+}
+
+# --------------------------------------------------------------------------
 # _protected_paths_secrets_dir
 #
 # Echo the CCTOK secrets directory path ($XDG_CONFIG_HOME/rip-cage/secrets),
@@ -341,7 +358,7 @@ _beads_redirect_refusal() {
 }
 
 # --------------------------------------------------------------------------
-# _protected_paths_conf_outside_mounts CONF_FILE
+# _protected_paths_conf_outside_mounts CONF_FILE [ROWS]
 #
 # Refuse (non-zero, reason on stderr) when the cage config file itself resolves
 # INSIDE one of the trees it mounts. ADR-031 D5(a): the composition inputs are
@@ -368,7 +385,7 @@ _protected_paths_conf_outside_mounts() {
   _conf_real="$(cd "$(dirname "${_conf}")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "${_conf}")")" || _conf_real="${_conf}"
 
   local _mounts _host _guest _mode _host_real
-  _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
+  _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
   while IFS=$'\t' read -r _host _guest _mode; do
@@ -383,7 +400,7 @@ _protected_paths_conf_outside_mounts() {
 }
 
 # --------------------------------------------------------------------------
-# _protected_paths_conf_secrets_dir_mount CONF_FILE
+# _protected_paths_conf_secrets_dir_mount CONF_FILE [ROWS]
 #
 # Refuse (non-zero, reason on stderr) when a mount declared in the cage
 # config equals or contains the CCTOK secrets directory
@@ -395,9 +412,9 @@ _protected_paths_conf_outside_mounts() {
 # can tell "the config sits inside its own mount" apart from "a mount exposes
 # the secrets dir" (rip-cage-ely4.7.17 fix round 4).
 #
-# Same before-any-msb-call loop over the config's own mounts as the function
-# above; the predicate's own existence check means this returns 0 (no
-# refusal) whenever the secrets directory has never been created -- an
+# Runs before any msb call, over the config's own mounts (CONF_FILE [ROWS]:
+# see _protected_paths_conf_rows); the predicate's own existence check means
+# this returns 0 (no refusal) whenever the secrets directory has never been created -- an
 # API-key-only user's plain `~/.config` mount is never touched.
 # --------------------------------------------------------------------------
 _protected_paths_conf_secrets_dir_mount() {
@@ -406,7 +423,7 @@ _protected_paths_conf_secrets_dir_mount() {
   _secrets_dir="$(_protected_paths_secrets_dir)"
 
   local _mounts _host _guest _mode
-  _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
+  _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
   while IFS=$'\t' read -r _host _guest _mode; do
@@ -444,7 +461,7 @@ _protected_paths_breadcrumb() {
 }
 
 # --------------------------------------------------------------------------
-# _protected_paths_enforce CONF_FILE
+# _protected_paths_enforce CONF_FILE [ROWS]
 #
 # The whole rule, run once per `rc up` before any msb call. Prints the cover
 # flags it generated to STDOUT, one msb argv token per line (the same
@@ -474,7 +491,7 @@ _protected_paths_enforce() {
   _list="$(_protected_paths_resolve 2>/dev/null)" || _list=""
 
   local _mounts
-  _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
+  _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
   # Build the find expression once: -name a -o -name b -o ...
@@ -504,20 +521,10 @@ _protected_paths_enforce() {
     # at ~/.ssh is caught as surely as the literal path. rc refuses before any
     # msb call, and the message never echoes the mount's contents.
     _real="$(cd "$(dirname "${_host}")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "${_host}")")" || _real="${_host}"
-    while IFS= read -r _entry; do
-      [[ -z "${_entry}" ]] && continue
-      local _oldifs="$IFS"
-      IFS='/'
-      # shellcheck disable=SC2206
-      local -a _parts=(${_real})
-      IFS="$_oldifs"
-      for _component in "${_parts[@]}"; do
-        if [[ "${_component}" == "${_entry}" ]]; then
-          echo "Error: the cage config ${_conf} mounts ${_host}, which is a protected path ('${_entry}'). Refusing to launch before any msb call: rip-cage does not show a credential store into a cage (ADR-031 D2a). Remove that mount line from ${_conf}, or — if you have decided '${_entry}' is not a secret — remove that line from the protected-paths list this run read: ${_list:-\$RC_PROTECTED_PATHS, \$XDG_CONFIG_HOME/rip-cage/protected-paths, or the copy shipped beside rc}" >&2
-          return 1
-        fi
-      done
-    done <<< "${_entries}"
+    if _entry="$(_protected_paths_path_match "${_real}")"; then
+      echo "Error: the cage config ${_conf} mounts ${_host}, which is a protected path ('${_entry}'). Refusing to launch before any msb call: rip-cage does not show a credential store into a cage (ADR-031 D2a). Remove that mount line from ${_conf}, or — if you have decided '${_entry}' is not a secret — remove that line from the protected-paths list this run read: ${_list:-\$RC_PROTECTED_PATHS, \$XDG_CONFIG_HOME/rip-cage/protected-paths, or the copy shipped beside rc}" >&2
+      return 1
+    fi
 
     # --- (b) AUTO-COVER a listed path found inside the tree ----------------
     [[ ! -d "${_host}" ]] && continue
@@ -592,7 +599,7 @@ _protected_paths_enforce() {
 }
 
 # --------------------------------------------------------------------------
-# _git_exec_covers CONF_FILE
+# _git_exec_covers CONF_FILE [ROWS]
 #
 # ADR-002 D11 (evolved 2026-10-16, rip-cage-rsh9.2). A guest that can write a
 # repo's .git/config can name a command the HOST runs: core.fsmonitor fires on
@@ -638,7 +645,7 @@ _git_exec_covers() {
   local _conf="$1"
   local _depth="${RC_PROTECTED_SCAN_DEPTH:-2}"
   local _mounts
-  _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
+  _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
   # Guest targets of the read-only mounts: nothing under one gets a cover.
