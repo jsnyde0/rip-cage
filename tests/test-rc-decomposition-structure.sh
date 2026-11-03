@@ -642,7 +642,9 @@ cp "${REPO_ROOT}/VERSION" "${_scratch_libexec}/VERSION"
 ln -s "${_scratch_libexec}/rc" "${_scratch_bin}/rc"
 chmod +x "${_scratch_libexec}/rc"
 
-_unrelated_cwd=$(mktemp -d)
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${REPO_ROOT}/tests/_host-sandbox-lib.sh"
+_unrelated_cwd=$(_host_scratch_mktemp_d rc-unrelated-cwd)
 _symlink_result=$(cd "$_unrelated_cwd" && "${_scratch_bin}/rc" --version 2>&1)
 _symlink_exit=$?
 
