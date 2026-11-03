@@ -770,7 +770,6 @@ run_pytest() {
 # full ordered enumeration, which only exists once _run_all_tests has been
 # defined -- hence _run_all_tests lives here, ahead of the sandbox setup.
 _run_all_tests() {
-  # Uncomment each line below after the audit step confirms pass or skip-guard:
   run_test "${SCRIPT_DIR}/test-rc-source-isolation.sh" # rip-cage-k2d5: rc source isolation — set -e must not leak when sourcing rc
   run_test "${SCRIPT_DIR}/test-rc-decomposition-structure.sh" # rip-cage-gto1: post-split structural invariants (strict-mode-per-module, fn-count, reachability, up<->reload coupling, top-level globals, lib/-boundary, cwd/libexec sourcing)
   run_test "${SCRIPT_DIR}/test-rc-commands.sh"
@@ -824,7 +823,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-daemon-restart-policy.sh"        # rip-cage-vpxk: boot-descriptor daemons[].restart — always respawns with a WARNING, never/default starts once, fake daemon via RC_INIT_LIB_ONLY-guarded sourcing, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-cage-host-bridge-probe.sh"       # rip-cage-woox: _rc_probe_host_bridge preset-honoring + msb-first probe order, stubbed getent via RC_INIT_LIB_ONLY-guarded sourcing, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-host-scratch-root.sh"            # rip-cage-6v34.6: the suite's own scratch root stays short enough for msb's 104-byte socket budget and symlink-free; host-only, no live cage needed
-  run_test "${SCRIPT_DIR}/test-rc-test-suite-continuation.sh" # rip-cage-83y6: rc test's non-json path runs all four in-cage suites even when an earlier one fails — stubbed msb, host-only, no live cage needed
+  run_test "${SCRIPT_DIR}/test-rc-test-suite-continuation.sh" # rip-cage-83y6: rc test's non-json path runs all five in-cage suites (floor-probe, test-safety-stack, test-skills, test-bd-roundtrip, run-recipe-smokes) even when an earlier one fails — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-cage-claude-projects-host-bound.sh" # rip-cage-aa4t: _cage_claude_projects_host_bound predicate — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-transcript-persistence.sh"   # rip-cage-aa4t: rc doctor transcript-persistence probe — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-host-auth-scope.sh"          # rip-cage-ely4.7.17 fix round 3, finding 3: rc doctor's host_auth probe reads n/a for a cage whose config declares no CCTOK secret, never FAIL — stubbed msb, host-only, no live cage needed
@@ -899,9 +898,8 @@ _run_all_tests() {
   # 2026-07-13). test-up-run-args-e2e.sh below drives the REAL `cmd_up`
   # (not a hand-copy) and captures the REAL `msb create` argv, so it
   # already covers the full post-translation msb-flag surface with
-  # strictly higher fidelity (e.g. it captures `rc.config-loaded` and the
-  # real `--net-default deny` egress flag, neither of which the retired
-  # replica ever modeled) -- no separate helper-level companion needed.
+  # strictly higher fidelity than the retired replica ever modeled -- no
+  # separate helper-level companion needed.
   run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker+msb shims
   run_test "${SCRIPT_DIR}/test-build-msb-load.sh"         # rip-cage-7dkq (S1, msb migration): _build_msb_load unit tests (fake docker+msb PATH shims, host-only, no live daemon)
   run_test "${SCRIPT_DIR}/test-up-msb-load-wiring.sh"     # rip-cage-0v47: rc up's new-container/image-absent provisioning block calls _build_msb_load then _msb_warn_image_layer_drift IN THE SAME SHELL right after a successful _pull_or_build (fake docker+msb PATH shims + extract-and-eval against scratch-mutated copies, host-only, no live daemon, never a real cage)

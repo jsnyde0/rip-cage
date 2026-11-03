@@ -8,26 +8,14 @@
 #
 # Pure host-side function test -- no docker/msb required.
 #
-# Coverage:
-#   T1  network.allowed_hosts -> allowed_hosts (straight passthrough)
-#   T2  auth.credentials -> credentials (straight passthrough — the schema
-#       was deliberately made isomorphic to the contract, Fold a design note)
+# Coverage (live):
 #   T3  no config files present -> {"allowed_hosts":[],"credentials":[]}
-#       (D5 regression contract: substrate-only, no behavior change when
-#       unconfigured)
+#       (defensive branch, not the cmd_up path)
 #   T4  output round-trips through _msb_flags_generate without error (proves
 #       the translator's output is actually well-formed against the real
 #       contract, not merely shaped like it)
-#   T5  manifest tool egress: hosts union into allowed_hosts (rip-cage-tsf2.8:
-#       a composed tool declaring egress hosts must materialize them, unioned
-#       with config network.allowed_hosts, order-stable)
-#   T5b sentinel host materializes as an actual --net-rule allow@<host> through
-#       the real _msb_flags_generate (closes the net-rule acceptance leg)
-#   T6  unconfigured cage = seeded floor manifest + no config -> allowed_hosts
-#       equals exactly the floor manifest's declared egress (Fable REVISE r1 F1:
-#       the real unconfigured cage is NOT empty; cmd_up seeds the floor manifest)
-#   T6b absent manifest file -> union skipped, config hosts pass through (the
-#       defensive `-f` branch; not the cmd_up path)
+# Retired (bodies below, each with its reason): T1/T2 (rip-cage-ely4.9),
+# T5/T5b/T6/T6b (rip-cage-ely4.11), T7/T8 (rip-cage-ely4.9).
 
 set -uo pipefail
 

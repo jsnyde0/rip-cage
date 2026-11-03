@@ -112,7 +112,7 @@ trap _e2e_cleanup EXIT
 # Helper: spin up a minimal cage with a manifest-declared mount and return
 # the container name. The workspace is a fresh tmpdir; the cage is daemonized.
 #
-# Usage: _spin_up_cage <cage_suffix> <manifest_yaml> <ws_base_tmpdir>
+# Usage: _spin_up_cage <cage_suffix> <extra_mounts> <ws_base_tmpdir>
 # Writes the container name to stdout.
 # ---------------------------------------------------------------------------
 _spin_up_cage() {

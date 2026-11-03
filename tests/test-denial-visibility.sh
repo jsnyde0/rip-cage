@@ -42,10 +42,8 @@
 #       DISTINCT WARNING naming the secret-violation host, and the
 #       WARNING clause never contains an "rc allowlist add <violation
 #       host>" suggestion.
-#   R1  cli/reload.sh's `rc reload --dry-run`, given the mixed log, prints
-#       the existing "Fix-hint: recently denied domain(s)" block for the
-#       DNS domain AND a distinct WARNING line naming the secret-violation
-#       host, and never suggests allowlisting the secret-violation host.
+#   R1  RETIRED with `rc reload` (rip-cage-ely4.10 / ADR-031 D3); see the
+#       RETIRED note near the bottom of this file.
 #   D2  rip-cage-ffmc (doc path): _doctor_format_posture_probe ALWAYS
 #       carries a static note that a port-scoped denial on an already
 #       ALLOWED domain is invisible to this probe (msb logs nothing at
