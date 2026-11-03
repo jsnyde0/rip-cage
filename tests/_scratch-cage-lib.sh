@@ -160,11 +160,12 @@ _scratch_cage_registry_remove() {
 # different registry file (the registry path derives from the same root), so
 # registration and sweep still agree for any one registry. Refuses empty, "null", any "/", a leading
 # ".", and every name that fits none of the shapes.
-# KNOWN, DELIBERATE GAP: a test that registers a name of its own invention
-# (tests/spike-uuh9-port443.sh names its cages "spike-uuh9-*") fails this
+# DELIBERATE: a test that registers a name of its own invention fails this
 # guard and is refused rather than swept. That is the fail-safe direction —
 # the cost is one cage the operator destroys by hand, against a class of bug
-# whose last instance cost the human their own cage.
+# whose last instance cost the human their own cage. A test that names its
+# own cages uses the "rc-t-" prefix to stay sweepable
+# (tests/spike-uuh9-port443.sh does, rip-cage-neol).
 _scratch_cage_name_is_ours() {
   local _n="$1" _rb _head _rest _acc=""
   [[ -z "$_n" || "$_n" == "null" || "$_n" == */* || "$_n" == .* ]] && return 1
