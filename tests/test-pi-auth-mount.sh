@@ -8,7 +8,7 @@
 #   2. the rc.auth.credential-mounts.pi label is the constant none
 #   3. PI_CODING_AGENT_DIR=/home/agent/.pi/agent set in container env
 #   4. CAGE_HOST_ADDR passed through explicitly (for non-interactive pi -p)
-#   5. Empty OPENAI_API_KEY is NOT forwarded (empty-value filter)
+#   5. (retired, rip-cage-rsh9.4: provider keys are no longer forwarded; see tests/test-up-provider-env-not-forwarded.sh)
 #   6. rc up succeeds when ~/.pi/agent is absent (warning, no fatal)
 #   7. /home/agent/.pi/agent/AGENTS.md content + mtime unchanged after rc up
 #      (init must not mutate container-local dotfiles)
@@ -250,69 +250,6 @@ if [[ "${cage_addr_line#CAGE_HOST_ADDR=}" != "" ]]; then
 else
   fail "CAGE_HOST_ADDR not set or empty in container env (non-interactive pi -p will fail)" "$cage_addr_line"
 fi
-
-# ================================================================
-# Test 5: Empty OPENAI_API_KEY is NOT forwarded (empty-value filter)
-# ================================================================
-echo ""
-echo "=== Test 5: Empty OPENAI_API_KEY is NOT forwarded ==="
-
-# Simulate the env-var passthrough logic using the same fixed list and
-# empty-value filter from _up_prepare_docker_mounts. This verifies the
-# logic without needing to parse the docker run command.
-_pi_env_vars=(
-  ANTHROPIC_API_KEY AZURE_OPENAI_API_KEY OPENAI_API_KEY GEMINI_API_KEY
-  MISTRAL_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY
-  OPENROUTER_API_KEY AI_GATEWAY_API_KEY ZAI_API_KEY OPENCODE_API_KEY
-  KIMI_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY
-  PI_SKIP_VERSION_CHECK PI_CACHE_RETENTION
-)
-
-# Export OPENAI_API_KEY as empty, and a non-empty sentinel key
-OPENAI_API_KEY=""
-export OPENAI_API_KEY
-TEST_ANTHROPIC_KEY="sk-test-sentinel-value"
-ANTHROPIC_API_KEY="$TEST_ANTHROPIC_KEY"
-export ANTHROPIC_API_KEY
-
-_test_args=()
-for _pi_var in "${_pi_env_vars[@]}"; do
-  if [[ -n "${!_pi_var:-}" ]]; then
-    _test_args+=(-e "${_pi_var}=${!_pi_var}")
-  fi
-done
-
-# OPENAI_API_KEY="" should NOT appear
-found_empty=false
-for arg in "${_test_args[@]}"; do
-  if [[ "$arg" == *"OPENAI_API_KEY="* ]]; then
-    found_empty=true
-  fi
-done
-if [[ "$found_empty" == "false" ]]; then
-  pass "OPENAI_API_KEY='' not forwarded (empty-value filter works)"
-else
-  fail "OPENAI_API_KEY='' was forwarded — empty-value filter broken"
-fi
-
-# ANTHROPIC_API_KEY=sk-test-... SHOULD appear
-found_set=false
-for arg in "${_test_args[@]}"; do
-  if [[ "$arg" == "-e" ]]; then
-    continue
-  fi
-  if [[ "$arg" == "ANTHROPIC_API_KEY=${TEST_ANTHROPIC_KEY}" ]]; then
-    found_set=true
-  fi
-done
-if [[ "$found_set" == "true" ]]; then
-  pass "Non-empty ANTHROPIC_API_KEY forwarded correctly"
-else
-  fail "ANTHROPIC_API_KEY not forwarded despite being set"
-fi
-
-# Clean up the exported test vars
-unset OPENAI_API_KEY ANTHROPIC_API_KEY _pi_env_vars _pi_var _test_args
 
 # ================================================================
 # Test 6: rc up succeeds when ~/.pi/agent is absent (warning, no fatal)

@@ -565,9 +565,11 @@ _aws1="${AUTH_TMP}/rc-auth/case1"
 _ac1_out="${AUTH_TMP}/case1-up.out"
 mkdir -p "$_aws1"
 git -C "$_aws1" init > /dev/null 2>&1
-ANTHROPIC_API_KEY=sk-test-case1 \
-  RC_CAGE_CONF="$(cage_conf_for "$_aws1" "$IMAGE")" \
-  "$RC" up "$_aws1" </dev/null >"$_ac1_out" 2>&1 || true
+# rc up forwards no host-exported provider key (rip-cage-rsh9.4, ADR-019 D5);
+# --env-file is the explicit API-key path (docs/reference/auth.md).
+printf 'ANTHROPIC_API_KEY=sk-test-case1\n' > "${AUTH_TMP}/case1.env"
+RC_CAGE_CONF="$(cage_conf_for "$_aws1" "$IMAGE")" \
+  "$RC" up --env-file "${AUTH_TMP}/case1.env" "$_aws1" </dev/null >"$_ac1_out" 2>&1 || true
 _ac1_name=$(_find_cage_by_source_path "$(realpath "$_aws1")")
 _track_cage "$_ac1_name"
 if [[ -z "$_ac1_name" ]]; then
@@ -677,9 +679,11 @@ _aws4="${AUTH_TMP}/rc-auth/case4"
 _ac4_out="${AUTH_TMP}/case4-up.out"
 mkdir -p "$_aws4"
 git -C "$_aws4" init > /dev/null 2>&1
-ANTHROPIC_API_KEY=sk-test-case4 \
-  RC_CAGE_CONF="$(cage_conf_for "$_aws4" "$IMAGE")" \
-  "$RC" up "$_aws4" </dev/null >"$_ac4_out" 2>&1 || true
+# rc up forwards no host-exported provider key (rip-cage-rsh9.4, ADR-019 D5);
+# --env-file is the explicit API-key path (docs/reference/auth.md).
+printf 'ANTHROPIC_API_KEY=sk-test-case4\n' > "${AUTH_TMP}/case4.env"
+RC_CAGE_CONF="$(cage_conf_for "$_aws4" "$IMAGE")" \
+  "$RC" up --env-file "${AUTH_TMP}/case4.env" "$_aws4" </dev/null >"$_ac4_out" 2>&1 || true
 _ac4_name=$(_find_cage_by_source_path "$(realpath "$_aws4")")
 _track_cage "$_ac4_name"
 if [[ -z "$_ac4_name" ]]; then

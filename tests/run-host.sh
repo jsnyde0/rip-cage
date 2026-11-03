@@ -792,6 +792,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-beads-redirect-validity.sh"   # rip-cage-p4ss.1: a workspace .beads/redirect mounts rw only if it resolves to a .beads dir with metadata.json, outside every $HOME dotdir, with no control chars in its realpath; else rc up refuses; fake docker+msb, host-only
   run_test "${SCRIPT_DIR}/test-up-dry-run-pure.sh"   # rip-cage-47gy: rc up --dry-run never saves/loads/creates even when docker and msb disagree; positive control + scratch-copy red check; fake docker+msb, host-only
   run_test "${SCRIPT_DIR}/test-up-resource-flags.sh"   # rip-cage-g3ey: config cpus:/memory: reach msb; rc passes --cpus/--memory only when given, create + converge paths; fake docker+msb, host-only
+  run_test "${SCRIPT_DIR}/test-up-provider-env-not-forwarded.sh"   # rip-cage-rsh9.4: a host-exported provider key never reaches the msb create argv; fake docker+msb, host-only
   run_test "${SCRIPT_DIR}/test-up-resume-conf-secrets.sh"   # rip-cage-l18a: plain-resume of a stopped cage exports the conf secrets: (CCTOK) from the host secrets file before msb start; fake docker+msb, host-only
   run_test "${SCRIPT_DIR}/test-claude-home-mounts.sh"   # rip-cage-mxr8: config owns ~/.claude/projects+sessions, rc owns the skills projection; template dry-run names each guest path once; fake docker+msb shims, host-only
   run_test "${SCRIPT_DIR}/test-net-strict-default.sh"   # rip-cage-q146: template sets network.strict: false (msb 0.7.3 flipped the default); rc up warns naming the line when a config lacks it; fake docker+msb, host-only
