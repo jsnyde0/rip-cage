@@ -374,16 +374,12 @@ _build_warn_stale_containers() {
 # return below therefore leaves it 0 on purpose.
 #
 # Parameters: none (uses global $IMAGE).
-# Returns: 0 on ALL FIVE non-failure paths, enumerated here one-for-one with
-# the classified early exits in the body below (rip-cage-528o fix round,
-# adversarial finding F2 -- this line previously named only three of them,
-# silently omitting the two the classification block counts as paths 2 and
-# 3): (1) msb is absent, (2) mktemp could not create the scratch archive,
-# (3) `docker save` failed, (4) the saved archive is implausibly small (not
-# a real build), or (5) the load succeeded. 1 -- the ONLY non-zero return,
-# and the only one that emits from this function -- with a loud stderr
-# warning naming the image, if msb is present and the archive looks real but
-# `msb load` itself failed.
+# Returns: 0, silently, on the three non-failure paths: (1) msb is absent,
+# (4) the saved archive is implausibly small (not a real build), or (5) the
+# load succeeded. 1, with one loud stderr warning naming the image, on the
+# three failure paths: (2) mktemp could not create the scratch archive,
+# (3) `docker save` failed (rip-cage-jblx: both were silent 0 before), or
+# `msb load` itself failed. The caller ignores the code either way.
 #
 # Every early exit below is classified inline as either "nothing to check"
 # or "cannot check", the same way rip-cage-5jrt classified every early exit
@@ -411,21 +407,15 @@ _build_warn_stale_containers() {
 #     unavailable: we cannot know whether msb's cache is current, because
 #     the conversion never got far enough to find out.
 #
-# Both classes stay SILENT and return 0. That is where this sweep
-# deliberately departs from rip-cage-5jrt's own "cannot check => must emit"
-# rider in _build_warn_stale_containers -- and the departure needs stating
-# accurately, because 5jrt's rider does NOT depend on having something to
-# name: its `msb list` failure branch (cli/build.sh, the "could not
-# determine image provenance for any rc-managed sandboxes" line) emits
-# precisely when no cage can be enumerated at all. So the reason this
-# function stays quiet is not "nothing to name" but WHAT WAS AT RISK: over
-# there, live cages already exist and may be silently pinned to a stale
-# image, so an unanswerable question is itself the warning. Here the
-# conversion simply never ran, the Docker image (the primary build
-# artifact) is built and intact, nothing has yet booted from msb's cache,
-# and _RC_MSB_LOAD_SUCCEEDED stays 0 -- so the downstream emitter stays
-# quiet too. A never-attempted load must not be reported to the operator as
-# a load that failed to land.
+# NOTHING TO CHECK stays silent and returns 0. CANNOT CHECK emits one loud
+# stderr warning and returns 1 (rip-cage-jblx): the conversion never ran, so
+# msb's cache still holds the PREVIOUS build, and every cage created next
+# boots that stale image while rc build exits 0. That is the same "cannot
+# check => must emit" rider rip-cage-5jrt put on _build_warn_stale_containers.
+# The warning names the step that failed and its own stderr (a full or
+# over-quota TMPDIR is the observed cause), because that is the actionable
+# part. _RC_MSB_LOAD_SUCCEEDED still stays 0, so the downstream emitter
+# stays quiet: this function's warning is the one report of the failure.
 _build_msb_load() {
   _RC_MSB_LOAD_SUCCEEDED=0
 
@@ -436,23 +426,29 @@ _build_msb_load() {
   command -v msb >/dev/null 2>&1 || return 0
 
   local _tar
+  # The archive lands in ${TMPDIR:-/tmp}, which may be a small tmpfs; both
+  # CANNOT CHECK warnings below name TMPDIR as the knob that moves it.
+  local _stale_hint="msb's image cache was NOT refreshed, so new cages will boot the PREVIOUS '${IMAGE}'. If TMPDIR (default /tmp) is full or over quota, re-run with a roomier one, e.g. 'TMPDIR=\$HOME/.cache rc build'."
+
   # CANNOT CHECK (path 2): no writable temp file, so the save->load
   # conversion cannot even be attempted -- an UNEXPECTED failure of a step
-  # that should have worked. Deliberately silent and non-fatal: the Docker
-  # image (the primary build artifact) is already built and intact, and the
-  # post-load emitter stays quiet because the flag is still 0 -- a
-  # never-attempted load must not be reported as a load that failed to land.
-  _tar=$(mktemp -t "rc-msb-load.XXXXXX") || return 0
+  # that should have worked. Loud but non-fatal: the Docker image (the
+  # primary build artifact) is built and intact.
+  local _mktemp_err
+  if ! _mktemp_err=$(mktemp -t "rc-msb-load.XXXXXX" 2>&1); then
+    echo "Warning: could not create a temp file for the msb load of '${IMAGE}' (mktemp: ${_mktemp_err:-no output}). ${_stale_hint}" >&2
+    return 1
+  fi
+  _tar="$_mktemp_err"
 
   # CANNOT CHECK (path 3): `docker save` itself failed, so there is no
-  # archive to hand to msb. Same reasoning as the mktemp path -- an
-  # UNEXPECTED failure of a step that succeeds on any real build host, so
-  # the question "is msb's cache current?" is live but unanswerable. Silent
-  # and non-fatal for the same reason: the conversion never ran, so there is
-  # nothing to verify and nothing actionable to say.
-  if ! docker save "$IMAGE" -o "$_tar" >/dev/null 2>&1; then
+  # archive to hand to msb (rip-cage-jblx: observed as 'disk quota exceeded'
+  # on a full /tmp tmpfs). Loud, naming docker's own stderr, non-fatal.
+  local _save_err
+  if ! _save_err=$(docker save "$IMAGE" -o "$_tar" 2>&1 >/dev/null); then
     rm -f "$_tar"
-    return 0
+    echo "Warning: 'docker save ${IMAGE} -o ${_tar}' failed (docker: ${_save_err:-no output}). ${_stale_hint}" >&2
+    return 1
   fi
 
   local _tar_bytes

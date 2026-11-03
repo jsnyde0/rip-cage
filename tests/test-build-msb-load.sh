@@ -24,6 +24,8 @@
 #   T2  msb present, docker save produces a plausible image (>=1 MiB) ->
 #       `msb load --tag $IMAGE -i <tarfile>` invoked, returns 0
 #   T3  msb present, load fails -> loud stderr warning naming the image, returns 1
+#   T14-T16 docker save or mktemp fails -> loud warning naming the step and
+#       its stderr, returns 1; cmd_build still exits 0 (rip-cage-jblx)
 #   T4  structural: cmd_build's body actually calls _build_msb_load (wiring
 #       check -- a passing T1-T3 alone wouldn't prove the verb calls the helper)
 #   T5  REGRESSION GUARD (found live during this bead's own verification,
@@ -50,7 +52,7 @@ fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((F
 
 FAKE_BIN=$(mktemp -d)
 CALL_LOG=$(mktemp)
-cleanup() { rm -rf "$FAKE_BIN" "$CALL_LOG" "${FAKE_BIN_TINY_SAVE:-}" "${FAKE_BIN_NO_MSB:-}" "${E2E_HOME:-}" "${E2E_STDERR:-}"; }
+cleanup() { rm -rf "$FAKE_BIN" "$CALL_LOG" "${FAKE_BIN_TINY_SAVE:-}" "${FAKE_BIN_NO_MSB:-}" "${FAKE_BIN_FAIL_SAVE:-}" "${E2E_HOME:-}" "${E2E_STDERR:-}"; }
 trap cleanup EXIT
 
 # Fake docker: only implements `save <image> -o <path>` -- writes a
@@ -686,6 +688,93 @@ if grep -qi "warning" <<<"$_t13c_out"; then
   fail "T13c: a load that did land must not warn" "$_t13c_out"
 else
   pass "T13c: negative control -- matching layers, no warning"
+fi
+
+# ---------------------------------------------------------------------------
+# T14-T16 (rip-cage-jblx): the CANNOT CHECK paths are LOUD. Observed
+# 2026-11-03: `docker save` to a quota-full /tmp failed, _build_msb_load
+# returned 0 silently, rc build exited 0, and cages booted a stale image.
+# Each warning must name the failed step, its own stderr, and the image.
+# ---------------------------------------------------------------------------
+FAKE_BIN_FAIL_SAVE=$(mktemp -d)
+cat > "$FAKE_BIN_FAIL_SAVE/docker" <<FAKEEOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "save" ]]; then
+  echo "docker \$*" >> "\$RC_TEST_CALL_LOG"
+  echo "write /tmp/rc-msb-load.abc: disk quota exceeded" >&2
+  exit 1
+fi
+exec "$FAKE_BIN/docker" "\$@"
+FAKEEOF
+chmod +x "$FAKE_BIN_FAIL_SAVE/docker"
+cp "$FAKE_BIN/msb" "$FAKE_BIN_FAIL_SAVE/msb"
+
+echo ""
+echo "=== T14: docker save fails -> loud warning naming the save failure and its stderr ==="
+: > "$CALL_LOG"
+_t14_rc=0
+_t14_out=$(PATH="$FAKE_BIN_FAIL_SAVE:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _build_msb_load" 2>&1) || _t14_rc=$?
+
+if [[ "$_t14_rc" -ne 0 ]]; then
+  pass "T14: returns non-zero when docker save fails"
+else
+  fail "T14: expected non-zero exit, got 0" "$_t14_out"
+fi
+if grep -qF "docker save rip-cage:latest" <<<"$_t14_out"; then
+  pass "T14b: warning names the failed step (docker save) and the image"
+else
+  fail "T14b: expected 'docker save rip-cage:latest' in the warning" "$_t14_out"
+fi
+if grep -qF "disk quota exceeded" <<<"$_t14_out"; then
+  pass "T14c: warning carries docker save's own stderr"
+else
+  fail "T14c: expected docker's stderr ('disk quota exceeded') in the warning" "$_t14_out"
+fi
+if grep -qF "TMPDIR" <<<"$_t14_out"; then
+  pass "T14d: warning names TMPDIR, the knob that moves the archive"
+else
+  fail "T14d: expected TMPDIR in the warning" "$_t14_out"
+fi
+if grep -q "^msb load" "$CALL_LOG"; then
+  fail "T14e: msb load must not run without an archive" "$(cat "$CALL_LOG")"
+else
+  pass "T14e: msb load never invoked"
+fi
+
+echo ""
+echo "=== T15: real cmd_build (human leg), docker save fails -> warning on stderr, cmd_build still exits 0 ==="
+: > "$CALL_LOG"
+: > "$E2E_STDERR"
+_t15_rc=0
+_t15_stdout=$(run_cmd_build_e2e "$FAKE_BIN_FAIL_SAVE" "") || _t15_rc=$?
+_t15_stderr=$(cat "$E2E_STDERR")
+if grep -qF "docker save rip-cage:latest" <<<"$_t15_stderr" && grep -qF "disk quota exceeded" <<<"$_t15_stderr"; then
+  pass "T15: cmd_build's stderr names the save failure and docker's stderr"
+else
+  fail "T15: expected the save-failure warning on cmd_build's stderr" "$_t15_stderr"
+fi
+if [[ "$_t15_rc" -eq 0 ]]; then
+  pass "T15b: cmd_build still returns 0 (advisory, never a gate)"
+else
+  fail "T15b: expected cmd_build exit 0, got $_t15_rc" "$_t15_stderr"
+fi
+
+echo ""
+echo "=== T16: mktemp fails (TMPDIR unusable) -> loud warning naming mktemp and its stderr ==="
+: > "$CALL_LOG"
+_t16_rc=0
+_t16_out=$(PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 TMPDIR="${FAKE_BIN}/no-such-dir" \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _build_msb_load" 2>&1) || _t16_rc=$?
+if [[ "$_t16_rc" -ne 0 ]] && grep -qF "mktemp:" <<<"$_t16_out" && grep -qF "no-such-dir" <<<"$_t16_out"; then
+  pass "T16: non-zero return, warning names mktemp and carries its stderr"
+else
+  fail "T16: expected rc!=0 and a mktemp warning carrying its stderr (rc=$_t16_rc)" "$_t16_out"
+fi
+if grep -qF "docker save" "$CALL_LOG"; then
+  fail "T16b: docker save must not run without a temp file" "$(cat "$CALL_LOG")"
+else
+  pass "T16b: docker save never invoked"
 fi
 
 # ---------------------------------------------------------------------------
