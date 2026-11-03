@@ -170,12 +170,13 @@ _init_case() {  # LOG [FAIL]
 _init_case "$T/i1.log"
 _first=$(head -1 "$T/i1.log")
 if [[ "$_first" == "-u root -- bash -c "* ]]; then pass "I1 the first exec is the root cover"; else fail "I1 first exec: $_first"; fi
-if grep -q -- "init-rip-cage.sh" "$T/i1.log" && [[ $(grep -n "init-rip-cage.sh" "$T/i1.log" | head -1 | cut -d: -f1) -gt 1 ]]; then pass "I1 init runs after the cover"; else fail "I1 init order: $(cat "$T/i1.log")"; fi
+_INIT_RE='^-- /usr/local/bin/init-rip-cage\.sh'  # the non-root init exec, not the cover text that names it
+if grep -q -- "$_INIT_RE" "$T/i1.log" && [[ $(grep -n -- "$_INIT_RE" "$T/i1.log" | head -1 | cut -d: -f1) -gt 1 ]]; then pass "I1 init runs after the cover"; else fail "I1 init order: $(cat "$T/i1.log")"; fi
 if grep -qxF "TARGET /mnt/p/$S" "$T/i1.log" && grep -qxF "TARGET /mnt/p/pkg/$S" "$T/i1.log"; then pass "I1 both targets reach the cover as argv"; else fail "I1 targets: $(cat "$T/i1.log")"; fi
 if grep -qx "INIT_OK true" "$T/i1.log"; then pass "I1 init reports success"; else fail "I1 $(tail -1 "$T/i1.log")"; fi
 _init_case "$T/i2.log" fail
 if grep -qx "INIT_OK false" "$T/i2.log"; then pass "I2 a failed cover marks init failed (the caller stops the cage)"; else fail "I2 $(cat "$T/i2.log")"; fi
-if grep -q -- "init-rip-cage.sh" "$T/i2.log"; then fail "I2 init ran beside an uncovered file"; else pass "I2 init never runs after a failed cover"; fi
+if grep -q -- "$_INIT_RE" "$T/i2.log"; then fail "I2 init ran beside an uncovered file"; else pass "I2 init never runs after a failed cover"; fi
 
 echo "=== test-protected-paths-ro-mount.sh: ${FAILURES} failure(s) ==="
 [[ $FAILURES -eq 0 ]]

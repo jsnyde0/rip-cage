@@ -71,10 +71,10 @@ find() { printf '%s\n' "$T/elsewhere/.env"; }
 conf "$T/c3.yaml" "  - \"$T/proj:/w\""
 run "$T/c3.yaml"
 unset -f find
-if [[ $_rc -ne 0 && -z "$_out" ]]; then
+if [[ $_rc -ne 0 && -z "$_out" && "$_err" == *"could not place it under that mount to cover it"* ]]; then
   pass "S3 a strip failure refuses (exit $_rc) and emits no covers"
 else
-  fail "S3 a strip failure did not refuse (rc $_rc, out: $_out)"
+  fail "S3 a strip failure did not refuse via the strip check (rc $_rc, out: $_out, err: $_err)"
 fi
 
 echo
