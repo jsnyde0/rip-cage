@@ -1,21 +1,14 @@
-# Per-project rip-cage config for the rip-cage repo itself.
+# Per-project rip-cage config for the rip-cage repo itself — RETIRED SCHEMA.
 # Composed 2026-07-14 as a live dogfood of the configure-cage skill (rip-cage-tsf2.3).
-# Post-msb-cutover: egress is default-deny at the msb VM boundary; reachability
-# comes ONLY from network.allowed_hosts (curated global seed ∪ global ∪ this file).
+# This is the pre-ADR-031 v2 `.rip-cage.yaml` schema (merged with a global
+# ~/.config/rip-cage/config.yaml). rc no longer reads it: a cage now launches
+# from one native msb config at ~/.config/rip-cage/projects/<cage>.yaml
+# (ADR-031 D2). The file is a historical record; editing it changes no cage.
 #
-# The global ~/.config/rip-cage/config.yaml already provides, for EVERY cage:
-#   - network.allowed_hosts: [api.anthropic.com]   (the universal claude host)
-#   - auth.credentials: claude non-possession via msb --secret (target_env
-#     CLAUDE_CODE_OAUTH_TOKEN); the guest only ever holds the placeholder
-#   - auth.per_tool: {claude: none, pi: real}       (pi keeps real possession by
-#     design — its OAuth providers have no static token to ride --secret; ADR-026 D3/D7)
-#
-# This file therefore adds ONLY the hosts THIS repo's cage needs beyond that
-# global floor. It carries no auth.credentials of its own: claude's binding is
-# global, and pi is possession-mode (real ~/.pi/agent/auth.json mounted, no
-# --secret binding). Hosts below were converged narrow via the
-# deny -> `rc doctor` fix-hint -> `rc allowlist add` / edit -> `rc reload` loop
-# (a cold-recreate; mounts + Claude session survive) rather than guessed wide.
+# Credentials, in the current shape: claude rides msb `secrets:` (CCTOK), and
+# pi rides msb `secrets:` too — no host ~/.pi/agent/auth.json is mounted
+# (ADR-019 D1, ADR-019 D5). The cage-config skill's pi-providers recipe holds
+# the lines. The hosts below were the openai-codex provider hosts.
 version: 2
 network:
   allowed_hosts:

@@ -4,7 +4,7 @@
 > **Discovery**: This file lives at `/etc/rip-cage/cage-pi.md` inside every
 > rip-cage container and is surfaced via a reference in `~/.claude/CLAUDE.md`
 > (inside the `<!-- begin:rip-cage-topology -->` fence). It is never appended
-> to `/pi-agent/AGENTS.md` — that file is host-owned and rip-cage does not
+> to `~/.pi/agent/AGENTS.md` — that file is host-owned and rip-cage does not
 > mutate it (ADR-019 D3). Pi agents can read this file directly at its known
 > path or follow the reference in `~/.claude/CLAUDE.md`.
 
@@ -71,8 +71,8 @@ echo "CAGE_HOST_ADDR=$CAGE_HOST_ADDR"
 
 ### Notable pi state paths
 
-- Pi auth (ADR-019 D1): `/pi-agent/auth.json` is the auth credential file (`PI_CODING_AGENT_DIR=/pi-agent`)
-- Pi extensions: `/pi-agent/extensions/` — global pi extensions directory
+- Pi config dir (ADR-019 D1): `~/.pi/agent` (`PI_CODING_AGENT_DIR=/home/agent/.pi/agent`). It holds no real credential: pi's credential is an msb secret placeholder, in an env var or, for openai-codex, a placeholder `auth.json` the operator mounts `:ro` (ADR-019 D1/D5)
+- Pi extensions: `~/.pi/agent/extensions/` — global pi extensions directory
 
 If a tool *inside* the cage works but your new connection doesn't, the problem
 is almost always (a) wrong hostname (`localhost` instead of `$CAGE_HOST_ADDR`),

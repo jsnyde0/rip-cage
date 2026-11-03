@@ -5,7 +5,7 @@ Date: 2026-06-16 (revised 2026-11-03 — D1: pi `auth.json` RW mount retired, pi
 
 ## Context
 
-A pi orchestrator running *inside* a rip-cage cage has zero methodology skills today: the cage bakes only `dcg-gate.ts` and bind-mounts only `~/.pi/agent/auth.json`. Claude Code's skills/commands/agents ARE projected (ro-mount of `~/.claude/{skills,commands,agents}` → `.rc-context/*` → `init-rip-cage.sh` symlink). This asymmetry blocks the dotpi self-driving factory: the drover spawns `pi --prompt "/skill:send-it <bead>"` (the ADR-003 D7 keystone), and the spawned sessions dispatch implementer/reviewer sub-agents.
+A pi orchestrator running *inside* a rip-cage cage has zero methodology skills today: the cage bakes only `dcg-gate.ts` and bind-mounts only `~/.pi/agent/auth.json` *(that mount retired 2026-11-03, rip-cage-3w82; pi credentials ride msb `secrets:`, ADR-019 D1)*. Claude Code's skills/commands/agents ARE projected (ro-mount of `~/.claude/{skills,commands,agents}` → `.rc-context/*` → `init-rip-cage.sh` symlink). This asymmetry blocks the dotpi self-driving factory: the drover spawns `pi --prompt "/skill:send-it <bead>"` (the ADR-003 D7 keystone), and the spawned sessions dispatch implementer/reviewer sub-agents.
 
 Verified facts (2026-06-16) that shaped this ADR:
 1. **Skill discovery is native** — pi scans the filesystem (`readdirSync` of `<PI_CODING_AGENT_DIR>/skills`; any dir with a `SKILL.md` + `description`), invoked `/skill:<name>`. No MCP shim (unlike CC, whose `meta-skill` shim exists because CC ignores the filesystem).

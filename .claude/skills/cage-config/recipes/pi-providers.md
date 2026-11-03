@@ -52,7 +52,7 @@ that id, and the guest gets an auth.json holding it.
 
    ```yaml
    mounts:
-     - "<HOME>/.config/rip-cage/pi-codex/auth.json:/home/agent/.pi/agent/auth.json:ro"
+     - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.config/rip-cage/pi-codex/auth.json:/home/agent/.pi/agent/auth.json:ro"
    secrets:
      CODEX:
        allow:

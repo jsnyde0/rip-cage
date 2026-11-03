@@ -154,7 +154,7 @@ Boundaries stated honestly: per-tool posture (ADR-026 D7) survives and matters m
 | Alternative | Rejection |
 |---|---|
 | Keep the composed-mediator (iron-proxy) path as the primary non-possession mechanism | `reasoned:` ADR-026 D4's own predicate — the runtime primitive is lower-drift, needs no per-cage mediator lifecycle, and its violation guard is enforced below the guest. Mediator stays as the composition escape hatch. |
-| Possession-mode default (mount real credentials), non-possession opt-in | `direct:` reverses the proven default for the dominant secret with no gain; today's possession behavior remains available per-tool (ADR-026 D7). |
+| Possession-mode default (mount real credentials), non-possession opt-in | `direct:` reverses the proven default for the dominant secret with no gain. Possession stays available only as an explicit operator act, `rc up --env-file` (ADR-019 D5); the per-tool mount posture (ADR-026 D7) retired 2026-11-03 (rip-cage-3w82). |
 
 **What would invalidate this:** msb `--secret` losing placeholder substitution or the violation guard; or a tool class whose client-side token-shape validation rejects placeholders (Claude proven; probe per-tool before extending FIRM claims — the pi/oat placeholder-shape concern from `rip-cage-cmqb` Q1 was not hit for Claude but is real for shape-checking clients).
 

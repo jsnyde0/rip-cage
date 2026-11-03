@@ -154,7 +154,7 @@ Standalone rip-cage is honestly the **accident-containment** tier ("at least put
 
 **What would invalidate this:** if users empirically read standalone rip-cage as providing exfil-grade guarantees (the false-confidence failure), the positioning is mis-calibrated and the docs/recipe must push composition harder or gate a warning.
 
-### D7: Per-tool credential-mount posture — `auth.per_tool.{claude,pi}`; mixed posture is the caged-pi shape
+### D7: Per-tool credential-mount posture — `auth.per_tool.{claude,pi}` (mixed posture retired 2026-11-03; historical)
 
 > [ADR-029 D5: EVOLVED — the per-tool grain survives and matters more under the migration: claude rides `--secret` non-possession by default; pi stays possession-mode (real `auth.json` mounted) because openai-codex has no static token to swap. Mixed posture remains the caged-pi shape, now on the msb mechanism rather than a composed mediator. **Revised 2026-11-03 (human ruling 2026-11-03 on `rip-cage-3w82`, option A): mixed posture retired — pi rides `--secret` too (openai-codex via a fake-JWT placeholder, token kept fresh by the operator's host pi); see ADR-029 D5. The pi half of this decision below is historical.** Labels and fingerprints (`rc.auth.credential-mounts.claude`/`.pi`) re-bind per [ADR-028](ADR-028-mount-shape-label-lock.md)'s disposition.]
 

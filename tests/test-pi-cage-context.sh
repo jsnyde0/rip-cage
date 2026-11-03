@@ -217,7 +217,8 @@ AGENTS_MD_PATH="${PI_AGENT_DIR}/AGENTS.md"
 AGENTS_MD_SENTINEL="# Test sentinel — must not be modified by init"
 printf '%s\n' "$AGENTS_MD_SENTINEL" > "$AGENTS_MD_PATH"
 
-# Also create a fake auth.json so rc up doesn't skip the mount
+# Also stage a fake host auth.json: rc mounts no host auth.json (ADR-019 D1),
+# so this file stands in for the operator's real one and stays host-side
 printf '{"fake":true}\n' > "${PI_AGENT_DIR}/auth.json"
 
 # GNU stat first: on GNU, `stat -f` means filesystem status and exits 0, so a
@@ -353,6 +354,8 @@ fi
 # ---- Test 6b: host pi substrate under the default template (rip-cage-3w82 B1) ----
 # The shipped template mounts nothing under ~/.pi/agent, so no bind creates the
 # dir; init must create it before linking the staged substrate into it.
+# Discriminates only on a floor-only image: on an examples/pi image the
+# recipe init hook already mkdirs ~/.pi/agent, so this passes either way there.
 echo ""
 echo "=== Test 6b: init exits 0 and projects host AGENTS.md with no ~/.pi/agent mount ==="
 
@@ -403,7 +406,7 @@ else
   fi
 
   # 7b: /home/agent/.pi/agent/AGENTS.md must NOT exist when auth mount was skipped
-  # (init must not create host files when the auth.json sub-mount is absent)
+  # (init must not create host-substrate files when ~/.pi/agent is absent on the host)
   if ! msb exec "$CONTAINER2" -- test -f /home/agent/.pi/agent/AGENTS.md; then
     pass "Test 7b: /home/agent/.pi/agent/AGENTS.md not created when auth mount was skipped"
   else

@@ -133,9 +133,9 @@ secrets:
 
   # pi on the OpenAI (ChatGPT) subscription, provider openai-codex. pi decodes
   # its token in the guest, so the placeholder must be a token too: run the
-  # host helper examples/pi-providers/codex-secret.sh before each `rc up`; it
-  # writes ~/.config/rip-cage/secrets/CODEX and a placeholder auth.json, and
-  # prints the value for `placeholder:`. Uncomment this entry, the auth.json
+  # host helper examples/pi-providers/codex-secret.sh once, and again on a 401
+  # from chatgpt.com; it writes ~/.config/rip-cage/secrets/CODEX and a
+  # placeholder auth.json, and prints the value for `placeholder:`. Uncomment this entry, the auth.json
   # mount line it names, and the egress line below. The cage-config skill's
   # pi-providers recipe walks it.
   # CODEX:
