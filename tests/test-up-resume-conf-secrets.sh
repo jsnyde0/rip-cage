@@ -14,10 +14,13 @@ set -uo pipefail
 #   S2  no secrets file and CCTOK unset: rc up exits non-zero and msb start
 #       never sees CCTOK (rc's own auth preflight or the stub's msb-like
 #       failure stops it), so it does not silently succeed.
+#   S3  JSON mode, one credential whose source_env is unset: resume emits
+#       code SECRET_SOURCE_ENV_UNSET, the same as create (rip-cage-q8so). The
+#       credential contract is stubbed to carry it; production's is empty.
 #
 # The state reads and the resume-only guards are stubbed in the driving shell
 # (same technique as test-up-resource-flags.sh R3); the branch under test,
-# _up_prepare_resume_secrets, runs for real. Fake docker + msb are on PATH.
+# _up_prepare_secret_env, runs for real. Fake docker + msb are on PATH.
 # XDG_CONFIG_HOME is a temp dir; the operator's real secrets are never read.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -63,6 +66,13 @@ resume_run() {
     _up_resolve_resume_image_drift_stopped() { :; }
     _up_resolve_resume_symlink_fingerprint() { :; }
     _up_init_container() { _UP_INIT_OK=true; }
+    if [[ -n "${RC_TEST_UNSET_CRED:-}" ]]; then
+      OUTPUT_FORMAT=json
+      unset RC_TEST_UNSET_SRC
+      _up_build_egress_config_json() {
+        echo "{\"allowed_hosts\":[],\"credentials\":[{\"source_env\":\"RC_TEST_UNSET_SRC\",\"hosts\":[\"api.anthropic.com\"]}]}"
+      }
+    fi
     _msb_start() {
       # Read CCTOK from a CHILD process (printenv), the way msb does: an
       # assigned-but-unexported value must read as unset here.
@@ -96,6 +106,15 @@ if [[ "$S2_RC" -ne 0 && "$S2" != *"START CCTOK=set"* ]]; then
   pass "S2 no token anywhere: rc up exits ${S2_RC} and never reaches a booted msb start"
 else
   fail "S2 exit=${S2_RC}; output: $(tr '\n' '|' <<<"$S2")"
+fi
+
+echo "=== S3: JSON mode, unset credential source -> SECRET_SOURCE_ENV_UNSET ==="
+printf '%s' "$FAKE_TOKEN" > "$SFILE"; chmod 0600 "$SFILE"
+S3=$(RC_TEST_UNSET_CRED=1 resume_run); S3_RC=$?
+if [[ "$S3_RC" -ne 0 && "$S3" == *'"code":"SECRET_SOURCE_ENV_UNSET"'* && "$S3" != *"START CCTOK"* ]]; then
+  pass "S3 resume in JSON mode emits SECRET_SOURCE_ENV_UNSET before msb start"
+else
+  fail "S3 exit=${S3_RC}; output: $(tr '\n' '|' <<<"$S3")"
 fi
 
 echo ""

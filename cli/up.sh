@@ -1630,26 +1630,7 @@ _up_build_msb_create_argv() {
 _up_start_container() {
   local _name="$1" _path="$2"
 
-  local _egress_cfg
-  _egress_cfg=$(_up_build_egress_config_json "$_path")
-
-  local _preflight_err
-  if ! _preflight_err=$(_msb_flags_preflight_secret_env "$_egress_cfg" 2>&1); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "$_preflight_err" "SECRET_SOURCE_ENV_UNSET"
-    fi
-    echo "$_preflight_err" >&2
-    return 1
-  fi
-
-  # Export each credential's real value under its synthesized guest-
-  # placeholder name. MUST run in this shell (never via $(...), which would
-  # run in a subshell and discard the exports) per its own contract.
-  _msb_flags_prepare_secret_env "$_egress_cfg"
-
-  # The cage config's own `secrets:` block: put each real value in the host env
-  # var msb reads at boot. Same in-shell requirement as the call above.
-  _up_prepare_conf_secret_env "${_UP_CAGE_CONF}"
+  _up_prepare_secret_env "$_path" || return 1
 
   # The builder runs the egress generator and the mount/env translator once,
   # and says which of them failed: 2 = generate, 3 = translate.
@@ -2275,38 +2256,38 @@ _up_build_egress_config_json() {
 }
 
 
-# _up_prepare_resume_secrets PATH
+# _up_prepare_secret_env PATH
 #
-# rip-cage-rj68 (S6): msb resolves a `--secret ENV@HOST` binding's real
-# value from the host environment variable ENV at SANDBOX START TIME, not
-# just at creation — confirmed live (msb start on a stopped sandbox fails
-# loud, "host environment variable ... is not set", when the synthesized
-# name is absent from the CURRENT process's environment, even though the
-# sandbox already booted successfully once before with it present). A
-# resume happening in a fresh `rc up` process therefore needs the SAME
-# Fold-b preflight (fail loud, name the var, before touching msb) and the
-# SAME secret-env exports _up_start_container runs at create time. The
-# steps are repeated there inline, not shared: when adding a secret source,
-# add it to BOTH (rip-cage-l18a was the conf `secrets:` block missing here).
+# The secret-source preflight and secret-env exports, shared by create
+# (_up_start_container) and resume (rip-cage-q8so: they were two inline
+# copies, and only create emitted SECRET_SOURCE_ENV_UNSET in JSON mode).
 #
-# It also covers the cage config's `secrets:` block: after the egress-config
-# export it calls _up_prepare_conf_secret_env on $_UP_CAGE_CONF (rip-cage-l18a).
+# msb resolves a `--secret ENV@HOST` binding's real value from the host
+# environment at EVERY sandbox start, not just at creation (rip-cage-rj68 S6,
+# confirmed live), so a resume in a fresh `rc up` process needs the same
+# preflight and exports as create. Add a new secret source here, once.
 #
-# Returns non-zero (preflight failure already printed to stderr by
-# _msb_flags_preflight_secret_env) when a credential's source_env is unset
-# or empty; the caller must not proceed to `msb start`.
-_up_prepare_resume_secrets() {
-  local _urs_path="$1"
-  local _urs_cfg
-  _urs_cfg=$(_up_build_egress_config_json "$_urs_path")
-  if ! _msb_flags_preflight_secret_env "$_urs_cfg"; then
+# Steps: (1) preflight -- a credential whose source_env is unset/empty aborts
+# loud, naming the var, before any msb call; (2) export each credential's real
+# value under its synthesized guest-placeholder name; (3) export the cage
+# config's own `secrets:` block from the host-side secrets files
+# (rip-cage-l18a). MUST run in the caller's shell, never via $(...), or the
+# exports are lost.
+#
+# Returns non-zero (reason on stderr) on a preflight failure in human mode;
+# JSON mode calls json_error, which exits and never returns.
+_up_prepare_secret_env() {
+  local _upse_path="$1"
+  local _upse_cfg _upse_err
+  _upse_cfg=$(_up_build_egress_config_json "$_upse_path")
+  if ! _upse_err=$(_msb_flags_preflight_secret_env "$_upse_cfg" 2>&1); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "$_upse_err" "SECRET_SOURCE_ENV_UNSET"
+    fi
+    echo "$_upse_err" >&2
     return 1
   fi
-  _msb_flags_prepare_secret_env "$_urs_cfg"
-  # rip-cage-l18a: the cage config's own `secrets:` block (the shipped CCTOK
-  # login) is re-resolved by msb at start time too; export it from the
-  # host-side secrets files, same order as _up_start_container. Runs in this
-  # shell (no subshell) so the exports reach `msb start`.
+  _msb_flags_prepare_secret_env "$_upse_cfg"
   _up_prepare_conf_secret_env "${_UP_CAGE_CONF}"
   return 0
 }
@@ -3324,7 +3305,7 @@ cmd_up() {
     # value from the host env at START time, not just at create time (live-
     # confirmed) — the same Fold-b preflight + export create uses must run
     # again here, in THIS process, before msb start.
-    if ! _up_prepare_resume_secrets "$path"; then
+    if ! _up_prepare_secret_env "$path"; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         _up_json_output "$name" "resumed" "$path" "stopped" "failed"
         return 1
