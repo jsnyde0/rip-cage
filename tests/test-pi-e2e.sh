@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016,SC2088,SC2015  # literal $MSB_* placeholders and guest-side ~ paths are intended; pass || fail is the suite idiom
 # test-pi-e2e.sh - end-to-end in-cage pi smoke, one real `rc up` cage, two
 # providers, each credential an msb secret the guest never holds
 # (rip-cage-3w82).

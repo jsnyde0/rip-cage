@@ -103,6 +103,7 @@ if [[ $_rc -ne 0 ]] && printf '%s' "$_out" | grep -qF "$T/mnt/p/not-there"; then
 # (rip-cage-mq11). unshare -rm puts the record at the probe's fixed path, read
 # root:root, without the probe growing a relocation knob (init: NO ESCAPE HATCH).
 mkdir -p "$T/runroot" && ln -sfn "$T/run" "$T/runroot/rip-cage"
+# shellcheck disable=SC2016  # $1/$2 expand in the inner bash -c, not here
 _probe() { unshare -rm bash -c 'mount --bind "$1" /run && bash "$2"' _ "$T/runroot" "${REPO_ROOT}/cage/floor/floor-probe.sh" 2>&1 | grep 'floor: file-covers' | head -1; }
 if unshare -rm true 2>/dev/null; then
   fixture

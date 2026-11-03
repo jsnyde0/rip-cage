@@ -94,6 +94,8 @@ cmd_test() {
     elif [[ -f "${ws_source}/.git" ]]; then
       # Worktree detection: check for auto-redirect condition (D6 semantics)
       _up_detect_worktree "$ws_source" >/dev/null 2>&1
+      # wt_detected and wt_main_beads are globals set by _up_detect_worktree (cli/up.sh).
+      # shellcheck disable=SC2154
       if [[ "$wt_detected" == "true" ]] \
          && [[ ! -f "${preflight_beads_dir}/dolt-server.port" ]] \
          && [[ ! -d "${preflight_beads_dir}/dolt" ]] \
