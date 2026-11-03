@@ -76,7 +76,7 @@ This mirrors the existing `~/.claude` pattern (agent-owned dir + narrow non-cred
 
 **Firmness: FIRM**
 
-`init-rip-cage.sh` does **not** add an auth-presence check for pi. If `${HOME}/.pi/agent/auth.json` is missing on the host and no provider env var is set, pi will surface that on first request (it shows `/login` guidance in its own UI). The existing Claude-only auth-warn (lines 257-261) stays untouched; its message remains accurate (it claims absence of Claude credentials, not absence of all auth).
+`init-rip-cage.sh` does **not** add an auth-presence check for pi. If the cage gives pi no credential (no `secrets:` placeholder env var, no placeholder `auth.json` mounted), pi will surface that on first request (it shows `/login` guidance in its own UI). The existing Claude-only auth-warn (lines 257-261) stays untouched; its message remains accurate (it claims absence of Claude credentials, not absence of all auth).
 
 **Rationale:**
 
