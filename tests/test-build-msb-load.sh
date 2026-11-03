@@ -26,6 +26,10 @@
 #   T3  msb present, load fails -> loud stderr warning naming the image, returns 1
 #   T14-T16 docker save or mktemp fails -> loud warning naming the step and
 #       its stderr, returns 1; cmd_build still exits 0 (rip-cage-jblx)
+#   T17 docker save exits 0 with a truncated archive of a real-sized image ->
+#       loud warning, msb load never invoked (rip-cage-jblx B2)
+#   T18 a load failure already warned -> no second, layer-drift warning; with
+#       no load in the process, layer drift still warns (rip-cage-jblx B1)
 #   T4  structural: cmd_build's body actually calls _build_msb_load (wiring
 #       check -- a passing T1-T3 alone wouldn't prove the verb calls the helper)
 #   T5  REGRESSION GUARD (found live during this bead's own verification,
@@ -52,7 +56,7 @@ fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((F
 
 FAKE_BIN=$(mktemp -d)
 CALL_LOG=$(mktemp)
-cleanup() { rm -rf "$FAKE_BIN" "$CALL_LOG" "${FAKE_BIN_TINY_SAVE:-}" "${FAKE_BIN_NO_MSB:-}" "${FAKE_BIN_FAIL_SAVE:-}" "${E2E_HOME:-}" "${E2E_STDERR:-}"; }
+cleanup() { rm -rf "$FAKE_BIN" "$CALL_LOG" "${FAKE_BIN_TINY_SAVE:-}" "${FAKE_BIN_NO_MSB:-}" "${FAKE_BIN_FAIL_SAVE:-}" "${FAKE_BIN_TRUNC_SAVE:-}" "${E2E_HOME:-}" "${E2E_STDERR:-}"; }
 trap cleanup EXIT
 
 # Fake docker: only implements `save <image> -o <path>` -- writes a
@@ -775,6 +779,74 @@ if grep -qF "docker save" "$CALL_LOG"; then
   fail "T16b: docker save must not run without a temp file" "$(cat "$CALL_LOG")"
 else
   pass "T16b: docker save never invoked"
+fi
+
+# ---------------------------------------------------------------------------
+# T17 (rip-cage-jblx B2): `docker save` exits 0 but writes a truncated
+# archive while docker reports a real-sized image (a short write to a full
+# TMPDIR). Same tiny archive as T5; only docker's reported image size
+# differs, so T5 is this test's negative control.
+# ---------------------------------------------------------------------------
+FAKE_BIN_TRUNC_SAVE=$(mktemp -d)
+cat > "$FAKE_BIN_TRUNC_SAVE/docker" <<FAKEEOF
+#!/usr/bin/env bash
+if [[ "\${1:-} \${2:-}" == "image inspect" && "\$*" == *"{{.Size}}"* ]]; then
+  echo "524288000"
+  exit 0
+fi
+exec "$FAKE_BIN_TINY_SAVE/docker" "\$@"
+FAKEEOF
+chmod +x "$FAKE_BIN_TRUNC_SAVE/docker"
+cp "$FAKE_BIN/msb" "$FAKE_BIN_TRUNC_SAVE/msb"
+
+echo ""
+echo "=== T17: docker save exits 0 with a truncated archive of a real-sized image -> loud warning ==="
+: > "$CALL_LOG"
+_t17_rc=0
+_t17_out=$(PATH="$FAKE_BIN_TRUNC_SAVE:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _build_msb_load" 2>&1) || _t17_rc=$?
+if [[ "$_t17_rc" -ne 0 ]]; then
+  pass "T17: returns non-zero on a truncated archive"
+else
+  fail "T17: expected non-zero exit, got 0" "$_t17_out"
+fi
+if grep -qF "truncated archive" <<<"$_t17_out" && grep -qF "524288000" <<<"$_t17_out" && grep -qF "TMPDIR" <<<"$_t17_out"; then
+  pass "T17b: warning names the truncation, docker's image size, and TMPDIR"
+else
+  fail "T17b: expected a truncated-archive warning with sizes and TMPDIR" "$_t17_out"
+fi
+if grep -q "^msb load" "$CALL_LOG"; then
+  fail "T17c: msb load must not run on a truncated archive" "$(cat "$CALL_LOG")"
+else
+  pass "T17c: msb load never invoked"
+fi
+
+# ---------------------------------------------------------------------------
+# T18 (rip-cage-jblx B1): after _build_msb_load warns, msb's cache still holds
+# the previous build, so the drift check sees different layers (status 1).
+# Its "re-run rc build" warning must stay quiet: the load failure is the one
+# report. With no failed load in the process (rc up's image-present call
+# site), status 1 must still warn.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T18: a load failure already warned -> no second, layer-drift warning ==="
+_t18_layers='["sha256:aaaaaa","sha256:newnew"]'
+_t18_msb='{"layers":[{"diff_id":"sha256:aaaaaa"},{"diff_id":"sha256:oldold"}]}'
+_t18_out=$(PATH="$FAKE_BIN_FAIL_SAVE:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  RC_TEST_DOCKER_IMAGE_LAYERS="$_t18_layers" RC_TEST_MSB_IMAGE_INSPECT="$_t18_msb" \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _build_msb_load; _msb_warn_image_layer_drift" 2>&1)
+if grep -qF "disk quota exceeded" <<<"$_t18_out" && ! grep -qF "different layer content" <<<"$_t18_out"; then
+  pass "T18: only the save-failure warning prints"
+else
+  fail "T18: expected the save-failure warning and no layer-drift warning" "$_t18_out"
+fi
+_t18b_out=$(PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" \
+  RC_TEST_DOCKER_IMAGE_LAYERS="$_t18_layers" RC_TEST_MSB_IMAGE_INSPECT="$_t18_msb" \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _msb_warn_image_layer_drift" 2>&1)
+if grep -qF "different layer content" <<<"$_t18b_out"; then
+  pass "T18b: with no load in the process, layer drift still warns"
+else
+  fail "T18b: expected the layer-drift warning when no load ran" "$_t18b_out"
 fi
 
 # ---------------------------------------------------------------------------

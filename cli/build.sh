@@ -355,9 +355,9 @@ _build_warn_stale_containers() {
 # such a fixture's `docker save` would otherwise produce a near-empty/garbage
 # archive that gets handed to a REAL msb load, breaking fixtures that assert
 # clean stderr with a spurious warning. Below the threshold, this is silently
-# treated as "not a real build" and skipped -- no warning (there is nothing
-# actionable to tell the operator; a real build's docker save is always many
-# MB). rip-cage-7dkq: found live via the golden-master harness +
+# treated as "not a real build" and skipped -- no warning -- unless docker
+# reports a real-sized image, which makes it a truncated save (path 4b
+# below, loud). A real build's docker save is always many MB. rip-cage-7dkq: found live via the golden-master harness +
 # test-manifest-seed-drift.sh both breaking during this bead's own
 # verification (their fake-docker PATH shims never implement `save` for
 # real, so `docker save` fails/returns near-nothing on those fixtures);
@@ -377,9 +377,15 @@ _build_warn_stale_containers() {
 # Returns: 0, silently, on the three non-failure paths: (1) msb is absent,
 # (4) the saved archive is implausibly small (not a real build), or (5) the
 # load succeeded. 1, with one loud stderr warning naming the image, on the
-# three failure paths: (2) mktemp could not create the scratch archive,
-# (3) `docker save` failed (rip-cage-jblx: both were silent 0 before), or
-# `msb load` itself failed. The caller ignores the code either way.
+# failure paths: (2) mktemp could not create the scratch archive,
+# (3) `docker save` failed (rip-cage-jblx: both were silent 0 before),
+# (4b) `docker save` exited 0 but wrote a truncated archive, or `msb load`
+# itself failed. The caller ignores the code either way.
+#
+# Every loud return also sets _RC_MSB_LOAD_WARNED=1 (rip-cage-jblx B1), so
+# _msb_warn_image_layer_drift skips its "re-run rc build" layer-drift
+# warning: that drift is the failure just reported, and the advice would
+# fail the same way.
 #
 # Every early exit below is classified inline as either "nothing to check"
 # or "cannot check", the same way rip-cage-5jrt classified every early exit
@@ -397,12 +403,14 @@ _build_warn_stale_containers() {
 #   NOTHING TO CHECK -- the EXPECTED shape of a legitimate situation, in
 #     which the question "did the load land?" never arises at all. `msb`
 #     absent is a Docker-only host (there is no msb cache to load into); a
-#     sub-_MSB_LOAD_MIN_BYTES archive is a fixture whose fake `docker save`
+#     sub-_MSB_LOAD_MIN_BYTES archive of an image docker also reports as
+#     sub-threshold (or not at all) is a fixture whose fake `docker save`
 #     never implemented `save` for real (there is no image to load). Nothing
 #     went wrong; there is genuinely nothing to load.
 #
 #   CANNOT CHECK -- an UNEXPECTED failure of a step that should have worked.
-#     `mktemp` and `docker save` both succeed on any real build host, so a
+#     `mktemp` and `docker save` both succeed on any real build host, and a
+#     real-sized image never saves to a sub-threshold archive, so a
 #     failure there means the question DOES arise but its answer is
 #     unavailable: we cannot know whether msb's cache is current, because
 #     the conversion never got far enough to find out.
@@ -414,10 +422,12 @@ _build_warn_stale_containers() {
 # check => must emit" rider rip-cage-5jrt put on _build_warn_stale_containers.
 # The warning names the step that failed and its own stderr (a full or
 # over-quota TMPDIR is the observed cause), because that is the actionable
-# part. _RC_MSB_LOAD_SUCCEEDED still stays 0, so the downstream emitter
-# stays quiet: this function's warning is the one report of the failure.
+# part. _RC_MSB_LOAD_SUCCEEDED stays 0 and _RC_MSB_LOAD_WARNED becomes 1, so
+# the downstream emitter stays quiet: this function's warning is the one
+# report of the failure.
 _build_msb_load() {
   _RC_MSB_LOAD_SUCCEEDED=0
+  _RC_MSB_LOAD_WARNED=0
 
   # NOTHING TO CHECK (path 1): msb isn't installed at all, so there is no
   # msb image cache to load into and nothing downstream could consume the
@@ -437,6 +447,7 @@ _build_msb_load() {
   local _mktemp_err
   if ! _mktemp_err=$(mktemp -t "rc-msb-load.XXXXXX" 2>&1); then
     echo "Warning: could not create a temp file for the msb load of '${IMAGE}' (mktemp: ${_mktemp_err:-no output}). ${_stale_hint}" >&2
+    _RC_MSB_LOAD_WARNED=1
     return 1
   fi
   _tar="$_mktemp_err"
@@ -448,38 +459,46 @@ _build_msb_load() {
   if ! _save_err=$(docker save "$IMAGE" -o "$_tar" 2>&1 >/dev/null); then
     rm -f "$_tar"
     echo "Warning: 'docker save ${IMAGE} -o ${_tar}' failed (docker: ${_save_err:-no output}). ${_stale_hint}" >&2
+    _RC_MSB_LOAD_WARNED=1
     return 1
   fi
 
   local _tar_bytes
   _tar_bytes=$(wc -c < "$_tar" 2>/dev/null | tr -d ' ')
   local _min_bytes="${_MSB_LOAD_MIN_BYTES:-1048576}"
-  # NOTHING TO CHECK (path 4): the archive is implausibly small, i.e. "not
-  # a real build" -- the fake-docker PATH-shim shape described in the
-  # header. A real build's `docker save` is many MB.
+  # Path 4: the archive is implausibly small. The byte count alone cannot
+  # say why, so docker's own record of the image size is the second signal
+  # (rip-cage-jblx B2):
   #
-  # HONEST CAVEAT on the expected/unexpected axis: paths 1-3 read their
-  # class off an observable (msb missing; mktemp failed; docker save
-  # returned non-zero). This one does not. All the code sees is a byte
-  # count, and a real host CAN reach the same byte count via a `docker save`
-  # that exits 0 after a short or truncated write -- which by the axis above
-  # would be CANNOT CHECK. NOTHING TO CHECK is therefore a PRESUMPTION here
-  # (the fixture cause is overwhelmingly the common one), not a derivation.
-  # It costs nothing today because both classes are silent and both leave
-  # the flag 0; if this path ever gains behaviour that differs by class, the
-  # presumption is the thing to revisit first -- distinguishing the two
-  # would need a signal `wc -c` cannot give.
+  #   NOTHING TO CHECK (4a): docker reports no usable size, or a size below
+  #     the threshold too -- "not a real build", the fake-docker PATH-shim
+  #     shape described in the header (those shims answer `image inspect`
+  #     with nothing or '{}'). Silent, flag stays 0.
   #
-  # Silent by design (there is nothing actionable to tell the operator), and
-  # the flag stays 0 so the post-load emitter is silent too.
+  #   CANNOT CHECK (4b): docker reports a real-sized image, yet `docker save`
+  #     exited 0 with a sub-threshold archive -- a short or truncated write,
+  #     e.g. to a full or over-quota TMPDIR. Loud, like path 3.
+  #
+  # The size compare is only trusted below the threshold: there no real
+  # image's archive can land, so the two numbers never need to agree
+  # closely. A truncated archive ABOVE the threshold reaches `msb load`,
+  # which rejects it loud below.
   if [[ -z "$_tar_bytes" || "$_tar_bytes" -lt "$_min_bytes" ]]; then
     rm -f "$_tar"
+    local _image_bytes
+    _image_bytes=$(docker image inspect "$IMAGE" --format '{{.Size}}' 2>/dev/null)
+    if [[ "$_image_bytes" =~ ^[0-9]+$ && "$_image_bytes" -ge "$_min_bytes" ]]; then
+      echo "Warning: 'docker save ${IMAGE} -o ${_tar}' exited 0 but wrote a truncated archive (${_tar_bytes:-0} bytes for an image docker reports as ${_image_bytes} bytes). ${_stale_hint}" >&2
+      _RC_MSB_LOAD_WARNED=1
+      return 1
+    fi
     return 0
   fi
 
   if ! msb load --tag "$IMAGE" -i "$_tar" >/dev/null 2>&1; then
     rm -f "$_tar"
     echo "Warning: 'msb load' failed for '${IMAGE}' after a successful docker build — msb-based tooling (msb run/exec) will not see this image until this is fixed. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' manually for diagnostics." >&2
+    _RC_MSB_LOAD_WARNED=1
     return 1
   fi
   rm -f "$_tar"

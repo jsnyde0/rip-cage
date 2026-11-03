@@ -438,7 +438,11 @@ _msb_warn_image_layer_drift() {
     echo "Warning: 'msb image inspect ${IMAGE} --format json' is unusable on this msb build (unsupported verb/flag, or its output carries no layers[].diff_id) — rip-cage cannot verify whether msb's cached '${IMAGE}' matches docker's local image. This is a msb version/feature gap, not a sign the load failed; upgrade msb if you want this check to run." >&2
     return 0
   fi
-  if [[ "$_status" -eq 1 ]]; then
+  # rip-cage-jblx B1: skip when _build_msb_load already warned in this
+  # process. Its failure left msb's cache on the previous build, so the drift
+  # is that same failure, and "re-run rc build" would fail the same way.
+  # Unset (rc up's image-present call site) keeps this branch live.
+  if [[ "$_status" -eq 1 && "${_RC_MSB_LOAD_WARNED:-0}" -ne 1 ]]; then
     echo "Warning: msb's cached '${IMAGE}' image has different layer content than docker's local '${IMAGE}' image — a cage booted from msb's cache would run a STALE image. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' (or re-run 'rc build') to resync msb's cache." >&2
   fi
   return 0
