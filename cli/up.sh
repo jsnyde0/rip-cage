@@ -1157,26 +1157,6 @@ _up_converge_needed() {
 }
 
 
-# _up_warn_transcript_loss NAME
-#
-# rip-cage-ely4.10: the surviving half of `rc reload`'s transcript-persistence
-# guard (rip-cage-aa4t). Every recreate path — `--replace` and the stopped-cage
-# converge — destroys the guest's ephemeral rootfs overlay. A cage created
-# before rc host-bound ~/.claude/projects keeps its caged-claude conversation
-# transcripts only there, so the recreate loses them silently: the multiplexer restores
-# the pane layout faithfully and the operator finds out when `claude --resume`
-# reports no conversation.
-#
-# WARNS, never refuses. `rc reload` refused unless --allow-transcript-loss was
-# passed; that flag retired with the verb. The loud line is what the operator
-# actually needed; the refusal made an operation they had already named by hand
-# require a second flag to complete, which is the interruption shape ADR-031 D3
-# is removing. Since rip-cage-mxr8 the config, not rc, declares the
-# ~/.claude/projects host-bind, so this fires for old cages AND for any cage
-# whose config omits the template's two session lines.
-#
-# A check that cannot reach msb says so and stays quiet about the rest — a
-# transient inspect hiccup must not produce a scary line about data loss.
 # _up_conf_image CONF — the image reference msb will boot: the cage config's
 # own `image:` key (ADR-031 D2: rc passes no image argument), else $IMAGE.
 _up_conf_image() {
@@ -1467,6 +1447,26 @@ _up_warn_claude_home_mounts() {
   return 0
 }
 
+# _up_warn_transcript_loss NAME
+#
+# rip-cage-ely4.10: the surviving half of `rc reload`'s transcript-persistence
+# guard (rip-cage-aa4t). Every recreate path — `--replace` and the stopped-cage
+# converge — destroys the guest's ephemeral rootfs overlay. A cage created
+# before rc host-bound ~/.claude/projects keeps its caged-claude conversation
+# transcripts only there, so the recreate loses them silently: the multiplexer restores
+# the pane layout faithfully and the operator finds out when `claude --resume`
+# reports no conversation.
+#
+# WARNS, never refuses. `rc reload` refused unless --allow-transcript-loss was
+# passed; that flag retired with the verb. The loud line is what the operator
+# actually needed; the refusal made an operation they had already named by hand
+# require a second flag to complete, which is the interruption shape ADR-031 D3
+# is removing. Since rip-cage-mxr8 the config, not rc, declares the
+# ~/.claude/projects host-bind, so this fires for old cages AND for any cage
+# whose config omits the template's two session lines.
+#
+# A check that cannot reach msb says so and stays quiet about the rest — a
+# transient inspect hiccup must not produce a scary line about data loss.
 _up_warn_transcript_loss() {
   local _name="$1"
   local _tl_rc=0
@@ -1771,7 +1771,7 @@ _up_expected_image() {
   fi
 }
 
-# _up_drift_describe NAME PATH — sets the two message fragments the drift
+# _up_drift_describe NAME — sets the two message fragments the drift
 # messages share (call it after _msb_image_drift_status, whose
 # _RC_IMAGE_DRIFT_STORED it reads):
 #   _RC_IMAGE_DRIFT_CREATED_FROM  "'<tag>' (<short digest>)", or the bare
@@ -1781,7 +1781,7 @@ _up_expected_image() {
 #                                 from the expected tag, else the <original image>
 #                                 placeholder
 _up_drift_describe() {
-  local _name="$1" _path="$2" _ref
+  local _name="$1" _ref
   _ref=$(_up_sandbox_image_ref "$_name" || true)
   _RC_IMAGE_DRIFT_CREATED_FROM="$_RC_IMAGE_DRIFT_STORED"
   [[ -n "$_ref" ]] && _RC_IMAGE_DRIFT_CREATED_FROM="'${_ref}' (${_RC_IMAGE_DRIFT_STORED})"
@@ -1795,14 +1795,12 @@ _up_drift_describe() {
 
 # _up_resolve_resume_image_drift_stopped (rip-cage-jnvb / D-b, D-f) — abort
 # loud BEFORE msb start when the stopped container's pinned image drifted
-# from (or the current image is missing relative to) $IMAGE. Slotted with the
-# other _up_resolve_resume_* guards, before the single msb start call site
-# (rc cmd_up stopped-branch — D-g entrypoint sweep confirmed only one). No
-# auto-destroy/auto-recreate: abort-loud matches the label-lock guard family
-# (ADR-021 D4a/D5). Resume must NEVER itself trigger a pull/build
-# (cli/up.sh:'Resuming stopped container' invariant) — this function only compares and aborts/returns,
-# it never calls _pull_or_build.
-# Parameters: $1 name, $2 path
+# from (or the current image is missing relative to) the expected image.
+# Slotted with the other _up_resolve_resume_* guards, ahead of each msb start
+# in cmd_up's stopped branch. No auto-destroy/auto-recreate: abort-loud matches
+# the label-lock guard family (ADR-021 D4a/D5). Resume must NEVER itself
+# trigger a pull/build -- this function only compares and aborts/returns, it
+# never calls _pull_or_build.
 # _up_resolve_resume_image_drift_stopped NAME PATH [CONVERGE_FOLLOWS]
 #
 # CONVERGE_FOLLOWS ("true") says a cold-recreate is about to run. That changes
@@ -1838,7 +1836,7 @@ _up_resolve_resume_image_drift_stopped() {
     exit 1
   fi
 
-  _up_drift_describe "$_name" "$_path"
+  _up_drift_describe "$_name"
   local _created_from="$_RC_IMAGE_DRIFT_CREATED_FROM" _pin_tag="$_RC_IMAGE_DRIFT_PIN_TAG"
 
   if [[ "$_status" -eq 2 ]]; then
@@ -1920,7 +1918,7 @@ _up_resolve_resume_image_drift_running() {
   # (ADR-029 D4), so its own image drift has no in-place repair. rip-cage-ely4.10
   # repoints the remedy off the retired `rc down && rc reload` pair onto the one
   # verb that now names the recreate out loud.
-  _up_drift_describe "$_name" "$_path"
+  _up_drift_describe "$_name"
   echo "Warning: container ${_name} is running an older image (created from ${_RC_IMAGE_DRIFT_CREATED_FROM}, compared against '${_exp}' (${_RC_IMAGE_DRIFT_CURRENT}), ${_exp_src}) — the last 'rc build' will not apply until: rc up --replace ${_path} (or, if intentionally pinned, re-run with the RC_IMAGE this cage was created with: RC_IMAGE=${_RC_IMAGE_DRIFT_PIN_TAG} rc up ${_path})." >&2
   return 0
 }
@@ -1978,79 +1976,6 @@ _up_resolve_resume_symlink_fingerprint() {
 
 
 
-# _up_resolve_placeholder_env_file <path> <cli_env_file> (rip-cage-b9to)
-#
-# auth.placeholder_env_file is a PERSISTED POINTER to a host env file carrying
-# the agent's non-secret placeholder token (e.g. CLAUDE_CODE_OAUTH_TOKEN) —
-# a composed (opt-in) mediator recipe swaps it for the real credential at
-# egress time, or msb's --secret non-possession path (ADR-029 D5) does for
-# the default posture. This pointer's contents land in the container via
-# `docker run --env-file`, i.e. in PID 1's environment, which the agent CAN
-# read (/proc/1/environ) — that's the point (agent-held, non-secret by design).
-#
-# CREATE-ONLY: the call site in cmd_up invokes this ONLY on the create path,
-# immediately before _up_prepare_environment — never on resume (container env
-# is immutable across stop/start; D3) and never under --dry-run (D4).
-#
-# ORDER MATTERS (v3 design D2, R2 F1):
-#   a. Read the effective config key FIRST. Null/absent -> return silently,
-#      ZERO output — every existing --env-file CLI user (who never sets this
-#      key) sees nothing new (acceptance d).
-#   b. Only once the key IS set: if the CLI already supplied --env-file
-#      (cli_env_file non-empty) -> log an ignore-note and return. CLI wins;
-#      returns before touching anything, so same-file double-apply is
-#      impossible.
-#   c. Pointer fails [[ -f ]] (missing, directory, dangling symlink) -> FATAL:
-#      json_error under json mode + echo>&2 + exit 1, naming
-#      auth.placeholder_env_file. Create-only call site: this can never
-#      strand a resume.
-#   d. Run _check_secret_path_denylist on the pointer with the SAME treatment
-#      the CLI --env-file path gives it (rc:~4367) — this channel IS
-#      agent-readable, so an operator accidentally pointing at a real secret
-#      file (~/.aws/credentials) must be refused the same way the CLI path
-#      refuses it.
-#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer —
-#      config.md documents "absolute path"). No allowed-roots check
-#      (host-authored config, host-only trust). No 0600 warning (non-secret
-#      by design; agent-readability of the placeholder is the point).
-#
-# _up_translate_docker_args_to_msb ARGS...
-#
-# rip-cage-rj68 (S6): mechanical translator from the docker-run-argv shape
-# _up_prepare_docker_mounts/_up_prepare_environment build (UNCHANGED by this
-# bead — the worktree, symlink-follow, DCG, credential-mount, manifest-mount
-# business logic all stays exactly as it was) into msb-run/msb-create argv.
-# Most flags are byte-identical between the two runtimes (docker's
-# `-v SRC:DST[:OPTIONS]` and msb's `-v SOURCE:DEST[:OPTIONS]` share the same
-# grammar) — this function only transforms the small set of genuine
-# differences. Echoes one output token per line (mirrors msb_flags.sh's own
-# output convention — callers collect it into an array with
-# `while IFS= read -r line; do FLAGS+=("$line"); done < <(_up_translate_docker_args_to_msb
-# "${_UP_RUN_ARGS[@]}")`), bash-3.2-safe per ADR-008 D5.
-#
-# Handles (see module-level docs in tests/test-up-msb-args-translate.sh for
-# the full behavior matrix): -v (strips :delegated, msb doesn't recognize
-# the macOS Docker-Desktop cache-hint option; :ro passthrough), -e/--label/
-# --workdir/-p (byte-identical flag names, straight passthrough), --mount
-# type=bind,src=X,dst=Y[,ro] (docker long-form -> msb --mount-file X:Y[:ro]
-# — the sole caller of this docker long-form is the DCG-config mount),
-# --cpus=/--memory= (byte-identical flag names, passthrough), --memory-swap=
-# and --pids-limit= (dropped — no msb `create`-time equivalent),
-# --add-host=host.docker.internal:host-gateway (dropped — msb needs no
-# static gateway entry), --env-file FILE (expanded into individual -e
-# KEY=VALUE tokens, one per non-comment non-blank line, matching docker's
-# own env-file line format).
-#
-# NOT handled here: --name/the trailing IMAGE+override-command positional
-# tokens some callers append to a docker-run argv — this function expects
-# ONLY the flag/value body (name and image are passed to msb create as
-# their own separate arguments by the caller; msb create has no
-# command-override positional at all, so there is nothing to translate
-# there — see cli/lib/msb_runtime.sh's _msb_create_raw).
-#
-# ADR-001 fail-loud: an unrecognized flag aborts loud rather than being
-# silently dropped or silently passed through unmodified (either of which
-# could hide a real msb/docker behavior gap).
 # _up_resolve_mount_source_path SPEC
 #
 # rip-cage-6v34.7: msb >= 0.6.16 REFUSES any bind mount whose HOST source
@@ -2124,6 +2049,43 @@ _up_resolve_mount_source_path() {
   printf '%s' "${_real}:${_rest}"
 }
 
+# _up_translate_docker_args_to_msb ARGS...
+#
+# rip-cage-rj68 (S6): mechanical translator from the docker-run-argv shape
+# _up_prepare_docker_mounts/_up_prepare_environment build (UNCHANGED by this
+# bead — the worktree, symlink-follow, DCG, credential-mount, manifest-mount
+# business logic all stays exactly as it was) into msb-run/msb-create argv.
+# Most flags are byte-identical between the two runtimes (docker's
+# `-v SRC:DST[:OPTIONS]` and msb's `-v SOURCE:DEST[:OPTIONS]` share the same
+# grammar) — this function only transforms the small set of genuine
+# differences. Echoes one output token per line (mirrors msb_flags.sh's own
+# output convention — callers collect it into an array with
+# `while IFS= read -r line; do FLAGS+=("$line"); done < <(_up_translate_docker_args_to_msb
+# "${_UP_RUN_ARGS[@]}")`), bash-3.2-safe per ADR-008 D5.
+#
+# Handles (see module-level docs in tests/test-up-msb-args-translate.sh for
+# the full behavior matrix): -v (strips :delegated, msb doesn't recognize
+# the macOS Docker-Desktop cache-hint option; :ro passthrough), -e/--label/
+# --workdir/-p (byte-identical flag names, straight passthrough), --mount
+# type=bind,src=X,dst=Y[,ro] (docker long-form -> msb --mount-file X:Y[:ro]
+# — the sole caller of this docker long-form is the DCG-config mount),
+# --cpus=/--memory= (byte-identical flag names, passthrough), --memory-swap=
+# and --pids-limit= (dropped — no msb `create`-time equivalent),
+# --add-host=host.docker.internal:host-gateway (dropped — msb needs no
+# static gateway entry), --env-file FILE (expanded into individual -e
+# KEY=VALUE tokens, one per non-comment non-blank line, matching docker's
+# own env-file line format).
+#
+# NOT handled here: --name/the trailing IMAGE+override-command positional
+# tokens some callers append to a docker-run argv — this function expects
+# ONLY the flag/value body (name and image are passed to msb create as
+# their own separate arguments by the caller; msb create has no
+# command-override positional at all, so there is nothing to translate
+# there — see cli/lib/msb_runtime.sh's _msb_create_raw).
+#
+# ADR-001 fail-loud: an unrecognized flag aborts loud rather than being
+# silently dropped or silently passed through unmodified (either of which
+# could hide a real msb/docker behavior gap).
 _up_translate_docker_args_to_msb() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -2282,6 +2244,43 @@ _up_prepare_secret_env() {
 }
 
 
+# _up_resolve_placeholder_env_file <cli_env_file> (rip-cage-b9to)
+#
+# $RC_PLACEHOLDER_ENV_FILE is a host-side POINTER to an env file carrying
+# the agent's non-secret placeholder token (e.g. CLAUDE_CODE_OAUTH_TOKEN) —
+# a composed (opt-in) mediator recipe swaps it for the real credential at
+# egress time, or msb's --secret non-possession path (ADR-029 D5) does for
+# the default posture. This pointer's contents land in the container via
+# `docker run --env-file`, i.e. in PID 1's environment, which the agent CAN
+# read (/proc/1/environ) — that's the point (agent-held, non-secret by design).
+#
+# CREATE-ONLY: the call site in cmd_up invokes this ONLY on the create path,
+# immediately before _up_prepare_environment — never on resume (container env
+# is immutable across stop/start; D3) and never under --dry-run (D4).
+#
+# ORDER MATTERS (v3 design D2, R2 F1):
+#   a. Read $RC_PLACEHOLDER_ENV_FILE FIRST. Unset/null -> return silently,
+#      ZERO output — every existing --env-file CLI user (who never sets it)
+#      sees nothing new (acceptance d).
+#   b. Only once the pointer IS set: if the CLI already supplied --env-file
+#      (cli_env_file non-empty) -> log an ignore-note and return. CLI wins;
+#      returns before touching anything, so same-file double-apply is
+#      impossible.
+#   c. Pointer fails [[ -f ]] (missing, directory, dangling symlink) -> FATAL:
+#      json_error under json mode + echo>&2 + exit 1, naming
+#      RC_PLACEHOLDER_ENV_FILE. Create-only call site: this can never
+#      strand a resume.
+#   d. Run _check_secret_path_denylist on the pointer with the SAME treatment
+#      the CLI --env-file path gives it (the CLI --env-file denylist check in cmd_up) — this channel IS
+#      agent-readable, so an operator accidentally pointing at a real secret
+#      file (~/.aws/credentials) must be refused the same way the CLI path
+#      refuses it.
+#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer —
+#      config.md documents "absolute path"). No allowed-roots check
+#      (host-authored config, host-only trust). No 0600 warning (non-secret
+#      by design; agent-readability of the placeholder is the point).
+#
+#
 # RETURN MECHANISM (R2 F2, pinned): sets the global _UP_PLACEHOLDER_ENV_FILE
 # (reset to "" at the top of every call so a stale value from a prior
 # invocation in the same process can never leak forward). This function must
@@ -2294,17 +2293,16 @@ _up_prepare_secret_env() {
 # Globals read: OUTPUT_FORMAT
 # Globals written: _UP_PLACEHOLDER_ENV_FILE
 # Parameters:
-#   $1  path          — validated workspace path (effective-config resolution)
-#   $2  cli_env_file  — the CLI --env-file value as seen so far by cmd_up
+#   $1  cli_env_file  — the CLI --env-file value as seen so far by cmd_up
 #                        ("" if not supplied). Needed here because --env-file
 #                        only ever sets a `local env_file` inside cmd_up —
 #                        there is no global to inspect, so the caller must
 #                        pass its current value.
 _up_resolve_placeholder_env_file() {
-  local _pef_path="$1" _pef_cli_env_file="${2:-}"
+  local _pef_cli_env_file="${1:-}"
   _UP_PLACEHOLDER_ENV_FILE=""
 
-  # auth.placeholder_env_file retired with the schema (ADR-031 D2). A cage
+  # The auth.* config key this once served retired with the schema (ADR-031 D2). A cage
   # that wants extra guest env vars declares them in its own config's `env:`
   # block, which msb reads directly. $RC_PLACEHOLDER_ENV_FILE keeps the
   # host-side pointer available for a caller that still needs one.
@@ -2314,19 +2312,19 @@ _up_resolve_placeholder_env_file() {
   fi
 
   if [[ -n "$_pef_cli_env_file" ]]; then
-    log "auth.placeholder_env_file: ignored — CLI --env-file already supplied"
+    log "placeholder env file: ignored — CLI --env-file already supplied"
     return 0
   fi
 
   if [[ ! -f "$_pef_pointer" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "auth.placeholder_env_file points at a missing file: ${_pef_pointer}" "PLACEHOLDER_ENV_FILE_NOT_FOUND"
+      json_error "RC_PLACEHOLDER_ENV_FILE points at a missing file: ${_pef_pointer}" "PLACEHOLDER_ENV_FILE_NOT_FOUND"
     fi
-    echo "Error: auth.placeholder_env_file points at a missing file: ${_pef_pointer}" >&2
+    echo "Error: RC_PLACEHOLDER_ENV_FILE points at a missing file: ${_pef_pointer}" >&2
     exit 1
   fi
 
-  # D2d: same treatment as the CLI --env-file path's denylist check (rc:~4367)
+  # D2d: same treatment as the CLI --env-file path's denylist check (cmd_up's --env-file handling)
   # — this channel is agent-readable, unlike the mediator's docker-exec-only
   # channel, so an accidental secret-path pointer must be refused the same way.
   # Known partial parity (accepted at rip-cage-b9to impl-review): the check
@@ -2340,7 +2338,7 @@ _up_resolve_placeholder_env_file() {
   fi
 
   _UP_PLACEHOLDER_ENV_FILE="$_pef_pointer"
-  log "auth.placeholder_env_file: applied ${_pef_pointer}"
+  log "placeholder env file: applied ${_pef_pointer}"
 }
 
 
@@ -3466,11 +3464,11 @@ cmd_up() {
 
   _up_prepare_docker_mounts "$path" "$name"
 
-  # rip-cage-b9to: resolve the auth.placeholder_env_file pointer (create-only,
+  # rip-cage-b9to: resolve the $RC_PLACEHOLDER_ENV_FILE pointer (create-only,
   # immediately before _up_prepare_environment consumes env_file as $3). CLI
   # --env-file always wins — the resolver itself checks env_file's current
   # value and no-ops (with a log note) when it is already non-empty.
-  _up_resolve_placeholder_env_file "$path" "$env_file"
+  _up_resolve_placeholder_env_file "$env_file"
   if [[ -n "$_UP_PLACEHOLDER_ENV_FILE" ]]; then
     env_file="$_UP_PLACEHOLDER_ENV_FILE"
   fi
