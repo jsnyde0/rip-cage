@@ -390,9 +390,11 @@ if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
 # BASE-INFRA (pi, rip-cage-p35a.3 audit): Pi config dir is container-local
-# (ADR-019 D1 evolved). Nothing in the image mkdirs .pi/agent at build time;
-# it comes into existence only when 'rc up' bind-mounts auth.json into it,
-# which makes Docker auto-create the parent dir root-owned (2026-07-02
+# (ADR-019 D1 evolved). Nothing in the image mkdirs .pi/agent at build time,
+# and the shipped template mounts nothing under it (rip-cage-3w82), so init
+# creates it here: step 3b links host pi substrate into it under set -e. A
+# config that does mount a file under it (the openai-codex placeholder
+# auth.json) makes msb auto-create the parent root-owned (2026-07-02
 # live-verified: rip-cage-fwp3). Chown top-level only (not -R): .pi/agent dir
 # and its subdirs (including extensions/) should be agent-writable (olen
 # retired per ADR-027 D1/D3 — the DCG guard now lives at
@@ -403,6 +405,7 @@ fi
 # (no sudo) — there is no per-recipe root-context boot-time hook today, so
 # this genuinely cannot move to pi's recipe. Stays base-infra.
 if [[ ! -L /home/agent/.pi/agent ]]; then
+  mkdir -p /home/agent/.pi/agent
   sudo chown agent:agent /home/agent/.pi/agent 2>/dev/null || true
 fi
 # rip-cage-fwp3's extensions/ mkdir RELOCATED (rip-cage-p35a.3) to pi's own

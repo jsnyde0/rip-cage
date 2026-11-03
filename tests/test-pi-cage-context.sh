@@ -350,6 +350,26 @@ else
   fail "Test 6: init log line missing cage-pi.md reference" "$init_log_output"
 fi
 
+# ---- Test 6b: host pi substrate under the default template (rip-cage-3w82 B1) ----
+# The shipped template mounts nothing under ~/.pi/agent, so no bind creates the
+# dir; init must create it before linking the staged substrate into it.
+echo ""
+echo "=== Test 6b: init exits 0 and projects host AGENTS.md with no ~/.pi/agent mount ==="
+
+init_exit=0
+init_out=$(msb exec "$CONTAINER" -- /usr/local/bin/init-rip-cage.sh 2>&1) || init_exit=$?
+if [[ $init_exit -eq 0 ]]; then
+  pass "Test 6b: init exits 0 with host pi substrate staged and no ~/.pi/agent mount"
+else
+  fail "Test 6b: init exited $init_exit with host pi substrate staged" "$(tail -3 <<<"$init_out" | tr '\n' ' ')"
+fi
+projected=$(msb exec "$CONTAINER" -- cat /home/agent/.pi/agent/AGENTS.md 2>/dev/null | tr -d '\r' || true)
+if [[ "$projected" == "$AGENTS_MD_SENTINEL" ]]; then
+  pass "Test 6b: host AGENTS.md projected into the cage's ~/.pi/agent"
+else
+  fail "Test 6b: cage ~/.pi/agent/AGENTS.md is not the host sentinel" "$projected"
+fi
+
 # ---- Test 7: mount-absent guard — init exits 0, no AGENTS.md error ----
 echo ""
 echo "=== Test 7: mount-absent guard — init exits 0 when pi mount was skipped ==="
@@ -422,10 +442,10 @@ fi
 
 # ---- Summary ----
 echo ""
-# recount: 1a=1,1b=2,2a=3,2b=4,3=5,4=6,5=7,6=8,7=9,7b=10,7c=11,7d=12 = 12 total
+# recount: 1a=1,1b=2,2a=3,2b=4,3=5,4=6,5=7,6=8,6b-init=9,6b-projected=10,7=11,7b=12,7c=13,7d=14 = 14 total
 # (2a/2b/3/4/7c report SKIP instead of PASS/FAIL when the recipe artifact
 # that provisions the topology fence is absent — rip-cage-sw6s.)
-TOTAL=12
+TOTAL=14
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "$((TOTAL - SKIPPED)) of $TOTAL pi-cage-context tests passed, $SKIPPED skipped."
 else
