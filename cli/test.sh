@@ -39,7 +39,7 @@ cmd_test() {
     shift
     local e2e_script="${SCRIPT_DIR}/tests/test-e2e-lifecycle.sh"
     if [[ ! -f "$e2e_script" ]]; then
-      echo "Error: test-e2e-lifecycle.sh not found (create it via the e2e bead)" >&2
+      echo "Error: test-e2e-lifecycle.sh not found (expected in a full rip-cage checkout)" >&2
       exit 1
     fi
     exec "$e2e_script" "$@"
@@ -93,16 +93,13 @@ cmd_test() {
       fi
     elif [[ -f "${ws_source}/.git" ]]; then
       # Worktree detection: check for auto-redirect condition (D6 semantics)
-      local wt_git_dir wt_common_git
-      wt_git_dir=$(git -C "$ws_source" rev-parse --git-dir 2>/dev/null || true)
-      wt_common_git=$(git -C "$ws_source" rev-parse --git-common-dir 2>/dev/null || true)
-      if [[ -n "$wt_common_git" ]] && [[ "$wt_common_git" != "$wt_git_dir" ]] \
+      _up_detect_worktree "$ws_source" >/dev/null 2>&1
+      if [[ "$wt_detected" == "true" ]] \
          && [[ ! -f "${preflight_beads_dir}/dolt-server.port" ]] \
          && [[ ! -d "${preflight_beads_dir}/dolt" ]] \
          && [[ ! -d "${preflight_beads_dir}/embeddeddolt" ]]; then
-        local main_repo_root="${wt_common_git%/.git}"
         local resolved_main_beads
-        resolved_main_beads=$(realpath "${main_repo_root}/.beads" 2>/dev/null || true)
+        resolved_main_beads=$(realpath "$(_up_main_beads_dir)" 2>/dev/null || true)
         # up.sh's posture here is warn-and-skip, not refuse: a missing or
         # protected main-repo .beads leaves the worktree's own .beads mounted.
         if [[ -n "$resolved_main_beads" && -d "$resolved_main_beads" ]] \
@@ -127,20 +124,21 @@ cmd_test() {
     preflight_line="PASS [0] beads-host-dolt — workspace mount not found (skipped)"
   fi
 
+  # The in-guest suites, listed once for both output arms. The floor probe
+  # (ADR-031 D5b) runs FIRST, for the same reason init runs it first: when the
+  # image's floor is broken, that is the finding. A missing probe is reported as
+  # a FAIL line (overall_rc=1) and the probe is left out of the run.
+  local floor_missing_line="" overall_rc=0
+  local suites=(floor-probe.sh test-safety-stack.sh test-skills.sh test-bd-roundtrip.sh run-recipe-smokes.sh)
+  if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then
+    suites=("${suites[@]:1}")
+    overall_rc=1
+  else
+    floor_missing_line=""
+  fi
+
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    local output
-    # The floor probe (ADR-031 D5b) runs FIRST here for the same reason init runs
-    # it first: when the image's floor is broken, that is the finding, and every
-    # later suite's result is downstream of it. Same file, same PASS/FAIL line
-    # shape, so the parser below needs no special case.
-    local floor_missing_line suites=()
-    output=""
-    if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then
-      output="$floor_missing_line"
-    else
-      suites+=(floor-probe.sh)
-    fi
-    suites+=(test-safety-stack.sh test-skills.sh test-bd-roundtrip.sh run-recipe-smokes.sh)
+    local output="$floor_missing_line"
     # Each suite runs on its own so its exit status is captured: a suite that
     # crashes without printing a FAIL line would otherwise parse as green. A
     # non-zero exit injects a synthetic FAIL line so the JSON overall goes
@@ -188,33 +186,16 @@ ${output}"
     [[ "$overall" == "pass" ]] || return 1
   else
     echo "$preflight_line"
-    # Collect each suite's exit status and run all five unconditionally --
-    # rc runs `set -euo pipefail`, so a bare (unguarded) call here would
-    # abort this function on the first suite that exits non-zero, and
-    # later suites (in particular run-recipe-smokes.sh) would never run.
-    # Mirrors the json branch above, which runs each suite on its own too.
-    local overall_rc=0 suite_rc
-    local floor_missing_line
-    if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then
-      echo "$floor_missing_line"
-      overall_rc=1
-    else
+    # Run every suite unconditionally and collect each exit status: rc runs
+    # `set -euo pipefail`, so a bare call would abort on the first suite that
+    # exits non-zero and later suites would never run. Mirrors the json arm.
+    local suite suite_rc
+    [[ -n "$floor_missing_line" ]] && echo "$floor_missing_line"
+    for suite in "${suites[@]}"; do
       suite_rc=0
-      _msb_exec "$name" -- /usr/local/lib/rip-cage/floor-probe.sh || suite_rc=$?
+      _msb_exec "$name" -- "/usr/local/lib/rip-cage/${suite}" || suite_rc=$?
       [[ "$suite_rc" -ne 0 ]] && overall_rc=1
-    fi
-    suite_rc=0
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-safety-stack.sh || suite_rc=$?
-    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
-    suite_rc=0
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-skills.sh || suite_rc=$?
-    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
-    suite_rc=0
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-bd-roundtrip.sh || suite_rc=$?
-    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
-    suite_rc=0
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/run-recipe-smokes.sh || suite_rc=$?
-    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
+    done
     return "$overall_rc"
   fi
 }

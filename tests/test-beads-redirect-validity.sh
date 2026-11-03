@@ -157,6 +157,34 @@ echo "=== N: realpath carries a newline ==="
 _dry_run N "../nl-link/.beads"
 _expect_refuse N
 
+echo "=== B: bare-repo worktree -- cmd_test and cmd_up resolve the same .beads ==="
+# A worktree of a bare repo (common dir <root>/foo.git): the main repo's .beads
+# sits beside it at <root>/.beads, which is where cmd_up mounts it.
+mkdir -p "$H/code/bare-src" "$H/code/bare-root/.beads"
+git -C "$H/code/bare-src" init -q && git -C "$H/code/bare-src" -c user.name=t -c user.email=t@t commit -q --allow-empty -m i
+git clone -q --bare "$H/code/bare-src" "$H/code/bare-root/foo.git"
+git -C "$H/code/bare-root/foo.git" worktree add -q --detach "$H/code/bare-root/wt" 2>/dev/null
+printf '{"dolt_mode":"embedded"}\n' > "$H/code/bare-root/.beads/metadata.json"
+mkdir -p "$H/code/bare-root/wt/.beads"
+_conf="${T}/conf-B.yaml"
+printf 'image: rip-cage:latest\nworkdir: /workspace\nmounts:\n  - "%s:/workspace"\nnetwork:\n  policy: none\n' "$H/code/bare-root/wt" > "$_conf"
+UP_OUT=$(HOME="$H" XDG_CONFIG_HOME="${H}/.config" RC_CAGE_CONF="$_conf" PATH="${BIN}:${PATH}" \
+         bash "$RC" up --dry-run "$H/code/bare-root/wt" 2>&1 </dev/null)
+UP_DIR=$(grep -Eo -- '-v [^ ]+:/workspace/\.beads' <<<"$UP_OUT" | sed -e 's/^-v //' -e 's/:.*//')
+TEST_DIR=$(HOME="$H" PATH="${BIN}:${PATH}" bash -c '
+  source "$1"
+  verify_rc_container() { :; }; resolve_name() { echo cage; }
+  _msb_exec() { return 0; }
+  _test_floor_probe_missing_line() { return 1; }
+  _bd_host_preflight() { echo "PASS [0] beads-dir=$1"; }
+  _msb_label() { echo "$WS"; }
+  WS="$2" cmd_test cage 2>/dev/null | sed -n "s/^PASS \[0\] beads-dir=//p"' _ "$RC" "$H/code/bare-root/wt")
+if [[ -n "$UP_DIR" && "$UP_DIR" == "$TEST_DIR" ]]; then
+  pass "B cmd_up and cmd_test both resolve ${UP_DIR}"
+else
+  fail "B resolvers diverge: cmd_up='${UP_DIR}' cmd_test='${TEST_DIR}'"
+fi
+
 echo
 if [[ $FAILURES -gt 0 ]]; then
   echo "FAILED: $FAILURES check(s)"

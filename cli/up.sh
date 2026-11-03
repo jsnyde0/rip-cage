@@ -286,6 +286,15 @@ _up_detect_worktree() {
 }
 
 
+# _up_main_beads_dir — the main repo's .beads/ path for the worktree last
+# detected by _up_detect_worktree (needs wt_detected=true). The one resolver
+# shared by cmd_up and cmd_test: the main repo root is the parent of the main
+# git dir, which also holds for a bare repo (<root>/foo.git -> <root>/.beads).
+_up_main_beads_dir() {
+  echo "$(dirname "$wt_main_git")/.beads"
+}
+
+
 # _collect_symlink_parents — print unique parent dirs of asset symlink targets.
 #
 # Skills stored as host symlinks (e.g. pointing to a monorepo) become broken
@@ -1031,9 +1040,8 @@ _up_prepare_environment() {
     # container would connect to host.docker.internal:0 (no port) or try to
     # use an empty embedded engine. Fix: mount the main repo's .beads/ over
     # the worktree's .beads/, same mechanism as an explicit redirect.
-    local main_repo_root main_beads_dir resolved_main_beads
-    main_repo_root=$(dirname "$wt_main_git")
-    main_beads_dir="${main_repo_root}/.beads"
+    local main_beads_dir resolved_main_beads
+    main_beads_dir=$(_up_main_beads_dir)
     # Resolve symlinks first: a .beads/ symlink is followed by the bind-mount,
     # so the resolved target is what actually gets shown into the cage. The
     # allowed-roots check that used to follow retired with the guard
