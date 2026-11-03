@@ -420,8 +420,9 @@ _build_warn_stale_containers() {
 #
 # NOTHING TO CHECK stays silent and returns 0. CANNOT CHECK emits one loud
 # stderr warning and returns 1 (rip-cage-jblx): the conversion never ran, so
-# msb's cache still holds the PREVIOUS build, and every cage created next
-# boots that stale image while rc build exits 0. That is the same "cannot
+# msb's cache was not refreshed -- every cage created next boots the previous
+# build msb held, or fails to find an image if msb never held $IMAGE
+# (first provision) -- while rc build exits 0. That is the same "cannot
 # check => must emit" rider rip-cage-5jrt put on _build_warn_stale_containers.
 # The warning names the step that failed and its own stderr (a full or
 # over-quota TMPDIR is the observed cause), because that is the actionable
@@ -450,11 +451,12 @@ _build_msb_load() {
   # primary build artifact) is built and intact.
   # stdout is the archive path and nothing else; mktemp's stderr is read only
   # on failure, from a second attempt (the first discarded it), so it can
-  # never leak into the path variable.
+  # never leak into the path variable. A second attempt that succeeds
+  # removes its own file, so the retry never leaks a temp file.
   local _mktemp_err
   if ! _tar=$(mktemp -t "rc-msb-load.XXXXXX" 2>/dev/null); then
-    _mktemp_err=$(mktemp -t "rc-msb-load.XXXXXX" 2>&1 >/dev/null)
-    echo "Warning: could not create a temp file for the msb load of '${IMAGE}' (mktemp: ${_mktemp_err:-no output}). ${_stale_hint}" >&2
+    _mktemp_err=$( { _retry_tar=$(mktemp -t "rc-msb-load.XXXXXX") && rm -f "$_retry_tar"; } 2>&1 )
+    echo "Warning: could not create a temp file for the msb load of '${IMAGE}' (mktemp: ${_mktemp_err:-failed once, then succeeded on a retry}). ${_stale_hint}" >&2
     _RC_MSB_LOAD_WARNED=1
     return 1
   fi

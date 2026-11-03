@@ -2594,8 +2594,10 @@ cmd_up() {
     # branches report the POST-resync state. A load that FAILED was already
     # reported loud by _build_msb_load (and _RC_MSB_LOAD_WARNED then silences
     # the emitter's layer-drift warning); one that reported success but
-    # didn't verifiably land falls through to the emitter's loud
-    # status-3/528o warning -- never a second copy of this notice.
+    # didn't land leaves msb still listing $IMAGE with the old layers, so the
+    # emitter's re-check sees status 1 again (flag 0) and prints its loud
+    # "different layer content" warning (tests/test-build-msb-load.sh T18c)
+    # -- never a second copy of this notice.
     local _drift_status=0
     _msb_image_layer_drift_status || _drift_status=$?
     if [[ "$_drift_status" -eq 1 ]]; then
