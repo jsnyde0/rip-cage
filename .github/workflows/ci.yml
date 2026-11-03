@@ -41,9 +41,8 @@ jobs:
   # Job 3: Test (host-only) — single driver: tests/run-host.sh with --host-only
   #
   # The driver skips the NEEDS_CONTAINER denylist (tests requiring a live cage
-  # or API key) and runs everything else. The ADR-023 RC_CONFIG_GLOBAL fixture
-  # is provisioned inside run-host.sh (driver-level per ADR-023 D6); no
-  # duplicate step needed here.
+  # or API key) and runs everything else. The config sandbox is provisioned
+  # inside run-host.sh (driver-level); no duplicate step needed here.
   #
   # Tests excluded via NEEDS_CONTAINER denylist (see tests/run-host.sh):
   # The authoritative list is the NEEDS_CONTAINER array in tests/run-host.sh;

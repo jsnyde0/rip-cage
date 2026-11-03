@@ -31,8 +31,6 @@
 
 set -uo pipefail
 
-unset RC_CONFIG_GLOBAL
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"

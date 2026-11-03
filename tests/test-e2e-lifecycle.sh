@@ -18,8 +18,8 @@
 # FOLDED a5dk global-config isolation (per bead design): the setup block
 # below exports a FRESH temp XDG_CONFIG_HOME (benign empty-denylist
 # config.yaml + zero-byte tools.yaml, mirroring tests/_host-sandbox-lib.sh)
-# and unsets RC_CONFIG_GLOBAL/pre-existing XDG_CONFIG_HOME so neither a real
-# host ~/.config/rip-cage/config.yaml NOR a host-set RC_CONFIG_GLOBAL/
+# and unsets any pre-existing XDG_CONFIG_HOME so neither a real
+# host ~/.config/rip-cage/config.yaml NOR a host-set
 # XDG_CONFIG_HOME env var can leak into the auth-warn matrix cases (which
 # invoke `rc up` many times over the course of this file and would
 # otherwise silently pick up ambient host config).
@@ -128,10 +128,10 @@ fi
 #
 # A fresh temp XDG_CONFIG_HOME seeded with a benign empty-denylist
 # config.yaml + zero-byte tools.yaml (mirrors tests/_host-sandbox-lib.sh's
-# fixture exactly), plus an explicit unset of RC_CONFIG_GLOBAL and any
+# fixture exactly), plus an explicit unset of any
 # ALREADY-EXPORTED XDG_CONFIG_HOME so the auth-warn matrix (cases 1-6 below,
 # each of which invokes rc up) cannot pick up either a real host
-# ~/.config/rip-cage/config.yaml OR a hostile/pre-set RC_CONFIG_GLOBAL /
+# ~/.config/rip-cage/config.yaml OR a hostile/pre-set
 # XDG_CONFIG_HOME from the calling environment. Removed in CLEANUP.
 # ---------------------------------------------------------------------------
 # REAL_MSB_HOME: captured HERE, before any HOME override below, so a later
@@ -171,7 +171,6 @@ _link_real_docker() {
   ln -sfn "$REAL_DOCKER_CFG" "${1}/.docker" 2>/dev/null || true
 }
 
-unset RC_CONFIG_GLOBAL
 unset XDG_CONFIG_HOME
 GLOBAL_CFG_TMP=$(_host_scratch_mktemp_d cfg)
 mkdir -p "${GLOBAL_CFG_TMP}/rip-cage"
@@ -183,7 +182,6 @@ mounts:
 YAML
 touch "${GLOBAL_CFG_TMP}/rip-cage/tools.yaml"
 export XDG_CONFIG_HOME="$GLOBAL_CFG_TMP"
-export RC_CONFIG_GLOBAL="${GLOBAL_CFG_TMP}/rip-cage/config.yaml"
 
 CONTAINER_NAME="rc-e2e-test"
 E2E_TMP=""

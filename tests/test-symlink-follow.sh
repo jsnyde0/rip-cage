@@ -39,14 +39,6 @@
 
 set -uo pipefail
 
-# tests/run-host.sh exports RC_CONFIG_GLOBAL pointing to an empty-denylist fixture
-# for the whole suite. RC_CONFIG_GLOBAL takes precedence over XDG_CONFIG_HOME in
-# _config_global_path (cli/lib/config.sh:_config_global_path), so per-call XDG sandboxes get silently
-# shadowed — S20/S22/S22b see an empty denylist and fail. Unset here so per-call
-# XDG sandboxes resolve correctly.
-# Mirror of the fix in tests/test-secret-path-denylist.sh (see run-host.sh:102-109).
-unset RC_CONFIG_GLOBAL
-
 # ===========================================================================
 # RESCOPED BY rip-cage-ely4.9 (ADR-031 D2). Read this before adding a case.
 #

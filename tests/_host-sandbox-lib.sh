@@ -115,7 +115,7 @@ _HOST_SANDBOX_CFG_DIR=""
 # rc build's own containment check and the protected-paths resolver both read
 # the operator's host config dir, and neither may reach the developer's real one.
 #
-# No config.yaml / RC_CONFIG_GLOBAL to seed either: the layered rip-cage config
+# No layered config.yaml to seed either: the layered rip-cage config
 # schema retired per ADR-031 D2 in favor of one native msb --conf file per
 # project plus the shipped protected-paths floor (rip-cage-ely4.9).
 _host_sandbox_setup() {

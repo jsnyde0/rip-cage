@@ -46,11 +46,6 @@ STUB_DIR=""
 pass() { echo "PASS $1: $2"; }
 fail() { echo "FAIL $1: $2 -- $3"; FAILURES=$((FAILURES + 1)); }
 
-# tests/run-host.sh exports RC_CONFIG_GLOBAL at driver level, which would
-# shadow the per-test XDG sandboxes below — unset so per-call XDG_CONFIG_HOME
-# wins (mirrors test-image-drift-resume.sh / test-credential-mounts.sh).
-unset RC_CONFIG_GLOBAL
-
 # shellcheck disable=SC2329
 cleanup() {
   [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
