@@ -842,7 +842,7 @@ cmd_doctor() {
          else {source_path_missing_hint: $source_path_missing_hint} end)'
   else
     echo "Container:  $name"
-    echo "State:      $state${running:+}$([[ $running -eq 1 ]] && echo " (up $uptime)")"
+    echo "State:      $state$([[ $running -eq 1 ]] && echo " (up $uptime)")"
     echo "Workspace:  ${source_path:-<unset>}"
     [[ -n "$source_path_missing_hint" ]] && echo "$source_path_missing_hint"
     echo ""

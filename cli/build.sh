@@ -118,7 +118,7 @@ cmd_build() {
   local _bf_file="" _bf_file_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -f|--file)
+      --file)
         if [[ $# -lt 2 ]]; then
           _build_reject_arg "rc build: ${1} requires a value" "BUILD_FILE_MISSING_VALUE"
           return 1
@@ -126,22 +126,6 @@ cmd_build() {
         _bf_file="$2"
         _bf_file_set=1
         shift 2
-        ;;
-      --file=*)
-        _bf_file="${1#--file=}"
-        _bf_file_set=1
-        shift
-        ;;
-      -f=*)
-        _bf_file="${1#-f=}"
-        _bf_file_set=1
-        shift
-        ;;
-      -f*)
-        # Attached short-flag value (`-fVALUE`), docker/pflag's own spelling.
-        _bf_file="${1#-f}"
-        _bf_file_set=1
-        shift
         ;;
       *)
         _build_reject_arg "rc build: '$1' is not accepted -- rc build takes exactly one input, --file <path to a host-side Dockerfile>, and passes docker a fixed argv (ADR-031 D5(c)). There is no escape hatch and no flag passthrough: put whatever you were trying to express INTO the Dockerfile, which is yours to write. To build under a different tag, set RC_IMAGE." "BUILD_ARG_NOT_ALLOWED"
@@ -356,9 +340,8 @@ _build_warn_stale_containers() {
 # rip-cage-tsf2 §8b: "image is the artifact" + "one-time msb load adoption
 # step"). Called at the end of a successful `rc build`.
 #
-# Best-effort by design: during the migration, most hosts do not have `msb`
-# installed yet (rc up / rc create still run on Docker until S6 lands), so a
-# missing `msb` binary is a silent no-op -- NOT a build failure. If `msb` IS
+# Best-effort by design: a missing `msb` binary is a silent no-op -- NOT a
+# build failure -- so a docker-only host (CI, a build box) can still build. If `msb` IS
 # present but the load step itself fails, that's a real problem and is
 # surfaced loud on stderr; it still does not fail `rc build` overall, since
 # the Docker image remains the primary build artifact.
@@ -545,11 +528,6 @@ _image_is_current() {
 }
 
 
-# _pull_or_build — auto-provision the rip-cage image, pulling from GHCR when
-# RIP_CAGE_IMAGE_REGISTRY is set (default ghcr.io/jsnyde0/rip-cage), falling
-# back to a local build on pull failure. Used by cmd_up's auto-build branch.
-# Explicit `rc build` (cmd_build) is unchanged and always builds. ADR-008 D6.
-#
 # _pull_or_build_local — the from-source fallback. Builds rc's OWN base
 # Dockerfile only: this path exists so `rc up` on a fresh host gets a working
 # base image, and an operator's extension image is never something rc decides to
@@ -562,6 +540,10 @@ _pull_or_build_local() {
 }
 
 
+# _pull_or_build — auto-provision the rip-cage image, pulling from GHCR when
+# RIP_CAGE_IMAGE_REGISTRY is set (default ghcr.io/jsnyde0/rip-cage), falling
+# back to a local build on pull failure. Used by cmd_up's auto-build branch.
+# Explicit `rc build` (cmd_build) is unchanged and always builds. ADR-008 D6.
 _pull_or_build() {
   if [[ -z "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
