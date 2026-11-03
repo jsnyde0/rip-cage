@@ -2136,110 +2136,15 @@ _up_translate_docker_args_to_msb() {
 # every secret binding from the host env at EVERY sandbox start, so a resume
 # in a fresh `rc up` process needs the same exports as create.
 #
-# There is no preflight: a conf secret with no host variable and no secrets
-# file fails loud at msb boot, naming it (see _up_prepare_conf_secret_env).
+# This export step checks nothing: a conf secret with no host variable and no
+# secrets file fails loud at msb boot, naming it (see
+# _up_prepare_conf_secret_env). The one secret preflight on this path is
+# _up_check_cctok_secret, which cmd_up runs earlier for CCTOK alone.
 # MUST run in the caller's shell, never via $(...), or the exports are lost.
+# Always returns 0: an unexportable secret is msb's to report, not rc's.
 _up_prepare_secret_env() {
   _up_prepare_conf_secret_env "${_UP_CAGE_CONF}"
-}
-
-
-# _up_resolve_placeholder_env_file <cli_env_file> (rip-cage-b9to)
-#
-# $RC_PLACEHOLDER_ENV_FILE is a host-side POINTER to an env file carrying
-# the agent's non-secret placeholder token (e.g. CLAUDE_CODE_OAUTH_TOKEN) —
-# a composed (opt-in) mediator recipe swaps it for the real credential at
-# egress time, or msb's --secret non-possession path (ADR-029 D5) does for
-# the default posture. This pointer's contents land in the container via
-# the --env-file arg (expanded into -e entries by
-# _up_translate_docker_args_to_msb), i.e. in PID 1's environment, which the agent CAN
-# read (/proc/1/environ) — that's the point (agent-held, non-secret by design).
-#
-# CREATE-ONLY: the call site in cmd_up invokes this ONLY on the create path,
-# immediately before _up_prepare_environment — never on resume (container env
-# is immutable across stop/start; D3) and never under --dry-run (D4).
-#
-# ORDER MATTERS (v3 design D2, R2 F1):
-#   a. Read $RC_PLACEHOLDER_ENV_FILE FIRST. Unset/null -> return silently,
-#      ZERO output — every existing --env-file CLI user (who never sets it)
-#      sees nothing new (acceptance d).
-#   b. Only once the pointer IS set: if the CLI already supplied --env-file
-#      (cli_env_file non-empty) -> log an ignore-note and return. CLI wins;
-#      returns before touching anything, so same-file double-apply is
-#      impossible.
-#   c. Pointer fails [[ -f ]] (missing, directory, dangling symlink) -> FATAL:
-#      json_error under json mode + echo>&2 + exit 1, naming
-#      RC_PLACEHOLDER_ENV_FILE. Create-only call site: this can never
-#      strand a resume.
-#   d. Run _protected_paths_path_match on the pointer with the SAME treatment
-#      the CLI --env-file path gets (its protected-paths check in cmd_up) — this channel IS
-#      agent-readable, so an operator accidentally pointing at a real secret
-#      file (~/.aws/credentials) must be refused the same way the CLI path
-#      refuses it.
-#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer —
-#      config.md documents "absolute path"). No allowed-roots check
-#      (host-authored config, host-only trust). No 0600 warning (non-secret
-#      by design; agent-readability of the placeholder is the point).
-#
-#
-# RETURN MECHANISM (R2 F2, pinned): sets the global _UP_PLACEHOLDER_ENV_FILE
-# (reset to "" at the top of every call so a stale value from a prior
-# invocation in the same process can never leak forward). This function must
-# NOT rely on dynamic-scope bare assignment into the caller's `env_file` and
-# must NOT declare `local env_file` itself. The CALL SITE (cmd_up,
-# immediately before _up_prepare_environment) is responsible for copying
-# _UP_PLACEHOLDER_ENV_FILE into its own env_file when non-empty — that copy is
-# part of the change, not implied by this function.
-#
-# Globals read: OUTPUT_FORMAT
-# Globals written: _UP_PLACEHOLDER_ENV_FILE
-# Parameters:
-#   $1  cli_env_file  — the CLI --env-file value as seen so far by cmd_up
-#                        ("" if not supplied). Needed here because --env-file
-#                        only ever sets a `local env_file` inside cmd_up —
-#                        there is no global to inspect, so the caller must
-#                        pass its current value.
-_up_resolve_placeholder_env_file() {
-  local _pef_cli_env_file="${1:-}"
-  _UP_PLACEHOLDER_ENV_FILE=""
-
-  # The auth.* config key this once served retired with the schema (ADR-031 D2). A cage
-  # that wants extra guest env vars declares them in its own config's `env:`
-  # block, which msb reads directly. $RC_PLACEHOLDER_ENV_FILE keeps the
-  # host-side pointer available for a caller that still needs one.
-  local _pef_pointer="${RC_PLACEHOLDER_ENV_FILE:-null}"
-  if [[ -z "$_pef_pointer" || "$_pef_pointer" == "null" ]]; then
-    return 0
-  fi
-
-  if [[ -n "$_pef_cli_env_file" ]]; then
-    log "placeholder env file: ignored — CLI --env-file already supplied"
-    return 0
-  fi
-
-  if [[ ! -f "$_pef_pointer" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "RC_PLACEHOLDER_ENV_FILE points at a missing file: ${_pef_pointer}" "PLACEHOLDER_ENV_FILE_NOT_FOUND"
-    fi
-    echo "Error: RC_PLACEHOLDER_ENV_FILE points at a missing file: ${_pef_pointer}" >&2
-    exit 1
-  fi
-
-  # D2d: same treatment as the CLI --env-file path's denylist check (cmd_up's --env-file handling)
-  # — this channel is agent-readable, unlike the mediator's docker-exec-only
-  # channel, so an accidental secret-path pointer must be refused the same way.
-  # Known partial parity (accepted at rip-cage-b9to impl-review): the check
-  # runs on the RAW pointer (D2e: no realpath), so a symlink to a denylisted
-  # secret bypasses it here while the CLI path (which realpaths first) would
-  # catch it. Host-authored config, accident model — out of threat scope.
-  local _pef_denied_pattern
-  if _pef_denied_pattern=$(_protected_paths_path_match "$_pef_pointer"); then
-    _emit_denylist_denial "$_pef_pointer" "${_pef_denied_pattern}"
-    exit 1
-  fi
-
-  _UP_PLACEHOLDER_ENV_FILE="$_pef_pointer"
-  log "placeholder env file: applied ${_pef_pointer}"
+  return 0
 }
 
 
@@ -3362,15 +3267,6 @@ cmd_up() {
   # attach block below. It is unset after that block.
 
   _up_prepare_docker_mounts "$path" "$name"
-
-  # rip-cage-b9to: resolve the $RC_PLACEHOLDER_ENV_FILE pointer (create-only,
-  # immediately before _up_prepare_environment consumes env_file as $3). CLI
-  # --env-file always wins — the resolver itself checks env_file's current
-  # value and no-ops (with a log note) when it is already non-empty.
-  _up_resolve_placeholder_env_file "$env_file"
-  if [[ -n "$_UP_PLACEHOLDER_ENV_FILE" ]]; then
-    env_file="$_UP_PLACEHOLDER_ENV_FILE"
-  fi
 
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
 

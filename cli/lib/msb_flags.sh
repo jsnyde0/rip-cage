@@ -3,8 +3,11 @@
 # the msb migration epic rip-cage-tsf2).
 # NOTE: TEST-ONLY library. It is not on `rc up`'s launch path: the cage
 # config's own network.allow and secrets: block carry what this generator
-# used to emit (ADR-031 D2; rip-cage-wla6). Its consumers are the live and
-# probe suites, which build cages directly. Retiring it is rip-cage-eovq.
+# used to emit (ADR-031 D2; rip-cage-wla6). Its consumers are the test
+# suites that build cages directly -- among them test-msb-flags-generator.sh
+# and test-msb-flags-dind-volume.sh -- and the path triggers in
+# .github/workflows/linux-kvm-port-tight-proof.yml; the full list is
+# `grep -rl msb_flags tests .github`. Retiring it is rip-cage-eovq.
 # Must NOT set -euo pipefail itself (matches the other cli/lib/*.sh
 # convention -- a caller that sources this owns strict mode once).
 #
