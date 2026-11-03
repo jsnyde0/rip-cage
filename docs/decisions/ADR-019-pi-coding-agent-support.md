@@ -180,7 +180,7 @@ A provider API key (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` 
 
 `PI_PACKAGE_DIR` stays **excluded** — it points at a host filesystem path used in pi development and would resolve to a non-existent path inside the cage, breaking pi startup. Empty-string vars are filtered out at forward time.
 
-An operator who wants possession anyway names it explicitly: `rc up --env-file <path>` forwards that file's lines by real value (docs/reference/auth.md, "API key — still possession"). Nothing reaches the guest by real value without such an explicit act.
+An operator who wants possession anyway names it explicitly: `rc up --env-file <path>` forwards that file's lines by real value (docs/reference/auth.md, "API key — still possession"). Nothing reaches the guest by real value without such an explicit act. **Exception, until recreate:** a cage created before this revision with a provider key exported keeps that real key on every plain resume (`msb start` takes no env; a stopped cage converges only on a config-file change) until `rc up --replace`.
 
 **Rationale:**
 

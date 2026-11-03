@@ -158,7 +158,7 @@ _auth_cctok_fail_message() {
   echo "  1. Run 'claude setup-token' in a terminal (prints a long-lived OAuth token)."
   echo "  2. Save the printed token to ${_file}"
   echo "  3. chmod 600 ${_file}"
-  echo "To use ANTHROPIC_API_KEY instead, delete the secrets: CCTOK block and the CLAUDE_CODE_OAUTH_TOKEN env line from this cage's config."
+  echo "To use ANTHROPIC_API_KEY instead, put it in a file and pass it with 'rc up --env-file <path>' (a key exported in your shell does not reach the cage), and delete the secrets: CCTOK block and the CLAUDE_CODE_OAUTH_TOKEN env line from this cage's config."
 }
 
 # cmd_auth — bare `rc auth` only; any subcommand/arg is a usage error. The

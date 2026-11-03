@@ -81,7 +81,7 @@ A cage already running does not pick this up live — the value is read once, at
 
 `rc up --env-file <path>` with `ANTHROPIC_API_KEY` set in that file works, and reaches the guest as a real value — this one **is** possession, not the `--secret` mechanism above. Use it if you'd rather authenticate with a plain API key than a Claude login.
 
-The shipped template always declares `secrets: CCTOK`, so `rc auth` and the `rc up` pre-check refuse by default — to use `ANTHROPIC_API_KEY` instead, delete the `secrets: CCTOK` block and the `CLAUDE_CODE_OAUTH_TOKEN` env line from this cage's config (`rc auth`'s failure message says the same).
+The shipped template always declares `secrets: CCTOK`, so `rc auth` and the `rc up` pre-check refuse by default — to use `ANTHROPIC_API_KEY` instead, pass it with `rc up --env-file <path>` and delete the `secrets: CCTOK` block and the `CLAUDE_CODE_OAUTH_TOKEN` env line from this cage's config (`rc auth`'s failure message says the same). A key exported in your shell does not reach the cage.
 
 Full model for credentials you nominate yourself, including the shapes `--secret` does not protect: [secret-posture.md](secret-posture.md).
 
@@ -95,9 +95,11 @@ Full model for credentials you nominate yourself, including the shapes `--secret
 
 **Subscription logins** (openai-codex) ride the same `secrets:` path: the operator's host pi keeps the real token fresh, and `examples/pi-providers/codex-secret.sh` copies it into a secret file and writes the placeholder `auth.json` the cage mounts `:ro`. Recipe: [`pi-providers.md`](../../.claude/skills/cage-config/recipes/pi-providers.md).
 
-**Providers.** pi supports OpenAI, Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). A provider key exported in the host shell does **not** reach the guest: `rc up` forwards no provider API-key variable, so a `secrets:` binding is the one path for a provider key ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D5). `rc up` forwards only the non-secret pi knobs `PI_SKIP_VERSION_CHECK` and `PI_CACHE_RETENTION`.
+**Providers.** pi supports OpenAI, Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). A provider key exported in the host shell does **not** reach the guest: `rc up` forwards no provider API-key variable, so a `secrets:` binding is the non-possession path for a provider key ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D5). The explicit possession path is `rc up --env-file` ("API key — still possession" above): it puts the real key in the guest. `rc up` forwards only the non-secret pi knobs `PI_SKIP_VERSION_CHECK` and `PI_CACHE_RETENTION`.
 
 **A cage created before this change** carries the old read-write `auth.json` mount until `rc up --replace` recreates it; `rc up` on such a cage resumes it as-is and does not flag the mount.
+
+**A cage created while a provider key was exported in the host shell** — before the passthrough retired (rip-cage-rsh9.4) — keeps that real key in its guest env on every plain resume: `msb start` takes no env, and a stopped cage converges only when its config file changes. `rc up --replace` recreates it without the key; `rc up` does not flag it.
 
 ### Subscription auth — read before using
 

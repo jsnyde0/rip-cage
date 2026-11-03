@@ -4,4 +4,4 @@ One-time human step:
   1. Run 'claude setup-token' in a terminal (prints a long-lived OAuth token).
   2. Save the printed token to <GM_ROOT>/home/.config/rip-cage/secrets/CCTOK
   3. chmod 600 <GM_ROOT>/home/.config/rip-cage/secrets/CCTOK
-To use ANTHROPIC_API_KEY instead, delete the secrets: CCTOK block and the CLAUDE_CODE_OAUTH_TOKEN env line from this cage's config.
+To use ANTHROPIC_API_KEY instead, put it in a file and pass it with 'rc up --env-file <path>' (a key exported in your shell does not reach the cage), and delete the secrets: CCTOK block and the CLAUDE_CODE_OAUTH_TOKEN env line from this cage's config.
