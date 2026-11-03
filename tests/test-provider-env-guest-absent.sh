@@ -9,7 +9,8 @@
 # binding with an env: line (the pi-providers recipe shape).
 #   G1  rc up exits 0 with fake provider keys exported; no fake value in rc's output
 #   G2  `env` in the guest holds no fake value
-#   G3  no guest process's environ holds a fake value
+#   G3  no user process's environ holds a fake value; read as root, and an
+#       environ that exists but cannot be read fails the check
 #   G4  positive control: OPENROUTER_API_KEY in the guest IS the msb
 #       placeholder, so the env capture in G2/G3 can see a provider var at all
 #
@@ -119,11 +120,27 @@ else
   fail "G2 guest env" "grep -c fake-x -> '${out}'"
 fi
 
-out=$(g 30 sh -c 'cat /proc/[0-9]*/environ 2>/dev/null | tr "\0" "\n" | grep -c fake-x')
-if [[ "$out" == "0" ]]; then
-  pass "G3 no guest process environ holds a fake provider value"
+# Runs as root so every user process's environ is readable; prints "<hits>
+# <unread>", where unread counts environs that still exist but failed to read.
+# Skipped, not counted: a pid with no VmSize (a kernel thread -- no address
+# space, so no environ; open() fails ESRCH) and a pid that exited mid-scan.
+# Both numbers must be 0.
+# shellcheck disable=SC2016  # guest-side script, expands in the guest
+out=$(perl -e 'alarm shift; exec @ARGV' 30 msb exec -u root "$NAME" -- sh -c '
+  hits=0; unread=0
+  for d in /proc/[0-9]*; do
+    grep -q "^VmSize:" "$d/status" 2>/dev/null || continue
+    if e=$( { tr "\0" "\n" < "$d/environ"; } 2>/dev/null); then
+      case "$e" in *fake-x*) hits=$((hits + 1)) ;; esac
+    elif [ -e "$d/environ" ]; then
+      unread=$((unread + 1))
+    fi
+  done
+  echo "$hits $unread"' < /dev/null 2>&1)
+if [[ "$out" == "0 0" ]]; then
+  pass "G3 no guest user-process environ holds a fake provider value (all read, as root)"
 else
-  fail "G3 guest process environ" "grep -c fake-x -> '${out}'"
+  fail "G3 guest process environ" "hits/unread -> '${out}'"
 fi
 
 out=$(g 30 printenv OPENROUTER_API_KEY | tr -d '\r\n')

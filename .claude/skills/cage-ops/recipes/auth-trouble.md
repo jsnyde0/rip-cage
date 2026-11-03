@@ -65,11 +65,12 @@ file exists. Full mechanism: [`auth.md`](../../../../docs/reference/auth.md).
 msb exec <cage> -- sh -c 'echo "${ANTHROPIC_API_KEY:0:7}..."'
 ```
 
-Empty means it never reached the cage: the one way in is `rc up --env-file
-<path>` (docs/reference/auth.md, "API key — still possession"), never your host
-shell. Fix that and recreate. This
-path is possession — the real key is in the guest — by design; it is the
-alternative to the Claude login, not a bug.
+Empty means it never reached the cage. It comes in one of two ways, never
+from your host shell: a literal value in the config's `env:` block, or
+`rc up --env-file <path>` (docs/reference/auth.md, "API key — still
+possession"). Fix that and recreate. Either path is possession — the real
+key is in the guest — by design; it is the alternative to the Claude login,
+not a bug.
 
 ---
 

@@ -6,7 +6,7 @@ set -uo pipefail
 # the guest as a real value (ADR-031 D1 non-possession, ADR-019 D5). Provider
 # keys ride a secrets: binding in the cage config instead.
 #
-#   P1  every name in the retired pre-fdbfe66 passthrough list (all 13 provider
+#   P1  every name in the retired pre-fdbfe66 passthrough list (all 15 provider
 #       keys) exported: the dry-run's msb create argv carries no value, and no
 #       output line does.
 #   P2  no auth.json -v mount on the argv by default.
