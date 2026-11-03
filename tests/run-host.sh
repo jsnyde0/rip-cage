@@ -195,6 +195,7 @@ NEEDS_CONTAINER=(
   "test-mount-mode-e2e.sh"           # rip-cage-wlwc.3: real-cage ro/rw behavioral probes (RE1-RE3); self-skips without RC_E2E=1
   "test-doctor-runnability.sh"       # rip-cage-2cks: spins live cages (rc up + msb create) to exercise rc doctor's cwd/workspace-resolution probes; self-skips when RC_IMAGE is unset/empty or without docker, msb, or host bd; refuses RC_IMAGE=rip-cage:latest (FAIL) — rip-cage-b8kd.8.3
   "test-msb-boot-smoke.sh"           # rip-cage-7dkq (S1, msb migration): needs live docker + live msb + a pre-built rip-cage:latest image to actually boot a cage; self-skips (SKIP:, exit 0) without any of the three
+  "test-msb-lifecycle-graceful-stop.sh" # rip-cage-i5pp: STRUCT+R12 greps are hermetic but the PERSIST half boots a real msb sandbox (create/exec/stop/start); self-skips without msb or a pre-built image
   "test-floor-probe.sh"              # rip-cage-ely4.12: builds two DELIBERATELY BROKEN extension images and boots a cage on each to prove the floor probe refuses them; needs live docker + msb + a base image carrying the probe; self-skips without any of the three
   "test-boot-descriptor.sh"          # rip-cage-ely4.7.12: its own banner always said NEEDS_CONTAINER but it was never listed here, so --host-only ran it and it did a docker build + msb load + rc up on this host; needs live docker + msb + a base image carrying rc-boot-merge; self-skips without any of the three
   "test-protected-paths-ro-mount-live.sh" # rip-cage-849o: a real rc up on a config that ro-mounts a dir holding a dummy protected file; the cage boots, the file reads empty in-guest, the sibling reads, writes fail, resume re-covers; a failing-mount scratch image stops the cage before init; needs live docker + msb + rip-cage:latest; self-skips without them
@@ -905,6 +906,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-build-msb-load.sh"         # rip-cage-7dkq (S1, msb migration): _build_msb_load unit tests (fake docker+msb PATH shims, host-only, no live daemon)
   run_test "${SCRIPT_DIR}/test-up-msb-load-wiring.sh"     # rip-cage-0v47: rc up's new-container/image-absent provisioning block calls _build_msb_load then _msb_warn_image_layer_drift IN THE SAME SHELL right after a successful _pull_or_build (fake docker+msb PATH shims + extract-and-eval against scratch-mutated copies, host-only, no live daemon, never a real cage)
   run_test "${SCRIPT_DIR}/test-msb-boot-smoke.sh"         # rip-cage-7dkq (S1, msb migration): effect-based docker-save->msb-load->boot->in-guest-exec smoke root + negative control (NEEDS_CONTAINER+NEEDS_MSB; self-skips without docker/msb/pre-built image)
+  run_test "${SCRIPT_DIR}/test-msb-lifecycle-graceful-stop.sh" # rip-cage-i5pp: rc never runs msb stop --force (STRUCT/R12 greps) + a guest write survives graceful stop/start (PERSIST; NEEDS_CONTAINER, self-skips without msb/image)
 
   # rip-cage-b6ia: previously-dark test files, audited 2026-06-09 and wired.
   # Host-tier (run on every invocation):
