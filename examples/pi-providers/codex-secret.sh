@@ -51,7 +51,7 @@ _account=$(jq -r '."https://api.openai.com/auth".chatgpt_account_id // empty' <<
 [[ -n "$_account" ]] || die "openai-codex access token carries no chatgpt_account_id claim"
 _exp=$(jq -r '.exp // 0' <<<"$_payload")
 
-b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+b64url() { base64 | tr -d '\n=' | tr '+/' '-_'; }
 _header=$(printf '%s' '{"alg":"none","typ":"JWT"}' | b64url)
 _body=$(jq -cn --arg a "$_account" --argjson e "$_far_exp" \
   '{iss: "rc-placeholder", exp: $e, "https://api.openai.com/auth": {chatgpt_account_id: $a}}' | b64url)

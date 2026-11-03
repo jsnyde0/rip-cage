@@ -93,13 +93,15 @@ Full model for credentials you nominate yourself, including the shapes `--secret
 
 **Provider API keys ride msb `secrets:`** in the project config, the same mechanism as the Claude login above: a `secrets:` entry binds the key to the provider's host, an `env:` line exposes the placeholder under the variable name pi reads (for example `OPENROUTER_API_KEY`), and `network.allow` carries the provider's `:tcp:443` line. The guest holds only the placeholder. How to write the entry and where the value lives on the host: the [`cage-config`](../../.claude/skills/cage-config/SKILL.md) skill.
 
+**Subscription logins** (openai-codex) ride the same `secrets:` path: the operator's host pi keeps the real token fresh, and `examples/pi-providers/codex-secret.sh` copies it into a secret file and writes the placeholder `auth.json` the cage mounts `:ro`. Recipe: [`pi-providers.md`](../../.claude/skills/cage-config/recipes/pi-providers.md).
+
 **Providers.** pi supports OpenAI, Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). `rc up` still forwards a fixed set of provider API-key variables from host to guest when they are set and non-empty; a `secrets:` binding is the stronger path because the guest never holds the real key.
 
 **A cage created before this change** carries the old read-write `auth.json` mount until `rc up --replace` recreates it; `rc up` on such a cage resumes it as-is and does not flag the mount.
 
 ### Subscription auth — read before using
 
-> Subscription OAuth logins raise policy questions, and rc provides no path for them.
+> Subscription OAuth logins raise policy questions. rc ships a path for openai-codex only (the recipe above); it ships none for the Anthropic subscription.
 >
 > - **pi → Anthropic OAuth (Claude Max/Pro):** this sends subscription credentials through a third-party harness. Anthropic's January 2026 enforcement action against third-party Claude access tools applies; review the [Anthropic Consumer Terms](https://www.anthropic.com/legal/consumer-terms). Do not use pi with the Anthropic subscription.
 > - **pi → OpenAI Codex (ChatGPT Plus/Pro):** pi's own docs carry a "personal use only" statement for this flow. Driving automated agent sessions with it sits in a gray area under the [OpenAI Service Terms](https://openai.com/policies/service-terms/).
