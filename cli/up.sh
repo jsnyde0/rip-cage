@@ -1606,7 +1606,7 @@ _up_build_msb_create_argv() {
 # _UP_RUN_ARGS is produced by _up_prepare_docker_mounts and
 # _up_prepare_environment and is still docker -v/-e/--label shape. This
 # function translates it to msb flags (_up_translate_docker_args_to_msb),
-# joins it with the config-derived flags, and runs the `msb create` argv that
+# and runs the `msb create` argv that
 # _up_build_msb_create_argv assembles. Egress and credential bindings are the
 # --conf file's own network.allow and secrets: block, not flags.
 #
@@ -3393,8 +3393,8 @@ cmd_up() {
   # rip-cage-rj68 (S6): NO trailing "$IMAGE sleep infinity" positional here
   # (docker-specific CMD override — msb create has no command-override
   # positional at all; the image's own baked CMD keeps the sandbox alive,
-  # confirmed live). _up_start_container takes $IMAGE and $path as its own
-  # arguments below.
+  # confirmed live). _up_start_container reads $IMAGE as a global
+  # below.
 
   if ! _up_start_container "$name"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
