@@ -72,7 +72,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAILURES=0
 PASS_COUNT=0
 pass() { echo "PASS: $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
-fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
+fail() { echo "FAIL: $1${2:+: $2}"; FAILURES=$((FAILURES + 1)); }
 
 echo "=== test-scratch-cage-teardown-guard.sh ==="
 

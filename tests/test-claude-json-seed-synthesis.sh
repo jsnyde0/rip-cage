@@ -80,7 +80,7 @@ REAL_MSB_HOME="${HOME}/.microsandbox"
 
 FAILURES=0
 pass() { printf 'PASS: %s\n' "$1"; }
-fail() { printf 'FAIL: %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+fail() { printf 'FAIL: %s%s\n' "$1" "${2:+: $2}"; FAILURES=$((FAILURES + 1)); }
 
 # ---------------------------------------------------------------------------
 # Guards
