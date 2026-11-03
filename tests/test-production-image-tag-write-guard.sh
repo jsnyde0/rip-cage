@@ -17,7 +17,7 @@
 #     OTHER's stub as if it were the real image.
 #
 # A test never needs the write. `rc` resolves its image through
-# `IMAGE="${RC_IMAGE:-rip-cage:latest}"` (rc:69), so a test points rc at its own
+# `IMAGE="${RC_IMAGE:-rip-cage:latest}"` (the IMAGE= assignment in rc), so a test points rc at its own
 # fixture tag with RC_IMAGE and asserts exactly the same behaviour with no
 # window and no restore step.
 #

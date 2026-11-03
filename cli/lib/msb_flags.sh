@@ -281,7 +281,7 @@ _msb_flags_generate() {
       local b_target
       b_target=$(jq -r ".credentials[${bidx}].target_env[${bti}]" <<<"$cfg")
       # printf, NOT echo: a bare `echo "-e"` is swallowed by bash's echo
-      # builtin as the -e escape flag (same footgun noted at cli/up.sh:1845),
+      # builtin as the -e escape flag (same footgun noted in _up_translate_docker_args_to_msb, cli/up.sh),
       # emitting an empty line instead of the literal token `-e`.
       printf '%s\n' "-e" "${b_target}=\$MSB_${b_synth}"
     done

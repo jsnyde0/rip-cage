@@ -516,7 +516,7 @@ fi
 # (ssh-bypass recipe retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5.)
 
 # Check 11: Pi verify line appears in init log (ADR-019 B3).
-# init-rip-cage.sh runs via `_msb_exec` (cli/up.sh:1275-1277), so its output
+# init-rip-cage.sh runs via `_msb_exec` (_up_init_container in cli/up.sh), so its output
 # reaches rc up's own stdout — captured at /tmp/rc-e2e-up.out by check 3 —
 # not any separate log stream. (rip-cage-nb2)
 if grep -q '\[rip-cage\] pi ' /tmp/rc-e2e-up.out; then

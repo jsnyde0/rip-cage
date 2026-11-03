@@ -252,7 +252,7 @@ _msb_image_drift_status() {
   fi
   _RC_IMAGE_DRIFT_STORED=$(_msb_short_image_id "$_stored_image")
   local _current_image
-  # IMAGE (the global set by rc:69, IMAGE="${RC_IMAGE:-rip-cage:latest}") is
+  # IMAGE (the global set by the IMAGE= assignment in rc, IMAGE="${RC_IMAGE:-rip-cage:latest}") is
   # intentional here, not a typo for _msb_current_image_digest's own
   # lowercase `image` PARAMETER (a different function's local, now in the
   # same file post-move) -- this file-local coincidence is exactly what
@@ -319,7 +319,7 @@ _msb_image_drift_status() {
 # Parameters: none (uses global $IMAGE, same as _msb_image_drift_status).
 _msb_image_layer_drift_status() {
   local _docker_layers
-  # IMAGE is the global set by rc:69 (IMAGE="${RC_IMAGE:-rip-cage:latest}")
+  # IMAGE is the global set by the IMAGE= assignment in rc (IMAGE="${RC_IMAGE:-rip-cage:latest}")
   # -- see _msb_image_drift_status's own SC2153 note above for why this
   # file-local `image` coincidence needs the disable.
   # shellcheck disable=SC2153
