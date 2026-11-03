@@ -167,7 +167,7 @@ NEEDS_CONTAINER=(
   # test-build-msb-load.sh; `rc test --output json` in test-rc-commands.sh
   # (Test 15); `rc up --dry-run` JSON in test-json-output.sh. Nothing was
   # dropped without a home.
-  "test-pi-e2e.sh"           # calls rc up AND requires ~/.pi/agent/auth.json with valid pi credentials
+  "test-pi-e2e.sh"           # calls rc up; pi creds ride msb secrets copied from the host (secrets/OPENROUTER, host pi's openai-codex login); SKIPs per provider without one
   "test-pi-install.sh"       # runs docker run --rm rip-cage:latest; requires a pre-built rip-cage image
   "test-pi-auth-mount.sh"    # calls rc up to create a live container; inspects container env + mounts
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage

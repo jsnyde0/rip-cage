@@ -664,10 +664,9 @@ _up_prepare_docker_mounts() {
   # Whitelist of rip-cage-managed dotfile mount roots to scan for absolute
   # symlinks that would be dangling inside the cage. /workspace is NEVER on
   # this list (D2 FIRM: whitelist not blacklist).
-  # Post-hhh.12: narrow auth.json sub-mount. Scanner root is still ~/.pi/agent
-  # (the dir containing the sub-mounted file) so the scanner can detect if
-  # auth.json itself is a symlink (dotpi-managed state) — if so, the symlink-follow
-  # machinery adds the second mount for the resolved target, exactly as before.
+  # Scanner root ~/.pi/agent: its other absolute dangling symlinks keep
+  # mounting. rc mounts no host auth.json (ADR-019 D1, rip-cage-3w82), so the
+  # auth.json leaf is filtered out in the loop below rather than followed.
   # Per D3: second bind mount at host-target path (mirror), not sanitized.
   # Per ADR-001 D1: mount expansions always log to stderr.
   local _SFL_SCAN_ROOTS=()
