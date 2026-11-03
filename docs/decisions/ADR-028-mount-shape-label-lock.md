@@ -85,7 +85,7 @@ Checklist when adding a filter to a fingerprinted surface: (1) is the fingerprin
 
 When a label-locked field's policy input stops being a raw config read and becomes a **derived effective value** (e.g. `effective(pi) = auth.per_tool.pi // auth.credential_mounts // "real"`), every computation site must call the **same named resolver function** — never re-derive inline. Before adding a second derivation source, grep every site currently inlining the derivation and factor a single resolver first.
 
-**Rationale:** `direct:` in rip-cage-xhgr, the create-time site and the resume-side recompute each carried their own inline `jq` derivation; extending only one to the new per-tool logic would have silently reintroduced the create/resume asymmetry the label-lock exists to prevent (caught in design review round 2). The fix factored `_up_resolve_effective_credential_mounts_for_tool`, called from all three sites (create resolver, resume label-guard, resume fingerprint-recompute).
+**Rationale:** `direct:` in rip-cage-xhgr, the create-time site and the resume-side recompute each carried their own inline `jq` derivation; extending only one to the new per-tool logic would have silently reintroduced the create/resume asymmetry the label-lock exists to prevent (caught in design review round 2). The fix factored `_up_resolve_effective_credential_mounts_for_tool`, called from all three sites (create resolver, resume label-guard, resume fingerprint-recompute). (2026-11-03, rip-cage-15uv: the function lost its last caller when the config layer retired, and was deleted; the rule in D3 still applies to any future derived input.)
 
 **Alternatives considered:**
 

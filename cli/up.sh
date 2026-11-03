@@ -1926,21 +1926,6 @@ _up_resolve_resume_image_drift_running() {
 }
 
 
-# _up_resolve_effective_credential_mounts_for_tool (rip-cage-xhgr / D1) — the
-# single jq expression backing every effective(T) computation site: the
-# create-time resolver (cmd_up), the resume-side credential-mounts guard, and
-# the resume-side symlink-follow fingerprint recompute all call this so the
-# resolution rule (per_tool.T if set, else the global credential_mounts, else
-# "real") never drifts between call sites.
-# Parameters: $1 tool ("claude"|"pi"), $2 effective-config JSON (the object
-#             (retired parameter; kept for the caller's signature)
-# Output: "real" or "none" on stdout.
-_up_resolve_effective_credential_mounts_for_tool() {
-  local _tool="$1" _cfg_json="$2"
-  jq -r --arg t "$_tool" '.config.auth.per_tool[$t] // .config.auth.credential_mounts // "real"' <<<"$_cfg_json"
-}
-
-
 # _up_resolve_resume_symlink_fingerprint -- compare the rc.symlink-follow-fingerprint
 # label on the existing container against the current host state. Abort loud if
 # mismatch (mount-shape change — requires destroy and re-up per D4 FIRM).
