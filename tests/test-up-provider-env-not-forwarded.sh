@@ -6,11 +6,14 @@ set -uo pipefail
 # the guest as a real value (ADR-031 D1 non-possession, ADR-019 D5). Provider
 # keys ride a secrets: binding in the cage config instead.
 #
-#   P1  ANTHROPIC_API_KEY / OPENROUTER_API_KEY exported: the dry-run's msb
-#       create argv carries neither value, and no output line does.
+#   P1  every name in the retired pre-fdbfe66 passthrough list (all 13 provider
+#       keys) exported: the dry-run's msb create argv carries no value, and no
+#       output line does.
 #   P2  no auth.json -v mount on the argv by default.
 #   P3  the non-secret pi knob PI_SKIP_VERSION_CHECK is still forwarded, so
 #       the argv P1 inspects is the real one (not vacuously empty of -e).
+#   P4  an empty-string knob (PI_CACHE_RETENTION="") is not forwarded
+#       (ADR-019 D5: forwarded only when non-empty).
 #
 # Every rc call runs behind fake docker + msb (tests/_fake-runtime-lib.sh).
 
@@ -40,8 +43,19 @@ WS="${T}/proj/ws"
 mkdir -p "$WS"
 CONF=$(cage_conf_for "$WS")
 
-OUT=$(ANTHROPIC_API_KEY=fake-x-anthropic OPENROUTER_API_KEY=fake-x-openrouter \
-  PI_SKIP_VERSION_CHECK=1 RC_CAGE_CONF="$CONF" "$RC" up --dry-run "$WS" 2>&1)
+# The full retired passthrough list (git show 404a866:cli/up.sh), so a
+# reintroduced passthrough of any one name turns P1 red.
+PROVIDER_KEYS=(
+  ANTHROPIC_API_KEY AZURE_OPENAI_API_KEY OPENAI_API_KEY GEMINI_API_KEY
+  MISTRAL_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY
+  OPENROUTER_API_KEY AI_GATEWAY_API_KEY ZAI_API_KEY OPENCODE_API_KEY
+  KIMI_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY
+)
+PROVIDER_ENV=()
+for _k in "${PROVIDER_KEYS[@]}"; do PROVIDER_ENV+=("${_k}=fake-x-${_k}"); done
+
+OUT=$(env "${PROVIDER_ENV[@]}" \
+  PI_SKIP_VERSION_CHECK=1 PI_CACHE_RETENTION= RC_CAGE_CONF="$CONF" "$RC" up --dry-run "$WS" 2>&1)
 ARGV=$(grep '^Would run: msb create' <<<"$OUT" | head -1 | tr ' ' '\n')
 
 echo "=== P1: exported provider keys absent from argv and output ==="
@@ -50,7 +64,7 @@ if [[ -z "$ARGV" ]]; then
 elif grep -q 'fake-x' <<<"$OUT"; then
   fail "P1 a real provider key value reached rc's output: $(grep 'fake-x' <<<"$OUT" | head -3)"
 else
-  pass "P1 neither exported key value appears in the argv or any output line"
+  pass "P1 none of the exported key values appears in the argv or any output line"
 fi
 
 echo "=== P2: no auth.json mount by default ==="
@@ -65,6 +79,13 @@ if grep -qx 'PI_SKIP_VERSION_CHECK=1' <<<"$ARGV"; then
   pass "P3 PI_SKIP_VERSION_CHECK=1 forwarded"
 else
   fail "P3 PI_SKIP_VERSION_CHECK=1 missing from argv: $(tr '\n' ' ' <<<"$ARGV" | cut -c1-300)"
+fi
+
+echo "=== P4: empty-string knob not forwarded ==="
+if grep -q '^PI_CACHE_RETENTION=' <<<"$ARGV"; then
+  fail "P4 empty PI_CACHE_RETENTION forwarded: $(grep '^PI_CACHE_RETENTION=' <<<"$ARGV")"
+else
+  pass "P4 empty PI_CACHE_RETENTION absent from argv"
 fi
 
 echo ""

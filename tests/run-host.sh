@@ -178,6 +178,7 @@ NEEDS_CONTAINER=(
   "test-init-mount-guard-live.sh"  # rip-cage-f08b: boots one scratch cage twice (template, then whole ~/.claude mounted rw); needs msb + a scratch RC_IMAGE
   "test-mise-cache-isolation-live.sh"  # rip-cage-p4ss.2: boots two scratch cages from the template; needs msb + a scratch RC_IMAGE
   "test-git-config-cover-live.sh"  # rip-cage-rsh9.2: boots one scratch cage from the template with two repos and a bare remote mounted; needs msb + a scratch RC_IMAGE
+  "test-provider-env-guest-absent.sh"  # rip-cage-565x: boots one scratch cage with fake provider keys exported and asserts none reach the guest env; needs msb + a scratch RC_IMAGE
   "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + msb + a pre-built rip-cage image
   # test-multiplexer-lifecycle.sh, test-agent-mail-concurrent.sh and
   # test-multiplexer-agent-e2e.sh: GONE with the manifest corpus they built
@@ -807,6 +808,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-init-mount-guard-live.sh"   # rip-cage-f08b: init never deletes a host dir inside a cage-config mount — whole ~/.claude rw keeps its skills sentinel, template still gets the symlink (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-mise-cache-isolation-live.sh"   # rip-cage-p4ss.2: two template cages get two mise volumes; cage B never sees a file cage A planted in its mise dir; rc destroy reaps each (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-git-config-cover-live.sh"   # rip-cage-rsh9.2: in a real cage, core.fsmonitor writes fail in the workspace and a second mounted repo, .git cannot be renamed away, push -u and a bare push still land (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
+  run_test "${SCRIPT_DIR}/test-provider-env-guest-absent.sh"   # rip-cage-565x: in a real cage, host-exported provider API keys never appear in the guest env or any process environ; the OPENROUTER secrets: placeholder does (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-pi-install.sh"
   run_test "${SCRIPT_DIR}/test-pi-auth-mount.sh"
   run_test "${SCRIPT_DIR}/test-pi-cage-context.sh"

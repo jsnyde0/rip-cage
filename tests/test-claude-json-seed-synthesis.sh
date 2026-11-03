@@ -327,7 +327,6 @@ PC_UP_OUT="${PC_WS_ROOT}/pc-up.out"
 # generator carries the mount line only when the file is there to mount.
 PC_CONF=$(HOME="$PC_HOME" cage_conf_for "$PC_WS" "$TEST_IMAGE")
 HOME="$PC_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
-  ANTHROPIC_API_KEY=sk-test-vwka-pc \
   RC_CAGE_CONF="$PC_CONF" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$PC_WS" </dev/null >"$PC_UP_OUT" 2>&1 || true
