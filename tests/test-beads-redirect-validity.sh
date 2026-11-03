@@ -40,7 +40,9 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not on PATH"; exit 0; }
 
-T=$(mktemp -d /tmp/rc-beads-redir-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+T=$(_host_scratch_mktemp_d rc-beads-redir) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 

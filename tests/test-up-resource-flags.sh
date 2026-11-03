@@ -28,7 +28,9 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-T=$(mktemp -d /tmp/rc-resource-flags-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+T=$(_host_scratch_mktemp_d rc-resource-flags) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 _FAKE_RT=$(fake_runtime_bin)
 trap 'rm -rf "$T" "$_FAKE_RT"' EXIT

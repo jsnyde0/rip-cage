@@ -31,7 +31,9 @@ command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not on PATH (rc's config reads
 # Same dummy setup-token shape as tests/test-auth-secret.sh; never a real one.
 DUMMY_TOKEN="sk-ant-oatodJFCrnl2edlBDdz1C5Jau2RJtBRnlWmTSHf6pWkLUyifDLkDmWJ6UuVTAIjvFu7WICPhDeOZIiBOB-Y6sHrFH2ZUCr-lgotu2iX"
 
-T=$(mktemp -d /tmp/rc-net-strict-XXXXXX) || { echo "FAIL: cannot create a temp dir"; exit 1; }
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+T=$(_host_scratch_mktemp_d rc-net-strict) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 
