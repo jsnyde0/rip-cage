@@ -1615,7 +1615,7 @@ _up_build_msb_create_argv() {
 # available for the fix-hint `rc doctor` mines (via
 # _msb_denied_domains_from_trace_log).
 #
-# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT, IMAGE
+# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT
 # Parameters: $1 name — container name
 # Returns non-zero on failure (human mode); JSON mode calls json_error,
 # which exits internally and never returns.
@@ -3393,8 +3393,8 @@ cmd_up() {
   # rip-cage-rj68 (S6): NO trailing "$IMAGE sleep infinity" positional here
   # (docker-specific CMD override — msb create has no command-override
   # positional at all; the image's own baked CMD keeps the sandbox alive,
-  # confirmed live). _up_start_container reads $IMAGE as a global
-  # below.
+  # confirmed live). The image comes from the config's own `image:` key,
+  # not from any argv positional.
 
   if ! _up_start_container "$name"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then

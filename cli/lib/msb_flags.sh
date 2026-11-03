@@ -209,8 +209,9 @@ _msb_flags_generate() {
   # (_up_check_network_policy, cli/up.sh) -- so the deny is enforced by the
   # config, and its presence is enforced by that guard.
   #
-  # The --net-rule entries below STAY: they append, so they are still the only
-  # way an egress host with no home in the config file gets through.
+  # The --net-rule entries below serve this library's test callers only:
+  # `rc up` no longer calls the generator (rip-cage-wla6), so on the launch
+  # path every allowed host lives in the config's own `network.allow`.
   local host_count h
   host_count=$(jq '.allowed_hosts // [] | length' <<<"$cfg")
   for (( h=0; h<host_count; h++ )); do
@@ -356,7 +357,7 @@ _msb_flags_prepare_secret_env() {
     source_env=$(jq -r ".credentials[${idx}].source_env" <<<"$cfg")
     source_file=$(jq -r ".credentials[${idx}].source_file // \"\"" <<<"$cfg")
     # Source the real value from a host FILE when source_file is declared
-    # (rip-cage-9dlw, autonomy: a plain `rc up` needs no pre-exported host env
+    # (rip-cage-9dlw, autonomy: a caller needs no pre-exported host env
     # var), else from the same-named host env var. The value moves only through
     # this process's environment into the synthesized --secret name; it is
     # never printed and never written to the guest. `$(cat ...)` strips a
