@@ -1,0 +1,7 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["{x}"]
+        slots: {x: {type: string}}
+        timeout: 30s

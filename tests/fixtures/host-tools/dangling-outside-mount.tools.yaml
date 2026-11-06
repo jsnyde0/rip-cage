@@ -1,0 +1,6 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["@T@/bin/tool", "@T@/dangling-out"]
+        timeout: 30s

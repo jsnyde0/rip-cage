@@ -309,6 +309,159 @@ _mount_src_exposes_secrets_dir() {
 }
 
 # --------------------------------------------------------------------------
+# _protected_paths_walk_path ABS_PATH
+#
+# Resolve ABS_PATH component by component without realpath -m (absent on
+# bash 3.2 / macOS): a symlink component is followed (relative targets join
+# onto the prefix walked so far); a component that does not exist ends the
+# walk -- the longest existing ancestor plus the remaining suffix, verbatim.
+# Prints the resolution ("/" for the root). Exit 0 ok.
+#
+# Exit 2 means a symlink whose target resolves to nothing (dangling), or a
+# loop / chain longer than 40 symlink follows IN TOTAL across the whole
+# resolution (one counter, reset at each top-level call, so a fan-out of links
+# that each follow two others is bounded too). On exit 2 the BEST LEXICAL
+# resolution is still printed (the joined target plus the remaining suffix):
+# a dangling link is a place the cage could create, so callers that must fail
+# closed compare that path instead of dropping the case.
+#
+# Shared by the authority-directory predicate and cli/lib/host_tools.sh
+# (ADR-032 D2). The recursion runs in this shell, not in $( ), so the counter
+# and the result survive the call.
+# --------------------------------------------------------------------------
+_PP_HOPS=0
+_PP_RES=''
+# The outermost DANGLING link's own location (its resolved parent plus the
+# link name plus the remaining suffix). A dangling link is retargetable by
+# whoever can write its parent, so the authority predicate compares this path
+# as well as the lexical target. Empty when no dangling link was met.
+_PP_LINKLOC=''
+
+_protected_paths_walk_path() {
+  _PP_HOPS=0
+  _PP_RES=''
+  _PP_LINKLOC=''
+  local _rc=0
+  _protected_paths_walk_inner "$1" || _rc=$?
+  printf '%s\n' "${_PP_RES:-/}"
+  return "${_rc}"
+}
+
+_protected_paths_walk_inner() {
+  local _path="$1"
+  local _prefix="" _rest _comp _cand _tgt _full _r
+  [[ "${_path}" == /* ]] || _path="${PWD}/${_path}"
+  _rest="${_path#/}"
+  while [[ -n "${_rest}" ]]; do
+    _comp="${_rest%%/*}"
+    if [[ "${_rest}" == */* ]]; then _rest="${_rest#*/}"; else _rest=""; fi
+    case "${_comp}" in
+      "" | .) continue ;;
+      ..) _prefix="${_prefix%/*}"; continue ;;
+    esac
+    _cand="${_prefix}/${_comp}"
+    if [[ -L "${_cand}" ]]; then
+      _PP_HOPS=$((_PP_HOPS + 1))
+      if [[ "${_PP_HOPS}" -gt 40 ]]; then
+        # symlink loop or chain too long
+        _PP_RES="${_cand}${_rest:+/${_rest}}"
+        return 2
+      fi
+      _tgt="$(readlink "${_cand}")" || { _PP_RES="${_cand}${_rest:+/${_rest}}"; return 2; }
+      case "${_tgt}" in
+        /*) _full="${_tgt}" ;;
+        *) _full="${_prefix}/${_tgt}" ;;
+      esac
+      _r=0
+      _protected_paths_walk_inner "${_full}" || _r=$?
+      if [[ "${_r}" -ne 0 || ! -e "${_PP_RES}" ]]; then
+        _PP_RES="${_PP_RES%/}${_rest:+/${_rest}}"
+        # Outermost wins: the frames unwind outward, each overwriting.
+        _PP_LINKLOC="${_cand}${_rest:+/${_rest}}"
+        return 2
+      fi
+      _prefix="${_PP_RES%/}"
+    elif [[ -e "${_cand}" ]]; then
+      _prefix="${_cand}"
+    else
+      _prefix="${_cand}${_rest:+/${_rest}}"
+      break
+    fi
+  done
+  _PP_RES="${_prefix:-/}"
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# _protected_paths_authority_dirs CONF_DIR
+#
+# The rc authority directories (ADR-032 Terms), one per line, as spelled
+# (unresolved) so a refusal names the path the predicate tested:
+#   1. the default projects directory -- always, whatever --conf points at;
+#   2. CONF_DIR, when non-empty and not the projects directory;
+#   3. the state directory root.
+# A relative RC_STATE_DIR is resolved against $PWD once, here, so the
+# predicate and its message agree on one absolute path (the rc up wiring,
+# rip-cage-jdl2.3, may tighten this to a refusal).
+# The secrets directory keeps its own predicate and existence rule.
+# --------------------------------------------------------------------------
+_protected_paths_authority_dirs() {
+  local _conf_dir="${1:-}"
+  local _projects _state _a _b
+  _projects="${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/projects"
+  _state="${RC_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/rip-cage}"
+  [[ "${_state}" == /* ]] || _state="${PWD}/${_state}"
+  printf '%s\n' "${_projects}"
+  if [[ -n "${_conf_dir}" ]]; then
+    _a="$(_protected_paths_walk_path "${_conf_dir}")" || true
+    _b="$(_protected_paths_walk_path "${_projects}")" || true
+    [[ "${_a}" == "${_b}" ]] || printf '%s\n' "${_conf_dir}"
+  fi
+  printf '%s\n' "${_state}"
+}
+
+# --------------------------------------------------------------------------
+# _mount_src_overlaps_authority_dir HOST_SRC CONF_DIR
+#
+# True (exit 0) when HOST_SRC's real path equals, contains, or lies inside
+# any directory _protected_paths_authority_dirs names (ADR-032 D2). Unlike
+# _mount_src_exposes_secrets_dir there is NO existence rule: each authority
+# directory is resolved whether or not it exists (the state root is created by
+# the first declaration, so a mount that would contain it is refused up
+# front), and a FILE source is compared by its real parent plus basename so
+# "lies inside" holds for files. A HOST_SRC that cannot be resolved (dangling
+# symlink, loop) is treated as overlapping -- fail closed. An AUTHORITY dir
+# that dangles is compared by its printed best lexical resolution (a dangling
+# ~/.local/state -> <ws>/not-yet still protects <ws>); only an empty
+# resolution -- the walker has no hard-error exit today -- is skipped.
+# Empty source: false.
+# --------------------------------------------------------------------------
+_mount_src_overlaps_authority_dir() {
+  local _host_src="${1:-}" _conf_dir="${2:-}"
+  [[ -n "${_host_src}" ]] || return 1
+  local _src _dir _auth _loc _dirs
+  _src="$(_protected_paths_walk_path "${_host_src}")" || return 0
+  _dirs="$(_protected_paths_authority_dirs "${_conf_dir}")"
+  while IFS= read -r _dir; do
+    [[ -n "${_dir}" ]] || continue
+    # Called in THIS shell (no $( )) so _PP_RES and _PP_LINKLOC survive: on a
+    # dangling component both the lexical target and the dangling link's own
+    # location are authority -- a mount holding the link's parent would let
+    # the guest retarget it (review of rip-cage-jdl2.1, residue 4).
+    _protected_paths_walk_path "${_dir}" >/dev/null || true
+    _auth="${_PP_RES:-/}"
+    _loc="${_PP_LINKLOC}"
+    [[ "${_src}" == "${_auth}" || "${_src}" == "${_auth%/}"/* || "${_auth}" == "${_src%/}"/* ]] && return 0
+    if [[ -n "${_loc}" ]]; then
+      [[ "${_src}" == "${_loc}" || "${_src}" == "${_loc%/}"/* || "${_loc}" == "${_src%/}"/* ]] && return 0
+    fi
+  done <<EOF_DIRS
+${_dirs}
+EOF_DIRS
+  return 1
+}
+
+# --------------------------------------------------------------------------
 # _beads_redirect_refusal RESOLVED_TARGET
 #
 # The one home of the .beads/redirect refusal rule. RESOLVED_TARGET is the

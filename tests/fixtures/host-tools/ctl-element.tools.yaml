@@ -1,0 +1,6 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["@T@/bin/tool", "a\tb"]
+        timeout: 30s

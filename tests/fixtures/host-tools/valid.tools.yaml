@@ -1,0 +1,18 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["@T@/bin/tool", "sub", "--chat", "{chat}", "--limit", "{limit}"]
+        slots:
+          chat:  {type: string, regex: "^-?[1-9][0-9]*$", allow_dash: true}
+          limit: {type: int, min: 1, max: 100, default: 20}
+        timeout: 30s
+        returns_secret: false
+      all:
+        argv: ["@T@/bin/tool", "{mode}", "{name}", "{n}", "--format=%h/%s", "refs/heads/main"]
+        slots:
+          mode: {type: enum, values: [a, b], default: b}
+          name: {type: string, max: 10, default: hi}
+          n:    {type: int, default: 5}
+        timeout: 2m
+        returns_secret: true

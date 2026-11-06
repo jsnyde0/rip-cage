@@ -1,0 +1,6 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["@T@/bin/tool", "refs/heads/main", "application/json", "--format=%h/%s", "https://example.com/x", "scripts/x"]
+        timeout: 30s

@@ -1,0 +1,7 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["@T@/bin/tool", "--chat={chat}"]
+        slots: {chat: {type: int}}
+        timeout: 30s

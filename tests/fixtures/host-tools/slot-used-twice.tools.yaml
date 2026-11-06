@@ -1,0 +1,7 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["@T@/bin/tool", "{x}", "{x}"]
+        slots: {x: {type: int}}
+        timeout: 30s

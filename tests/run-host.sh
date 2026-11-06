@@ -910,6 +910,9 @@ _run_all_tests() {
 
   # rip-cage-b6ia: previously-dark test files, audited 2026-06-09 and wired.
   # Host-tier (run on every invocation):
+  run_test "${SCRIPT_DIR}/test-host-tools-decl.sh"           # rip-cage-jdl2.1 (ADR-032 D2/D3): <cage>.tools.yaml loader - schema, typed slots, argv[0] + /-anchored literal scan against the mount list; fixtures under tests/fixtures/host-tools; hermetic, host-only
+  run_test "${SCRIPT_DIR}/test-protected-paths-authority-dirs.sh" # rip-cage-jdl2.1 (ADR-032 D2): _mount_src_overlaps_authority_dir - projects dir, --conf dir, state root (no existence rule), RC_STATE_DIR; hermetic, host-only
+  run_test "${SCRIPT_DIR}/test-host-tool-client.sh"          # rip-cage-jdl2.4 (ADR-032 D6): the baked in-cage client driven against a fake gatekeeper over AF_UNIX - typed encoding from list, wire bytes, exit codes 0/2/3/4/5; hermetic, host-only
   run_test "${SCRIPT_DIR}/test-bd-host-preflight.sh"    # _bd_host_preflight dolt-server preflight helper (host-only)
   run_test "${SCRIPT_DIR}/test-container-name.sh"       # rip-cage-a0h item (c): container_name() collision-hash disambiguation regression — docker PATH-shim + real cmd_up --dry-run, host-only
   run_test "${SCRIPT_DIR}/test-lfs-warning.sh"          # rc --dry-run up LFS pointer-stub scan + silent-exit-1 regression

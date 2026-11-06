@@ -1,0 +1,6 @@
+tools:
+  demo:
+    verbs:
+      send:
+        argv: ["@T@/bin/tool", "@T@/missing-parent/mnt/x"]
+        timeout: 30s
