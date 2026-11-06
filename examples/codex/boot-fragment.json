@@ -1,0 +1,8 @@
+{
+  "tools": [
+    {
+      "name": "codex",
+      "init": "_rc_src=/home/agent/rc-codex-placeholder/auth.json; _rc_home=\"${CODEX_HOME:-/home/agent/.codex}\"; if [ -r \"$_rc_src\" ]; then if mkdir -p \"$_rc_home\" && cp \"$_rc_src\" \"$_rc_home/auth.json.tmp\" && chmod 0600 \"$_rc_home/auth.json.tmp\" && mv -f \"$_rc_home/auth.json.tmp\" \"$_rc_home/auth.json\"; then :; else echo \"[rip-cage] WARNING: could not copy the codex placeholder auth.json into ${_rc_home} (codex will fail to log in)\" >&2; fi; else echo \"[rip-cage] WARNING: no codex placeholder at ${_rc_src} — mount the directory codex-secret.sh writes there :ro (examples/codex/README.md)\" >&2; fi; true"
+    }
+  ]
+}

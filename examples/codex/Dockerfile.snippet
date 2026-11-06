@@ -1,0 +1,40 @@
+# Codex CLI on the ChatGPT subscription — paste into your own Dockerfile,
+# between FROM and USER agent. Copy boot-fragment.json next to it.
+#
+# Installs the `codex` npm package and merges one boot-time hook that copies the
+# host-written PLACEHOLDER auth.json into CODEX_HOME. The real token never
+# enters the image or the guest: msb injects it on the wire toward chatgpt.com.
+# The config lines and the host helper step live in this directory's README.
+#
+# Pin CODEX_VERSION: the recipe was proven on 0.167.0 (rip-cage-bygi.1). A newer
+# codex may call new hosts or change its auth.json fields; re-check with the
+# README's "Check" step after bumping.
+#
+# USER root is required for `npm install -g`. Switch BACK to agent at the end of
+# your Dockerfile — an extension that ends on root boots a root shell with every
+# mount stranded (measured, rip-cage-ely4.16).
+
+USER root
+
+ARG CODEX_VERSION=0.167.0
+RUN for i in 1 2 3; do \
+      npm install -g @openai/codex@${CODEX_VERSION} && break; \
+      [ "$i" = 3 ] && exit 1; \
+      echo "codex npm install failed (attempt $i/3); retrying in 10s" && sleep 10; \
+    done
+
+# Put the base image's generic launch wrapper at `codex`, exactly as the base
+# does for claude and pi. The floor probe requires it: every boot-descriptor
+# tools[] name must resolve to that wrapper (check "path-resolution <name>"),
+# and this recipe's boot fragment declares a "codex" entry. With no `launch`
+# field the wrapper execs the real binary unchanged.
+RUN _p="$(command -v codex)" || { echo "codex not on PATH after install" >&2; exit 1; }; \
+    ln -sfn "$(readlink -f "${_p}")" /usr/local/lib/rip-cage/bin/codex-real \
+    && rm -f "${_p}" \
+    && cp /usr/local/lib/rip-cage/tool-launch-wrapper "${_p}" \
+    && chmod 0755 "${_p}"
+
+COPY boot-fragment.json /tmp/codex-boot.json
+RUN rc-boot-merge /tmp/codex-boot.json && rm -f /tmp/codex-boot.json
+
+USER agent

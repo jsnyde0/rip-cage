@@ -5,7 +5,10 @@ when a cage's pi uses provider `openai-codex` (the OpenAI ChatGPT
 subscription). It reads the host pi's auth.json, writes the real access token
 to `~/.config/rip-cage/secrets/CODEX` for msb to inject on the wire, writes a
 placeholder auth.json for the guest, and prints the placeholder for the cage
-config. `codex-secret.sh --print-placeholder` prints it and writes nothing.
+config. It also writes the same placeholder in the Codex CLI's shape at
+`~/.config/rip-cage/codex-cli/auth.json`, for a cage that runs `codex`
+([`examples/codex/`](../codex/)). `codex-secret.sh --print-placeholder` prints
+it and writes nothing.
 
 Not floor, never on by default (ADR-005 D12). Nothing in `rc` knows this
 script exists or reads pi's files; it is composition you run yourself.
