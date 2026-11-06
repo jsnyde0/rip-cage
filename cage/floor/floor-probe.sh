@@ -67,9 +67,9 @@
 #                            ~/.local/bin (which cage/agent/zshrc prepends, and
 #                            which does not exist in the base image) outranks
 #                            everything (measured, rip-cage-ely4.16 Q3).
-#                            the `bd-wrapper.sh` COPY (bd) and the
-#                            `tool-launch-wrapper` COPY + RUN loop (the generic
-#                            launch wrapper) in cage/Dockerfile. The tool names come from the boot
+#                            Guards the `bd-wrapper.sh` COPY (bd), the `host-tool`
+#                            COPY (the in-cage client) and the `tool-launch-wrapper`
+#                            COPY + RUN loop (the generic launch wrapper) in cage/Dockerfile. The tool names come from the boot
 #                            descriptor, so this file names no tool (ADR-005 D12).
 #   git-hooks-deny           The baked settings template still denies writes to
 #                            .git/hooks. The `COPY cage/agent/settings.json
@@ -263,6 +263,7 @@ fi
 #   /usr/local/bin/bd                `COPY ...bd-wrapper.sh`: the bd wrapper (see bd-wrapper below)
 #   /usr/local/bin/bd-real           `COPY --from=go-builder`: the real binary the wrapper defers to
 #   /usr/local/bin/init-rip-cage.sh  `COPY cage/init/init-rip-cage.sh`: this probe's own caller
+#   /usr/local/bin/host-tool         `COPY cage/substrate/host-tool`: the host-tool line's in-cage client (ADR-032 D6)
 #   /usr/local/lib/rip-cage/floor-probe.sh     `COPY cage/floor/floor-probe.sh`: this probe itself
 #
 # Paths a composed recipe provisions — checked only when present, because a
@@ -276,6 +277,7 @@ _rc_floor_guard_paths=(
   /usr/local/bin/bd
   /usr/local/bin/bd-real
   /usr/local/bin/init-rip-cage.sh
+  /usr/local/bin/host-tool
   /usr/local/lib/rip-cage/floor-probe.sh
   /etc/ssh/ssh_known_hosts
   /etc/ssh/ssh_config.d/00-rip-cage.conf
@@ -335,7 +337,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# path-resolution <name> (cage/Dockerfile: bd-wrapper.sh COPY; tool-launch-wrapper COPY + RUN loop)
+# path-resolution <name> (cage/Dockerfile: bd-wrapper.sh COPY; host-tool COPY; tool-launch-wrapper COPY + RUN loop)
 # ---------------------------------------------------------------------------
 # Resolution happens in the INTERACTIVE shell, which is where the agent's
 # commands actually run and whose PATH differs from this script's (the login
@@ -356,6 +358,18 @@ if [ "$_rc_floor_bd_resolved" != "/usr/local/bin/bd" ]; then
     "'bd' resolves to '${_rc_floor_bd_resolved:-nothing}' in the interactive shell, not /usr/local/bin/bd — the wrapper is shadowed"
 else
   check "path-resolution bd" "pass" "/usr/local/bin/bd"
+fi
+
+# host-tool (cage/Dockerfile: the host-tool COPY + chmod lines). ~/.local/bin
+# precedes /usr/local/bin on the agent's PATH, so an agent can shadow the baked
+# client for itself. rc's own in-guest checks call it by absolute path and are
+# unaffected; a shadowed client misleads only the agent (ADR-024 D5, ADR-032 D6).
+_rc_floor_host_tool_resolved=$(_rc_floor_resolve host-tool)
+if [ "$_rc_floor_host_tool_resolved" != "/usr/local/bin/host-tool" ]; then
+  check "path-resolution host-tool" "fail" \
+    "'host-tool' resolves to '${_rc_floor_host_tool_resolved:-nothing}' in the interactive shell, not /usr/local/bin/host-tool — the client is shadowed"
+else
+  check "path-resolution host-tool" "pass" "/usr/local/bin/host-tool"
 fi
 
 # The agent-tool names come out of the boot descriptor, so this probe names no

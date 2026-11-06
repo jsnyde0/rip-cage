@@ -201,6 +201,11 @@ COPY cage/floor/floor-probe.sh /usr/local/lib/rip-cage/floor-probe.sh
 RUN chown root:root /usr/local/lib/rip-cage/floor-probe.sh \
     && chmod 0555 /usr/local/lib/rip-cage/floor-probe.sh
 COPY cage/init/init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
+# The host-tool line's in-cage client (ADR-032 D6): root-owned, 0555, probe-checked
+# (guard-file /usr/local/bin/host-tool) like the floor probe above.
+COPY cage/substrate/host-tool /usr/local/bin/host-tool
+RUN chown root:root /usr/local/bin/host-tool \
+    && chmod 0555 /usr/local/bin/host-tool
 COPY cage/substrate/skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 COPY tests/_agent-readability.sh /usr/local/lib/rip-cage/_agent-readability.sh
