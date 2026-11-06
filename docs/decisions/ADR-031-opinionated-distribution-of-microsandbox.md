@@ -1,6 +1,6 @@
 # ADR-031: rip-cage is an opinionated distribution of microsandbox
 
-**Status:** Accepted — 2026-09-15, epic `rip-cage-ely4.7`; decisions human-ratified in-pane over two brainstorm sittings (`rip-cage-ely4`, 2026-09-14 and 2026-09-15) after two adversarial review rounds. This ADR is the canon; the code children of `rip-cage-ely4.7` implement it. (revised 2026-10-01 — D4 evolved in place: optional `daemons[].health_timeout`, `rip-cage-tun0`.)
+**Status:** Accepted — 2026-09-15, epic `rip-cage-ely4.7`; decisions human-ratified in-pane over two brainstorm sittings (`rip-cage-ely4`, 2026-09-14 and 2026-09-15) after two adversarial review rounds. This ADR is the canon; the code children of `rip-cage-ely4.7` implement it. (revised 2026-10-01 — D4 evolved in place: optional `daemons[].health_timeout`, `rip-cage-tun0`.) (revised 2026-11-06 — D2 amended in place for the host-tool declaration file, [ADR-032](ADR-032-host-tool-line.md), `rip-cage-mgp6`.)
 
 **Firmness:** per-decision, see each Dn. D1, D2, D4, D5, D7 are FIRM; D3 is split (the rule FIRM, the verb set FLEXIBLE).
 
@@ -69,6 +69,8 @@ The two-column table is canon, not decoration: **msb provides** the microVM boun
 **Firmness: FIRM** (the FIRM-to-FIRM mutation of rip-cage ADR-021 this implies was signed off by the human in-pane on **2026-09-14**, sitting 1 — "ADR-021 D1/D2/D4/D8 must be evolved … human said yes in-pane"; the protected-paths half was ratified 2026-09-15)
 
 The project file is msb's own `--conf` schema. It is produced by the `cage-config` skill from a template rip-cage ships — image, resources, the mount set that makes sessions survive a recreate, the curated allowlist, and the mount lines that cover the usual secret files inside a mounted project. The file **is** the consolidation: it carries its lists in full, and `rc` merges nothing.
+
+**Amended in place 2026-11-06 (`rip-cage-mgp6`, human-ratified in-pane): an rc-read declaration file beside the project config is allowed for what msb's config cannot express ([ADR-032](ADR-032-host-tool-line.md) D2), and it is never merged into the msb file.**
 
 Retiring, as a consequence: the rip-cage config schema, the three-layer merge, the provenance view, the `rc config` and `rc allowlist` verbs, `rc.conf`, and the allowed-roots guard (there is nothing left to guard once every mount is an explicit line). DCG policy is the DCG recipe's business and was never `rc`'s. The msb-flag generator (`cli/lib/msb_flags.sh`) leaves the launch path: `rc up` no longer calls it, because the config's own `network.allow` and `secrets:` block carry everything it used to emit (`rip-cage-wla6`, 2026-11-03). It survives only as a test library for the live and probe suites; ADR-029 D3's generator constraints bind that library. ADR-029 D5 still binds the config's `secrets:` block. Retiring the library is `rip-cage-eovq`.
 
