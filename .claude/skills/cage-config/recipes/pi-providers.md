@@ -40,9 +40,11 @@ that id, and the guest gets an auth.json holding it.
 
 1. Log in on the host once: `pi`, then `/login` to the OpenAI (ChatGPT)
    subscription (provider `openai-codex`).
-2. Run the host helper. It writes `~/.config/rip-cage/secrets/CODEX` (the real
-   token, 0600), writes `~/.config/rip-cage/pi-codex/auth.json` (placeholder
-   only), and prints the placeholder:
+2. Run the host helper. It writes three files and prints the placeholder:
+   `~/.config/rip-cage/secrets/CODEX` (the real token, 0600),
+   `~/.config/rip-cage/pi-codex/auth.json` (pi-shaped placeholder, used here),
+   and `~/.config/rip-cage/codex-cli/auth.json` (codex-shaped placeholder, for
+   a cage that also runs codex — `examples/codex/`):
 
    ```bash
    <rc install dir>/examples/pi-providers/codex-secret.sh
@@ -64,18 +66,22 @@ that id, and the guest gets an auth.json holding it.
    ```
 
    The placeholder only changes if your account changes; paste it once. Keep
-   it out of files the caged agent reads: msb drops a request whose body
-   quotes a bound placeholder (microsandbox#1354).
+   it out of files the caged agent reads: msb before 0.7.5 drops a request
+   whose body quotes a bound placeholder (microsandbox#1354); msb 0.7.8 passed
+   one unchanged in the codex spike (`docs/2026-11-06-codex-cli-in-cage-spike.md`
+   Q3).
 
 Check: `pi -p --provider openai-codex --model <id> 'say hi'` inside the cage
 answers. Pass `--model` explicitly; the image's pi may list stale model ids.
 
 **Freshness.** The host pi keeps the real token fresh; the access token lives
-about ten days. rc reads `secrets/CODEX` at every `rc up`, including a resume,
-but that file is only as fresh as your last helper run. On a 401 from
-chatgpt.com inside the cage: run host `pi` once with `--provider
-openai-codex`, re-run the helper, then `rc up <project>`. rc never refreshes
-the token itself, and the guest cannot: its refresh token is a placeholder.
+about ten days. msb reads `secrets/CODEX` only when the cage starts (create,
+or resume of a stopped cage), and that file is only as fresh as your last
+helper run. On a 401 from chatgpt.com inside the cage: run host `pi` once with
+`--provider openai-codex`, re-run the helper, then `rc up --replace <project>`
+(or `msb stop <cage>`, then `rc up <project>`). A plain `rc up` on a running
+cage only attaches and keeps the old token. rc never refreshes the token
+itself, and the guest cannot: its refresh token is a placeholder.
 
 ## Done when
 

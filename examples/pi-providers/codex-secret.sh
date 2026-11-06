@@ -6,9 +6,9 @@
 # It does three things, and touches nothing inside any cage:
 #
 #   1. Copies the CURRENT openai-codex access token out of the host pi's
-#      auth.json into ~/.config/rip-cage/secrets/CODEX (0600). rc reads that
-#      file at every `rc up` and msb injects the value on the wire toward
-#      chatgpt.com. The guest never holds it.
+#      auth.json into ~/.config/rip-cage/secrets/CODEX (0600). rc hands that
+#      file to msb each time the cage starts, and msb injects the value on the
+#      wire toward chatgpt.com. The guest never holds it.
 #   2. Writes a PLACEHOLDER auth.json for the guest at
 #      ~/.config/rip-cage/pi-codex/auth.json and prints the placeholder token
 #      for the cage config's `secrets: CODEX: placeholder:` line. The
@@ -23,9 +23,11 @@
 #
 # FRESHNESS. The host pi keeps the real token fresh (it refreshes when you use
 # openai-codex on the host). The secrets file is as fresh as your last run of
-# this script; the access token lives ~10 days. Re-run it, then
-# `rc up <project>` (a resume re-reads the file), whenever the cage gets a 401
-# from chatgpt.com. rc never refreshes the token itself.
+# this script; the access token lives ~10 days. Whenever the cage gets a 401
+# from chatgpt.com, re-run it, then `rc up --replace <project>` (or
+# `msb stop <cage>`, then `rc up <project>`). msb reads secrets only when a
+# cage starts: a plain `rc up` on a running cage only attaches and keeps the
+# old token. rc never refreshes the token itself.
 #
 # Usage: codex-secret.sh [--print-placeholder]
 #   --print-placeholder  print the placeholder token only; write nothing.
@@ -75,10 +77,14 @@ fi
 
 umask 077
 mkdir -p "$(dirname "$_secret_file")" "$(dirname "$_guest_auth")" "$(dirname "$_codex_cli_auth")"
-printf '%s' "$_access" > "${_secret_file}.tmp" && mv "${_secret_file}.tmp" "$_secret_file"
+# Each write is its own statement, never `write && mv`: set -e ignores a failure
+# on the left of &&, so a failed write would exit 0 and leave the old file.
+printf '%s' "$_access" > "${_secret_file}.tmp"
+mv "${_secret_file}.tmp" "$_secret_file"
 jq -n --arg p "$_placeholder" --argjson ms "$(( _far_exp * 1000 ))" \
   '{"openai-codex": {type: "oauth", access: $p, refresh: "rc-placeholder-no-refresh", expires: $ms}}' \
-  > "${_guest_auth}.tmp" && mv "${_guest_auth}.tmp" "$_guest_auth"
+  > "${_guest_auth}.tmp"
+mv "${_guest_auth}.tmp" "$_guest_auth"
 chmod 0444 "$_guest_auth"
 # Codex CLI shape. codex requires tokens.id_token, tokens.access_token,
 # tokens.refresh_token and a top-level last_refresh (any timestamp); the
@@ -87,7 +93,8 @@ jq -n --arg p "$_placeholder" --arg a "$_account" --arg lr "$(date -u +%Y-%m-%dT
   '{auth_mode: "chatgpt", OPENAI_API_KEY: null,
     tokens: {id_token: $p, access_token: $p, refresh_token: "rc-placeholder-no-refresh", account_id: $a},
     last_refresh: $lr}' \
-  > "${_codex_cli_auth}.tmp" && mv "${_codex_cli_auth}.tmp" "$_codex_cli_auth"
+  > "${_codex_cli_auth}.tmp"
+mv "${_codex_cli_auth}.tmp" "$_codex_cli_auth"
 chmod 0444 "$_codex_cli_auth"
 
 echo "codex-secret: wrote ${_secret_file} (real token, expires $(date -d "@${_exp}" -u +%Y-%m-%dT%H:%MZ 2>/dev/null || echo "${_exp}"))"

@@ -33,7 +33,7 @@ read differently shaped `auth.json` files carrying the same placeholder.
    ```
 
    - `~/.config/rip-cage/secrets/CODEX` — the real access token, 0600. rc
-     reads it at every `rc up`; it never enters the guest.
+     hands it to msb each time the cage starts; it never enters the guest.
    - `~/.config/rip-cage/codex-cli/auth.json` — the codex-shaped placeholder.
    - `~/.config/rip-cage/pi-codex/auth.json` — the pi-shaped placeholder
      (unused here unless the cage also runs pi on `openai-codex`).
@@ -101,19 +101,19 @@ codex exec \
   --dangerously-bypass-approvals-and-sandbox \
   --disable plugins --disable remote_plugin --disable apps \
   -c analytics.enabled=false \
-  [--skip-git-repo-check] [--ephemeral] [-o <last-message-file> | --json] \
+  [--skip-git-repo-check] [--ephemeral] [-o <last-message-file>] [--json] \
   "<prompt>" </dev/null
 ```
 
 | input | why |
 |---|---|
-| `CODEX_HOME` | Optional. Unset, codex uses `~/.codex`, which the boot hook already filled. A launcher that wants a separate home per run copies the placeholder in first: `mkdir -p "$D" && cp ~/rc-codex-placeholder/auth.json "$D/"`. The directory must be writable by `agent`. |
+| `CODEX_HOME` | Optional. Unset, codex uses `~/.codex`, which the boot hook already filled. A launcher that wants a separate home per run copies the placeholder in first and makes it 0600, as the boot hook does (the mounted file is 0444): `mkdir -p "$D" && cp ~/rc-codex-placeholder/auth.json "$D/" && chmod 0600 "$D/auth.json"`. The directory must be writable by `agent`. This per-run path was not exercised live; the boot-hook path was. |
 | `--dangerously-bypass-approvals-and-sandbox` | No approval prompts, no codex sandbox. Codex's help calls it "intended solely for running in environments that are externally sandboxed" — the cage is that sandbox. |
 | `--disable plugins --disable remote_plugin --disable apps` and `-c analytics.enabled=false` | With all four, codex talks only to `chatgpt.com`. Without them it also calls `ab.chatgpt.com` (telemetry) and `*.oaiusercontent.com` (plugin bundles). Those calls are denied and cost nothing, but they fill the denial log `rc doctor` reads. |
 | `</dev/null` | With a non-TTY stdin, codex waits to read more prompt from stdin. Close it, or pass the prompt as `-` on stdin. |
 | `--skip-git-repo-check` | Only when the working directory is not a git repo. |
 | `--ephemeral` | Skips session files. Drop it if you want `codex exec resume`, which needs a `CODEX_HOME` that persists. |
-| `-o <file>` / `--json` | `-o` writes the last reply to a file; `--json` streams events. Pick what the launcher parses. |
+| `-o <file>`, `--json` | Independent flags; pass either, both, or neither. `-o` writes the last reply to a file; `--json` streams events to stdout. |
 
 Nothing else: no API key, no `OPENAI_API_KEY`, no token in the environment.
 
@@ -129,8 +129,16 @@ placeholder refresh token. It is denied and harmless; the guest cannot refresh,
 by design.
 
 **Fix, on the host:** run `pi` once with `--provider openai-codex` (so it
-refreshes), re-run `codex-secret.sh`, then `rc up <project>`. A resume re-reads
-the secret file. rc never refreshes the token itself.
+refreshes), re-run `codex-secret.sh`, then restart the cage so msb reads the new
+token:
+
+```bash
+rc up --replace <project>          # recreate; or, to keep the guest's rootfs state:
+msb stop <cage> && rc up <project> # stop, then resume
+```
+
+A plain `rc up` on a **running** cage only attaches: msb reads secrets when a
+cage starts, so the old token stays. rc never refreshes the token itself.
 
 ## Residuals
 
