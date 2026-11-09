@@ -113,6 +113,23 @@ _protected_paths_load() {
     return 1
   fi
 
+  # A malformed prefixed line protects nothing in silence: a bare "file:", a
+  # space after the colon, an unknown PREFIX:, or a prune: glob (find -name
+  # globs, so "prune:*" would stop the scan everywhere). Refuse, naming each.
+  local _line _bad=""
+  while IFS= read -r _line; do
+    case "${_line}" in
+      file:|prune:|file:[[:space:]]*|prune:[[:space:]]*) _bad+=$'\n'"  ${_line}" ;;
+      prune:*[*?[]*) _bad+=$'\n'"  ${_line}" ;;
+      file:*|prune:*) ;;
+      [A-Za-z]*:*) [[ "${_line%%:*}" =~ ^[A-Za-z]+$ ]] && _bad+=$'\n'"  ${_line}" ;;
+    esac
+  done <<< "${_entries}"
+  if [[ -n "${_bad}" ]]; then
+    echo "Error: the protected-paths list at ${_file} has malformed lines, which would protect nothing:${_bad}"$'\n'"The only prefixes are file:NAME and prune:NAME, with no space after the colon, and a prune: name takes no glob characters (* ? [). Fix those lines (the shipped list's header documents the format). Refusing to launch before any msb call (ADR-031 D2, fail closed)." >&2
+    return 1
+  fi
+
   printf '%s\n' "${_entries}"
 }
 
@@ -726,9 +743,13 @@ _protected_paths_breadcrumb() {
 # workbench cage mounting ~/code covers the credentials in ~/code/<group>/
 # <repo>/ (rip-cage-npbb). The walk is paid on EVERY rc up. Measured
 # 2026-11-09, GNU find in a plain non-interactive bash, ~/code (545k files):
-# 1.6s and 23 covers with the shipped prune: lines (2.2s and 30 covers
-# without them; the 7 dropped were SDK and source directories named
-# credentials), plus 0.5s for _git_exec_covers' .git walk. A set
+# ~/code alone, 1.6s (2.2s before the prune: lines; the 7 covers that change
+# dropped came from file:credentials, which stopped covering SDK and source
+# DIRECTORIES named credentials). The workbench shape -- ~/code rw plus two
+# repos in it :ro on top -- costs 1.9s here plus 0.7s for _git_exec_covers'
+# .git walk, about 2.6s per rc up: each ro overlay is walked twice, once by
+# its own scan and once by the rw scan beneath it (whose findings there are
+# then dropped, see THE DEEPEST MOUNT below). A set
 # $RC_PROTECTED_SCAN_DEPTH (a positive integer; anything else refuses) caps
 # the walk (find -maxdepth) for a tree too large to walk every launch;
 # anything past the cap is then uncovered.
@@ -804,10 +825,25 @@ _protected_paths_enforce() {
 
   local _breadcrumb=""
   local _host _guest _mode _real _component _found _rel _guest_target
+  local _targets="" _shadow _t
   local -a _covers=()
+
+  # THE DEEPEST MOUNT OWNS ITS SUBTREE (rip-cage-npbb round 3). When one mount
+  # sits on top of another (~/code rw at /code, a repo in it :ro at
+  # /code/<group>/<repo>), the guest sees only the top one there, so only its
+  # scan may cover that subtree: a --mount-file cover from the rw scan would
+  # land inside the ro share and kill agentd at boot. _shadow is, per mount,
+  # every other target strictly below its own.
+  while IFS=$'\t' read -r _host _guest _mode; do
+    [[ -n "${_guest}" ]] && _targets+="${_guest%/}"$'\n'
+  done <<< "${_mounts}"
 
   while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
+    _shadow=""
+    while IFS= read -r _t; do
+      [[ -n "${_t}" && "${_t}" == "${_guest%/}/"* ]] && _shadow+="${_t}"$'\n'
+    done <<< "${_targets}"
 
     # Normalise the source's trailing slashes (rip-cage-rsh9.3): leg (b) strips
     # "${_host}/" off each finding, and a source written proj/ or proj// made
@@ -860,6 +896,8 @@ _protected_paths_enforce() {
       fi
 
       _guest_target="${_guest%/}/${_rel}"
+      # Under a deeper mount's target: that mount's own scan covers it.
+      [[ -n "${_shadow}" ]] && _git_under_ro_target "${_guest_target}" "${_shadow}" && continue
 
       if [[ -d "${_found}" ]]; then
         # A directory reads empty under a tmpfs; siblings stay visible.
@@ -929,7 +967,9 @@ _protected_paths_enforce() {
 # scan, each repo's .gitmodules names where those files sit. Repos are found to
 # the same depth the protected-paths scan walks: unlimited unless
 # $RC_PROTECTED_SCAN_DEPTH caps it. Read-only mounts are skipped, and so is anything
-# under a read-only mount's target: a rw pin there would re-expose it.
+# under a read-only mount mounted on top of this rw one (its target deeper than
+# this mount's): a rw pin there would re-expose it. A ro mount BENEATH a rw one
+# shadows nothing -- the guest sees the rw mount's repos, so they are covered.
 #
 # Prints msb argv tokens, one per line, for _UP_PROTECTED_COVERS.
 #
@@ -970,10 +1010,16 @@ _git_exec_covers() {
     [[ "${_mode}" == "ro" && -n "${_guest}" ]] && _ro_targets+="${_guest%/}"$'\n'
   done <<< "${_mounts}"
 
-  local _entry _rel _g _sub _gitfiles _root _p _queue
+  local _entry _rel _g _sub _gitfiles _root _p _queue _shadow _t
   while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
     [[ "${_mode}" == "ro" ]] && continue
+    # Only a ro mount DEEPER than this one shadows it (the deepest mount owns
+    # its subtree): a ro mount above a rw one leaves the rw repos writable.
+    _shadow=""
+    while IFS= read -r _t; do
+      [[ -n "${_t}" && "${_t}" == "${_guest%/}/"* ]] && _shadow+="${_t}"$'\n'
+    done <<< "${_ro_targets}"
     while [[ "${_host}" == */ && "${_host}" != "/" ]]; do _host="${_host%/}"; done
     [[ -d "${_host}" ]] || continue
 
@@ -987,7 +1033,7 @@ _git_exec_covers() {
         return 1
       fi
       _g="${_guest%/}/${_rel}"
-      _git_under_ro_target "${_g}" "${_ro_targets}" && continue
+      _git_under_ro_target "${_g}" "${_shadow}" && continue
       _queue+="$(dirname "${_entry}")"$'\n'
       if [[ -f "${_entry}" ]]; then
         _gitfiles+="${_entry}"$'\t'"${_g}"$'\n'
@@ -1021,7 +1067,7 @@ _git_exec_covers() {
         _rel="${_entry#"${_host}/"}"
         [[ "${_rel}" == "${_entry}" ]] && continue
         _g="${_guest%/}/${_rel}"
-        _git_under_ro_target "${_g}" "${_ro_targets}" && continue
+        _git_under_ro_target "${_g}" "${_shadow}" && continue
         _gitfiles+="${_entry}"$'\t'"${_g}"$'\n'
         _queue+="${_root}/${_p}"$'\n'
       done < <(git config -f "${_root}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null | cut -d' ' -f2-)
@@ -1061,13 +1107,15 @@ _git_exec_covers_one() {
 # config.worktree is read only under extensions.worktreeConfig=true; then a
 # missing one could be created by the guest. So rc creates it EMPTY on the host
 # first (git reads an empty file as no config), says so in one stderr line, and
-# covers it read-only like the others (rip-cage-npbb ruling). The create is
-# exclusive (noclobber: O_EXCL), so it never writes through a symlink planted
-# at that name. If rc cannot create one, it refuses, naming the one touch
-# command that fixes every missing file.
+# covers it read-only like the others (rip-cage-npbb ruling). It creates only
+# when NOTHING is at the name, and re-checks for a regular file after; anything
+# else there (a symlink, a FIFO, ...) refuses, so it never writes through or
+# blocks on one. If rc cannot create one, it refuses, naming the one touch
+# command that fixes every missing file. Under --dry-run it writes nothing: it
+# says "Would create" and still prints the cover, so the preview matches.
 # Worktree mode calls this for the main .git rc mounts itself (cli/up.sh).
 _git_exec_ro_covers() {
-  local _h="$1" _g="$2" _wtc="" _missing="" _created="" _w _n _wt=""
+  local _h="$1" _g="$2" _wtc="" _missing="" _created="" _would="" _odd="" _w _n _wt=""
   [[ "$(git config -f "${_h}/config" --bool extensions.worktreeConfig 2>/dev/null)" == "true" ]] && _wtc=1
   [[ -f "${_h}/config" ]] && printf '%s\n' -v "${_h}/config:${_g}/config:ro"
   # config.worktree for this gitdir and each linked worktree, as HOST<TAB>GUEST.
@@ -1084,16 +1132,49 @@ _git_exec_ro_covers() {
   done
   while IFS=$'\t' read -r _w _n; do
     [[ -n "${_w}" ]] || continue
-    if [[ ! -f "${_w}" && -n "${_wtc}" ]]; then
-      if ( set -C; : > "${_w}" ) 2>/dev/null; then
-        _created+=" ${_w}"
-      else
+    # Anything at that name but a regular, non-symlink file: a symlink (even
+    # to /dev/null or to a real file), a FIFO, a socket, a device, a dir. Git
+    # reads it only under worktreeConfig; then refuse, since rc can neither
+    # cover it (msb refuses a symlink source) nor safely create over it.
+    if [[ -L "${_w}" || ( -e "${_w}" && ! -f "${_w}" ) ]]; then
+      [[ -n "${_wtc}" ]] && _odd+=" ${_w}"
+      continue
+    fi
+    if [[ ! -e "${_w}" ]]; then
+      [[ -n "${_wtc}" ]] || continue
+      if [[ "${DRY_RUN:-}" == "true" ]]; then
+        # --dry-run writes nothing (output.sh: "Preview what would happen
+        # without executing"): name it and preview the cover the real
+        # launch would emit, refusing as the real launch would.
+        if [[ -w "${_w%/*}" ]]; then
+          _would+=" ${_w}"
+          printf '%s\n' -v "${_w}:${_n}:ro"
+        else
+          _missing+=" ${_w}"
+        fi
+        continue
+      fi
+      # Exclusive create: nothing exists at the name (checked above), and
+      # noclobber refuses a regular file that appears in between.
+      if ! ( set -C; : > "${_w}" ) 2>/dev/null; then
         _missing+=" ${_w}"
         continue
       fi
+      if [[ -L "${_w}" || ! -f "${_w}" ]]; then
+        _odd+=" ${_w}"
+        continue
+      fi
+      _created+=" ${_w}"
     fi
-    [[ -f "${_w}" ]] && printf '%s\n' -v "${_w}:${_n}:ro"
+    printf '%s\n' -v "${_w}:${_n}:ro"
   done <<< "${_wt}"
+  if [[ -n "${_odd}" ]]; then
+    echo "Error: ${_h}/config sets extensions.worktreeConfig=true, so git also reads config.worktree, and these are not regular files (a symlink, FIFO, socket, device or directory):${_odd}. rc can only cover a regular file, and will not create one through or over anything else. Replace each with an empty regular file on the host (rm, then touch) and rerun. Refusing to launch rather than leaving them writable (ADR-002 D11, fail closed)." >&2
+    return 1
+  fi
+  if [[ -n "${_would}" ]]; then
+    echo "Would create${_would} empty: ${_h}/config sets extensions.worktreeConfig=true and they are missing (--dry-run writes nothing; the real launch creates them and mounts them read-only)." >&2
+  fi
   if [[ -n "${_created}" ]]; then
     echo "Note: ${_h}/config sets extensions.worktreeConfig=true and config.worktree was missing, so rc created it empty (git reads an empty file as no config) and mounts it read-only:${_created}" >&2
   fi

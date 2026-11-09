@@ -7,10 +7,13 @@
 #
 # This is DEFAULT CONFIGURATION, not code. Copy it to
 # ~/.config/rip-cage/protected-paths and edit it there; a new credential store
-# is a line in your copy, never an `rc` change.
+# is a line in your copy, never an `rc` change. rc never merges the two: when
+# this shipped list changes, re-sync your copy from it by hand, or your copy
+# keeps the old lines.
 #
-# WHAT rc DOES WITH EACH LINE — one name per line, matched by exact path
-# COMPONENT (not a glob, not a substring):
+# WHAT rc DOES WITH EACH LINE — one name per line, matched against whole path
+# components, never a substring. In the (b) scan a name is a `find -name`
+# pattern, so `*`, `?` and `[` act as glob characters there; write plain names.
 #
 #   (a) a cage config that mounts a listed path DIRECTLY makes `rc up` refuse
 #       to launch, before any msb call;
@@ -32,12 +35,16 @@
 #               directory so named. For dependency trees, whose files are a
 #               package's own, not your secrets; a .env inside one is NOT
 #               covered. A mount whose own root has that name is still scanned.
+#               A prune: name takes no glob characters.
+# Write no space after the colon. A bare `file:` or `prune:`, an unknown
+# `WORD:` prefix, or a prune: glob makes `rc up` refuse, naming the line.
 #
 # SCAN DEPTH: the (b) scan walks each mounted tree to any depth, so a cage
 # mounting ~/code covers ~/code/<group>/<repo>/.env. That walk is paid on every
 # `rc up`: measured 2026-11-09 with GNU find over ~/code (545k files), about
-# 1.6s for this scan and 0.5s for the .git scan beside it (2.2s before the
-# prune: lines below).
+# 1.6s for this scan with ~/code mounted alone, and 2.6s for this scan plus
+# the .git scan with ~/code mounted read-write and two repos inside it
+# mounted read-only on top (a read-only overlay is walked twice).
 # Set RC_PROTECTED_SCAN_DEPTH to a positive integer N to cap both walks on a
 # tree too large to scan every launch; anything deeper than N is then left
 # uncovered. Any other value refuses the launch.

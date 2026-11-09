@@ -26,12 +26,17 @@ set -uo pipefail
 #   G14 a branch named `config` in a submodule gitdir gets no refs/heads pin
 #   G15 a repo under a ro mount nested inside a rw one gets no cover (a rw
 #       pin would re-expose it)
-#   G16 extensions.worktreeConfig=true with no config.worktree: rc creates it
-#       empty on the host, says so in one line, and covers it read-only
+#   G16 extensions.worktreeConfig=true with no config.worktree: --dry-run
+#       writes nothing, says "Would create", and previews the ro cover
+#   G16c the same on the real path: created empty, one line says so, covered ro
 #   G16b the same when rc cannot create it refuses, naming one touch command
 #   G17 worktree mode: the main .git rc mounts gets the same ro covers, and
 #       rc's own /workspace/.git gitfile is the only mount there
-#   G18 worktree mode: a missing config.worktree is created empty and covered
+#   G18 worktree mode --dry-run: both missing config.worktree files are named,
+#       neither is written, both covers are previewed
+#   G20 config.worktree as a symlink (to /dev/null, dangling, to a file) or a
+#       FIFO refuses, naming it, with no cover and nothing written through it
+#   G21 a rw mount nested inside a ro one keeps its .git covers
 #   G19 the .git scan reaches a repo at depth 4 when RC_PROTECTED_SCAN_DEPTH
 #       is unset (and not at 2); a depth that is not a positive integer refuses
 #
@@ -193,19 +198,37 @@ fi
 # G16: extensions.worktreeConfig=true with no config.worktree -- a file the
 # guest could create, which no mount can cover. rc creates it empty on the host
 # (git reads an empty file as no config) and covers it read-only (B1 ruling,
-# rip-cage-npbb round 2).
+# rip-cage-npbb round 2). Under --dry-run it writes nothing: it says "Would
+# create" and the previewed argv carries the cover (round 3, B4).
 REF="${T}/refrepo"
 mkdir -p "$REF" && git -C "$REF" init -q && git -C "$REF" config extensions.worktreeConfig true
 CONF_REF="${T}/cage-ref.yaml"
 sed -e "s#^  - \"${WS}:/workspace\"#  - \"${REF}:/workspace\"#" "$CONF" > "$CONF_REF"
 _dry_run "$CONF_REF" "$WS"
 ARGV=$(grep '^Would run: ' <<<"$OUT" | head -1)
-if [[ $RCODE -eq 0 && -f "${REF}/.git/config.worktree" && ! -s "${REF}/.git/config.worktree" ]] \
+if [[ $RCODE -eq 0 && ! -e "${REF}/.git/config.worktree" && ! -L "${REF}/.git/config.worktree" ]] \
    && _has "${REF}/.git/config.worktree:/workspace/.git/config.worktree:ro" \
-   && [[ $(grep -cF "created it empty" <<<"$OUT") -eq 1 && "$(grep -F "created it empty" <<<"$OUT")" == *"${REF}/.git/config.worktree"* ]]; then
-  pass "G16 worktreeConfig=true with config.worktree missing: created empty, one line says so, covered ro"
+   && grep -qF "Would create ${REF}/.git/config.worktree" <<<"$OUT" \
+   && ! grep -qF "created it empty" <<<"$OUT"; then
+  pass "G16 --dry-run with config.worktree missing: writes nothing, says Would create, previews the ro cover"
 else
-  fail "G16 worktreeConfig create-and-cover (rc ${RCODE}, file: $(ls -l "${REF}/.git/config.worktree" 2>&1)): $(tail -3 <<<"$OUT")"
+  fail "G16 dry-run create preview (rc ${RCODE}, file: $(ls -l "${REF}/.git/config.worktree" 2>&1)): $(tail -3 <<<"$OUT")"
+fi
+
+# G16c: the real path (DRY_RUN unset, lib sourced) creates it empty, says so in
+# one line, and covers it read-only.
+_rx() {  # HOST_GITDIR -- _git_exec_ro_covers on the real (non-dry-run) path
+  ( unset DRY_RUN RC_PROTECTED_SCAN_DEPTH
+    # shellcheck source=/dev/null
+    source "${REPO_ROOT}/cli/lib/protected_paths.sh"; _git_exec_ro_covers "$1" /g )
+}
+_o=$(_rx "${REF}/.git" 2>"${T}/g16c.err"); _r=$?
+if [[ $_r -eq 0 && -f "${REF}/.git/config.worktree" && ! -L "${REF}/.git/config.worktree" && ! -s "${REF}/.git/config.worktree" ]] \
+   && grep -qxF -- "${REF}/.git/config.worktree:/g/config.worktree:ro" <<<"$_o" \
+   && [[ $(grep -cF "created it empty" "${T}/g16c.err") -eq 1 ]]; then
+  pass "G16c real launch: config.worktree created empty, one line says so, covered ro"
+else
+  fail "G16c real create (rc ${_r}): $(cat "${T}/g16c.err")"
 fi
 
 # G16b: rc cannot create it (the gitdir is not writable): refuse, naming the
@@ -243,8 +266,9 @@ else
   fail "G17 worktree mode (rc ${RCODE}, /workspace/.git mounts: ${_n}) -- missing:${_miss} $(tail -3 <<<"$OUT")"
 fi
 
-# G18: worktree mode, worktreeConfig=true, no config.worktree anywhere: rc
-# creates the main and the linked worktree's files empty and covers both.
+# G18: worktree mode, worktreeConfig=true, no config.worktree anywhere: under
+# --dry-run rc names both files it would create, writes neither, and previews
+# both covers.
 REF2="${T}/ref2"
 mkdir -p "$REF2" && git -C "$REF2" init -q && _git -C "$REF2" commit -q --allow-empty -m init
 _git -C "$REF2" worktree add -q "${T}/ref2-wt" -b r2
@@ -253,12 +277,53 @@ CONF_WT2="${T}/cage-wt2.yaml"
 sed -e "s#^  - \"${WS}:/workspace\"#  - \"${T}/ref2-wt:/workspace\"#" "$CONF" > "$CONF_WT2"
 _dry_run "$CONF_WT2" "${T}/ref2-wt"
 ARGV=$(grep '^Would run: ' <<<"$OUT" | head -1)
-if [[ $RCODE -eq 0 && -f "${REF2}/.git/config.worktree" && -f "${REF2}/.git/worktrees/ref2-wt/config.worktree" ]] \
+if [[ $RCODE -eq 0 && ! -e "${REF2}/.git/config.worktree" && ! -e "${REF2}/.git/worktrees/ref2-wt/config.worktree" ]] \
+   && grep -qF "Would create ${REF2}/.git/config.worktree" <<<"$OUT" \
+   && grep -qF "${REF2}/.git/worktrees/ref2-wt/config.worktree" <<<"$OUT" \
    && _has "${REF2}/.git/config.worktree:/workspace/.git-main/config.worktree:ro" \
    && _has "${REF2}/.git/worktrees/ref2-wt/config.worktree:/workspace/.git-main/worktrees/ref2-wt/config.worktree:ro"; then
-  pass "G18 worktree mode creates the missing config.worktree files and covers them ro"
+  pass "G18 worktree mode --dry-run names both missing config.worktree files, writes neither, previews both covers"
 else
-  fail "G18 worktree-mode create-and-cover (rc ${RCODE}): $(tail -3 <<<"$OUT")"
+  fail "G18 worktree-mode dry-run (rc ${RCODE}, written: $([[ -e "${REF2}/.git/config.worktree" ]] && echo main) $([[ -e "${REF2}/.git/worktrees/ref2-wt/config.worktree" ]] && echo linked)): $(tail -3 <<<"$OUT")"
+fi
+
+# G20: config.worktree present as anything but a regular, non-symlink file
+# refuses (round 3, B3). A symlink to /dev/null passed noclobber (no O_EXCL on
+# a non-regular target), printed a false "created" line and emitted no cover;
+# a FIFO hung rc up. A dangling symlink is never written through (R9).
+for _kind in devnull fifo dangling tofile; do
+  _rp="${T}/g20-${_kind}"
+  mkdir -p "$_rp" && git -C "$_rp" init -q && git -C "$_rp" config extensions.worktreeConfig true
+  case "$_kind" in
+    devnull)  ln -s /dev/null "${_rp}/.git/config.worktree" ;;
+    fifo)     mkfifo "${_rp}/.git/config.worktree" ;;
+    dangling) ln -s "${T}/g20-planted" "${_rp}/.git/config.worktree" ;;
+    tofile)   : > "${T}/g20-real"; ln -s "${T}/g20-real" "${_rp}/.git/config.worktree" ;;
+  esac
+  # shellcheck disable=SC2016  # $1/$2 expand in the child bash, by design
+  _o=$( ( unset DRY_RUN; timeout 20 bash -c 'source "$1/cli/lib/protected_paths.sh"; _git_exec_ro_covers "$2" /g' _ "$REPO_ROOT" "${_rp}/.git" ) 2>&1 ); _r=$?
+  if [[ $_r -ne 0 && $_r -ne 124 ]] && grep -qF "${_rp}/.git/config.worktree" <<<"$_o" \
+     && ! grep -qF -- "config.worktree:/g/config.worktree:ro" <<<"$_o" \
+     && ! grep -qF "created it empty" <<<"$_o" && [[ ! -e "${T}/g20-planted" ]]; then
+    pass "G20 config.worktree as ${_kind} refuses, naming it, no cover, nothing written through it"
+  else
+    fail "G20 config.worktree as ${_kind} (rc ${_r}; planted: $(ls "${T}/g20-planted" 2>&1)): $(tail -2 <<<"$_o")"
+  fi
+done
+
+# G21: a rw mount on top of a ro one still gets its .git covers -- only a ro
+# mount DEEPER than a rw one shadows it (round 3: the deepest mount owns its
+# subtree). Before, any ro target above the repo dropped them (fail open).
+NEST="${T}/nest"
+mkdir -p "${NEST}/inner" && git -C "${NEST}/inner" init -q
+printf 'mounts:\n  - "%s:/n:ro"\n  - "%s:/n/inner"\n' "$NEST" "${NEST}/inner" > "${T}/nest.yaml"
+_o=$( ( unset RC_PROTECTED_SCAN_DEPTH
+        # shellcheck source=/dev/null
+        source "${REPO_ROOT}/cli/lib/protected_paths.sh"; _git_exec_covers "${T}/nest.yaml" ) 2>&1 )
+if grep -qxF -- "${NEST}/inner/.git/config:/n/inner/.git/config:ro" <<<"$_o"; then
+  pass "G21 a rw mount nested inside a ro mount keeps its .git covers"
+else
+  fail "G21 rw-in-ro .git covers missing: $(tail -3 <<<"$_o")"
 fi
 
 # G19: the .git leg's own default depth (R4). A repo at depth 4 inside a rw

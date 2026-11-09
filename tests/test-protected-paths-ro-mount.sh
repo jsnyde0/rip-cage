@@ -30,6 +30,11 @@ set -uo pipefail
 #       shapes are covered)
 #   R4  any readonly value but absent/false is ro     -> guest cover (fail closed)
 #   R5  a guest target carrying a newline             -> refused (one token per line)
+#   O1  rw tree with a ro mount on top: under the overlay only the in-guest
+#       cover, never a --mount-file inside the ro share (round 3 B1)
+#   O2  ro tree with a rw mount on top: under it only the --mount-file cover
+#   M1  malformed list lines refuse: bare/space-after-colon/unknown prefix,
+#       a prune: glob, and a list of only prune: lines
 #   D1  ro mount holding only a protected DIRECTORY   -> tmpfs cover, no guest cover
 #   D2  ro mount: file under a covered protected dir  -> no guest cover (the dir
 #       cover already hides it; no nested cover)
@@ -208,6 +213,48 @@ conf "$T/w2.yaml" "  - bind: $T/envtree
     target: /mnt/p"
 run "$T/w2.yaml"
 if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/mnt/p/$S:ro$"; then pass "W2 map-form rw mount holding the file still gets an msb file cover"; else fail "W2 (rc $_rc, out: $_out, err: $_err)"; fi
+
+# --- O1/O2: overlapping mounts -- the deepest mount owns its subtree --------
+# The workbench shape (rip-cage-npbb round 3, B1): ~/code rw at /code, with a
+# repo inside it mounted :ro on top. The guest sees the ro mount there, so a
+# --mount-file cover from the rw mount's scan would land inside the ro share
+# and kill agentd at boot. Only the ro mount's own (in-guest) cover may be
+# emitted. And the reverse (O2): a rw mount on top of a ro one gets the
+# --mount-file cover, not an in-guest one from the ro mount below.
+mkdir -p "$T/otree/grp/repo/sub" "$T/otree/grp/repo/rc-dummy-dir"
+printf 'MARKER\n' > "$T/otree/grp/repo/$S"
+printf 'MARKER\n' > "$T/otree/grp/repo/sub/$S"
+printf 'MARKER\n' > "$T/otree/$S"
+unset RC_PROTECTED_SCAN_DEPTH
+conf "$T/o1.yaml" "  - \"$T/otree:/code\"
+  - \"$T/otree/grp/repo:/code/grp/repo:ro\""
+run "$T/o1.yaml"
+if [[ $_rc -eq 0 ]] && guest_cover "/code/grp/repo/$S" && guest_cover "/code/grp/repo/sub/$S"; then pass "O1 a file under the ro overlay gets the in-guest cover"; else fail "O1 no in-guest cover under the ro overlay (rc $_rc, out: $_out, err: $_err)"; fi
+if ! printf '%s\n' "$_out" | grep -q -- ":/code/grp/repo/.*:ro$"; then pass "O1 no --mount-file cover lands inside the ro overlay"; else fail "O1 a --mount-file cover targets the ro overlay (out: $_out)"; fi
+if [[ $(printf '%s\n' "$_out" | grep -cx -- "/code/grp/repo/rc-dummy-dir") -eq 1 ]]; then pass "O1 a protected dir under the ro overlay is covered exactly once"; else fail "O1 dir cover count under the ro overlay (out: $_out)"; fi
+if printf '%s\n' "$_out" | grep -q -- ":/code/$S:ro$"; then pass "O1 the rw mount still covers its own file outside the overlay"; else fail "O1 the rw mount's own file lost its cover (out: $_out)"; fi
+conf "$T/o2.yaml" "  - \"$T/otree:/code:ro\"
+  - \"$T/otree/grp/repo:/code/grp/repo\""
+run "$T/o2.yaml"
+if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/code/grp/repo/$S:ro$" && ! guest_cover "/code/grp/repo/$S"; then pass "O2 a rw mount on top of a ro one gets the --mount-file cover only"; else fail "O2 rw-over-ro (rc $_rc, out: $_out, err: $_err)"; fi
+if guest_cover "/code/$S"; then pass "O2 the ro mount still covers its own file in-guest"; else fail "O2 the ro mount's own file lost its cover (out: $_out)"; fi
+export RC_PROTECTED_SCAN_DEPTH="$_saved_depth"
+
+# --- M1: malformed list lines refuse (round 3, R7/R8/R9) --------------------
+# A prefixed line that names nothing, an unknown prefix, a space after the
+# colon, or a prune: glob would otherwise protect nothing (or prune everything)
+# in silence.
+for _bad in 'file:' 'prune:' 'file: rc-dummy-x' 'prune: rc-dummy-x' 'frob:rc-dummy-x' 'prune:*' 'prune:rc-*' 'prune:rc-dumm?' 'prune:[r]c'; do
+  printf '%s\n' "$S" "$_bad" > "$T/protected-paths-bad"
+  RC_PROTECTED_PATHS="$T/protected-paths-bad" run "$T/w1.yaml"
+  if [[ $_rc -ne 0 && -z "$_out" ]] && grep -qF -- "$_bad" <<<"$_err"; then pass "M1 list line '${_bad}' refuses, naming the line"; else fail "M1 list line '${_bad}' (rc $_rc, out: $_out, err: $_err)"; fi
+done
+printf '%s\n' "prune:rc-dummy-deps" "prune:rc-dummy-more" > "$T/protected-paths-pruneonly"
+RC_PROTECTED_PATHS="$T/protected-paths-pruneonly" run "$T/w1.yaml"
+if [[ $_rc -ne 0 && -z "$_out" ]] && grep -q 'only prune: lines' <<<"$_err"; then pass "M1 a list of only prune: lines refuses"; else fail "M1 prune-only list (rc $_rc, out: $_out, err: $_err)"; fi
+printf '%s\n' "$S" "file:rc-dummy-cred" "prune:rc-dummy-deps" > "$T/protected-paths-good"
+RC_PROTECTED_PATHS="$T/protected-paths-good" run "$T/w1.yaml"
+if [[ $_rc -eq 0 ]]; then pass "M1 well-formed file:/prune: lines are accepted"; else fail "M1 well-formed list refused (err: $_err)"; fi
 
 # --- E1: rc up --dry-run on an ro mount holding the file -------------------
 # Not refused; the preview names the in-guest cover. Fake docker + msb keep it
