@@ -151,7 +151,7 @@ inside a mount: a caged agent that could write it could rewrite its own verbs.
 - **Start.** After `msb create` succeeds, before init: the gatekeeper calls
   `setsid()`, writes its pid, and `rc up` waits up to 5 s for the pid file and a
   listening socket. If it fails, `rc up` exits non-zero naming the log; the cage
-  stays as created with no line (the agent sees exit 5).
+  is stopped and kept, with no line (the same posture as a failed init), and the next plain `rc up` retries the gatekeeper and runs init.
 - **Stop.** `rc destroy`, `rc up --replace`, the stopped-cage restart, and a
   failed create or init stop it; attach exit never does. SIGTERM: no new
   connection is accepted, in-flight commands get 5 s, then every remaining

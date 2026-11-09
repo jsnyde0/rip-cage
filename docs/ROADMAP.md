@@ -21,9 +21,11 @@ msb 0.6.18 ships natively what rip-cage used to claim as its own: the microVM bo
 
 ## In flight
 
-1. **Refactor pass against Unix design** (`rip-cage-sygz`) — where the agent-first CLI contract lands: `--output json` everywhere, an exit-code table, an ANSI/stderr policy, machine-readable errors.
-2. **Dogfood** (`rip-cage-ely4.17`) — several days of the human's own real work on the thinned product. Human-owned, and the gate publication waits behind ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D7).
-3. **Publish** — the ceremony itself is unchanged ([release-ceremony.md](reference/release-ceremony.md), [ADR-008](decisions/ADR-008-open-source-publication.md)); D7 only says when it may start.
+1. **The host-tool line** (`rip-cage-jdl2`, ADR-032 D1 [host-tool line](decisions/ADR-032-host-tool-line.md)) — a declared, typed call from the cage to a host command over msb `--vsock`, for the credentials `--secret` cannot swap (non-HTTP protocols, signing keys, token refresh). The declaration is a host-side sibling of the cage config; a gatekeeper validates each call and runs it as argv. In build; ADR-032 is Proposed until its epic children land.
+
+2. **Refactor pass against Unix design** (`rip-cage-sygz`) — where the agent-first CLI contract lands: `--output json` everywhere, an exit-code table, an ANSI/stderr policy, machine-readable errors.
+3. **Dogfood** (`rip-cage-ely4.17`) — several days of the human's own real work on the thinned product. Human-owned, and the gate publication waits behind ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D7).
+4. **Publish** — the ceremony itself is unchanged ([release-ceremony.md](reference/release-ceremony.md), [ADR-008](decisions/ADR-008-open-source-publication.md)); D7 only says when it may start.
 
 ## Next — fog, not charted
 

@@ -137,6 +137,8 @@ Connection to host.microsandbox.internal (172.16.0.161) 44444 port [tcp/*] succe
 
 Searched `msb --tree` (full command tree, all flags) for any `vsock` token: none found. `msb run --help`'s only cross-boundary primitives are `-p/--port` (HOST→GUEST publish, the opposite direction from what's needed) and the `--net-rule`/`--net-default` egress-filtering flags (which govern policy, not a forwarding mechanism). **No vsock or other guest→host primitive exists in msb v0.6.4's CLI surface.**
 
+> **Stale for endpoints (ADR-032 D6, 2026-11-06; R3 a1).** This finding and the NO-VIABLE-PATH verdict below describe msb v0.6.4. The verdict was already overturned on 0.6.4 once, by the LAN-IP spike (`docs/2026-07-09-msb-spike-lan-ip-host-service.md`, Verdict Q2: the bridge works when the guest dials the host's real LAN IP); `--vsock` is the second, mount-free overturn. `--vsock HOST_PATH:PORT` has existed since msb 0.6.9 and carries one host unix-socket endpoint into the guest without a mount, outside the network policy. The facts here about mounted sockets, the gateway and `-p` stand.
+
 ## Q3 / Q5 / Q6 — end-to-end proof, multi-cage ports, complete-the-arrow
 
 **Not attempted.** All three depend on a working transport from Q2, and none was found. Attempting a scratch multiplexing daemon over `-p` (the only host↔guest primitive that works, and only in the host→guest direction) would be inventing new infrastructure, which is out of scope for a facts-only spike (the bead explicitly excludes design decisions).

@@ -3787,7 +3787,7 @@ cmd_up() {
     exit 1
   fi
   # The gatekeeper, after a successful create and before init: a failed create
-  # started nothing; a failed start leaves the cage as created.
+  # started nothing; a failed start stops the cage (kept, not removed) so the next rc up retries.
   if ! _up_host_tools_gatekeeper_fresh "$name"; then
     # Like a failed init: stop the cage (gracefully, never removed) so the next
     # rc up takes the stopped path (site 3, fresh gatekeeper, start, init)
