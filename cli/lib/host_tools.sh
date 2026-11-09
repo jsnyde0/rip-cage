@@ -427,15 +427,16 @@ _rc_sun_path_max() {
   esac
 }
 
-# _rc_socket_path_check CAGE -- exit 1 + one Error: line naming RC_STATE_DIR
+# _rc_socket_path_check CAGE [CONTEXT] -- CONTEXT is the refusal clause saying
+# what did and did not happen (site 1 default: before any msb call). Exit 1 + one Error: line naming RC_STATE_DIR
 # when <state dir>/host-tool.sock is longer than the platform limit (bytes).
 _rc_socket_path_check() {
-  local _sock _max _len
+  local _sock _max _len _ctx="${2:-Refusing to launch before any msb call}"
   _sock="$(_rc_state_dir "$1")/host-tool.sock"
   _max="$(_rc_sun_path_max)"
   _len="$(printf '%s' "${_sock}" | LC_ALL=C wc -c | tr -d ' ')"
   if [[ "${_len}" -gt "${_max}" ]]; then
-    echo "Error: the host-tool socket path ${_sock} is ${_len} bytes, over this platform's ${_max}-byte unix-socket limit. Refusing to launch before any msb call: set RC_STATE_DIR to a shorter directory (the state directory holds the socket)." >&2
+    echo "Error: the host-tool socket path ${_sock} is ${_len} bytes, over this platform's ${_max}-byte unix-socket limit. Set RC_STATE_DIR to a shorter directory (the state directory holds the socket); ${_ctx}." >&2
     return 1
   fi
   return 0
@@ -475,27 +476,28 @@ _rc_python3() {
   printf '%s\n' "${_real}"
 }
 
-# _rc_python3_check MOUNTS_FILE -- the host prerequisite (ADR-032 D6): the
+# _rc_python3_check MOUNTS_FILE [CONTEXT] -- the host prerequisite (ADR-032 D6): the
 # interpreter exists, lies outside every mount the cage gets (the mount check
 # runs BEFORE the interpreter is executed: a script under a mount is code the
 # cage can rewrite), and imports socket, json and subprocess under -I. One
 # Error: line on refusal.
 _rc_python3_check() {
   local _mf="$1" _py _src _rc=0 _want="${RC_PYTHON3:-python3}"
+  local _ctx="${2:-Refusing to launch before any msb call}"
   if ! _py="$(_rc_python3)"; then
-    echo "Error: python3 not found or not an executable file (looked for ${_want}). The host-tool line needs the Python 3 standard library on the host; install python3 or set RC_PYTHON3 to its path. Refusing to launch before any msb call (ADR-032 D6)." >&2
+    echo "Error: python3 not found or not an executable file (looked for ${_want}). The host-tool line needs the Python 3 standard library on the host; install python3 or set RC_PYTHON3 to its path; ${_ctx} (ADR-032 D6)." >&2
     return 1
   fi
   _src="$(_host_tools_path_outside_mounts "${_py}" "${_mf}")" || _rc=$?
   if [[ "${_rc}" -eq 1 ]]; then
-    echo "Error: python3 resolves to ${_py}, inside mount source ${_src}: host code the cage could rewrite. Refusing to launch before any msb call; set RC_PYTHON3 to an interpreter outside every mount (ADR-032 D6)." >&2
+    echo "Error: python3 resolves to ${_py}, inside mount source ${_src}: host code the cage could rewrite. Set RC_PYTHON3 to an interpreter outside every mount; ${_ctx} (ADR-032 D6)." >&2
     return 1
   elif [[ "${_rc}" -ne 0 ]]; then
-    echo "Error: python3 at ${_py} cannot be resolved against the mount list. Refusing to launch before any msb call (ADR-032 D6)." >&2
+    echo "Error: python3 at ${_py} cannot be resolved against the mount list; ${_ctx} (ADR-032 D6)." >&2
     return 1
   fi
   if ! "${_py}" -I -c 'import socket, json, subprocess' >/dev/null 2>&1; then
-    echo "Error: python3 at ${_py} cannot run 'import socket, json, subprocess' under -I (a stub, such as macOS without the Command Line Tools, counts as missing). Install Python 3 or set RC_PYTHON3. Refusing to launch before any msb call (ADR-032 D6)." >&2
+    echo "Error: python3 at ${_py} cannot run 'import socket, json, subprocess' under -I (a stub, such as macOS without the Command Line Tools, counts as missing). Install Python 3 or set RC_PYTHON3; ${_ctx} (ADR-032 D6)." >&2
     return 1
   fi
   return 0

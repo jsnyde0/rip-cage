@@ -1142,6 +1142,219 @@ _up_cage_conf_sha() {
 }
 
 
+# ---------------------------------------------------------------------------
+# Host-tool line wiring, child B (rip-cage-jdl2.3.2; ADR-032 D2/D6): the
+# presence label, check sites 2 and 3, and the label rows shared by the real
+# create and the --dry-run preview. The gatekeeper start/stop is child C's:
+# it calls _up_host_tools_site3_ok before every start.
+# ---------------------------------------------------------------------------
+
+# _up_host_tools_label_value NAME -- "present" or "absent": the rc.host-tools
+# label recorded on an existing cage. A MISSING label (every pre-epic cage,
+# which has no route) reads as absent. Do NOT copy the converge-once precedent
+# rc.cage-conf-sha follows below: that would recreate every pre-epic cage on
+# its first rc up (ADR-032 D6).
+_up_host_tools_label_value() {
+  local _v
+  _v=$(_msb_label "$1" "rc.host-tools" 2>/dev/null || true)
+  if [[ "$_v" == "present" ]]; then echo present; else echo absent; fi
+}
+
+# _up_host_tools_presence_differs NAME -- 0 when the declaration's presence now
+# (site 1's _UP_HOST_TOOLS_PRESENT) differs from the cage's recorded label.
+# Contents are never compared.
+_up_host_tools_presence_differs() {
+  [[ "$(_up_host_tools_label_value "$1")" != "${_UP_HOST_TOOLS_PRESENT:-absent}" ]]
+}
+
+# _up_check_no_reload_presence NAME -- --no-reload cannot honour a presence
+# change (a route cannot be added to or removed from an existing cage without
+# a recreate): one Error: line and return 1; 0 when presence is unchanged.
+# JSON mode exits through json_error.
+_up_check_no_reload_presence() {
+  local _name="$1" _was
+  _up_host_tools_presence_differs "$_name" || return 0
+  _was=$(_up_host_tools_label_value "$_name")
+  [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "--no-reload cannot apply a host-tool declaration change to cage ${_name}" "HOST_TOOLS_NO_RELOAD_PRESENCE"
+  echo "Error: --no-reload was given, but the host-tool declaration for cage ${_name} is now ${_UP_HOST_TOOLS_PRESENT:-absent} and the cage was created ${_was} (rc.host-tools); a route cannot be added or removed without a recreate. Drop --no-reload to recreate it, or run rc up --replace." >&2
+  return 1
+}
+
+# _up_add_host_tools_labels NAME -- append the host-tool label rows to
+# _UP_RUN_ARGS: rc.host-tools=<present|absent> always, rc.state-dir only when
+# present. The ONE producer for the real create path and the --dry-run
+# preview, so the two cannot drift.
+_up_add_host_tools_labels() {
+  local _name="$1"
+  if [[ "${_UP_HOST_TOOLS_PRESENT:-absent}" == "present" ]]; then
+    _UP_RUN_ARGS+=(--label "rc.host-tools=present" --label "rc.state-dir=$(_rc_state_dir "$_name")")
+  else
+    _UP_RUN_ARGS+=(--label "rc.host-tools=absent")
+  fi
+}
+
+# _up_msb_argv_mount_sources -- print the host source of every mount in the
+# FINAL _UP_MSB_ARGV, one per line: the -v src:dst[:mode] rows and the
+# --mount-file src:dst[:ro] rows (covers included). Site 2 reads exactly the
+# list msb will see; the real create and --dry-run share this one reader.
+_up_msb_argv_mount_sources() {
+  local _i=0 _n=${#_UP_MSB_ARGV[@]} _a _spec
+  while [[ "$_i" -lt "$_n" ]]; do
+    _a="${_UP_MSB_ARGV[$_i]}"
+    if [[ ( "$_a" == "-v" || "$_a" == "--mount-file" ) && $((_i + 1)) -lt "$_n" ]]; then
+      _spec="${_UP_MSB_ARGV[$((_i + 1))]}"
+      printf '%s\n' "${_spec%%:*}"
+      _i=$((_i + 2))
+    else
+      _i=$((_i + 1))
+    fi
+  done
+}
+
+# _up_drop_run_arg_source SRC -- remove the computed -v row whose (resolved)
+# host source is SRC from _UP_RUN_ARGS. Non-zero when no such row exists (the
+# source came from a cover or a --mount row, which are not droppable).
+_up_drop_run_arg_source() {
+  local _src="$1" _i=0 _n=${#_UP_RUN_ARGS[@]} _a _spec _s _found=1
+  local _new=()
+  while [[ "$_i" -lt "$_n" ]]; do
+    _a="${_UP_RUN_ARGS[$_i]}"
+    if [[ "$_a" == "-v" && $((_i + 1)) -lt "$_n" ]]; then
+      _spec="${_UP_RUN_ARGS[$((_i + 1))]%:delegated}"
+      _s=$(_up_resolve_mount_source_path "$_spec")
+      if [[ "${_s%%:*}" == "$_src" ]]; then
+        _found=0
+      else
+        _new+=("$_a" "${_UP_RUN_ARGS[$((_i + 1))]}")
+      fi
+      _i=$((_i + 2))
+    else
+      _new+=("$_a")
+      _i=$((_i + 1))
+    fi
+  done
+  _UP_RUN_ARGS=(${_new[@]+"${_new[@]}"})
+  return "$_found"
+}
+
+# _up_host_tools_site2 NAME -- check site 2 of three (ADR-032 D2): run against
+# the FINAL _UP_MSB_ARGV, immediately before the create argv executes (and in
+# the --dry-run preview). Reads _UP_MSB_ARGV and _UP_RUN_ARGS (the callers'
+# locals). 1) every computed mount source (not a config row) is run through
+# the authority-directory predicate: a hit is dropped with the standard
+# warning and the argv rebuilt ONCE; a second hit, or a hit with nothing
+# droppable behind it (a cover, an explicit --mount row), refuses. 2) with a
+# declaration present: the declaration is loaded against that source list, the
+# python3 prerequisite is checked against it, and the socket path is rechecked
+# with the FINAL cage name (site 1 saw the pre-disambiguation one). Returns 1
+# with an Error: line on refusal; the caller must not create.
+_up_host_tools_site2() {
+  local _name="$1" _mlist _src _hit _hits _aut _bad _pass
+  # What the refusal says happened: on a converge the old cage is already gone.
+  local _ctx="the cage was not created"
+  if [[ "${_UP_CONVERGE_DONE:-false}" == "true" ]]; then
+    _ctx="the cage was not created — the previous cage was removed and not recreated; fix the declaration (or the mount) and run rc up again; host mounts and named volumes are intact"
+  fi
+  if ! _mlist=$(mktemp "/tmp/rc-host-tools-argv.XXXXXX"); then
+    echo "Error: cannot create a temp file under /tmp for the create-argv mount list" >&2
+    return 1
+  fi
+  for _pass in 1 2; do
+    _up_msb_argv_mount_sources >"$_mlist"
+    _hits=""
+    while IFS= read -r _src; do
+      [[ -n "$_src" ]] || continue
+      if _mount_src_overlaps_authority_dir "$_src" "${_UP_CONF_DIR:-}"; then
+        _hits="${_hits}${_src}"$'\n'
+      fi
+    done <"$_mlist"
+    [[ -n "$_hits" ]] || break
+    _bad=""
+    # Pass 2 is defensive and unreachable by construction. Pass 1 drops every
+    # hit that has a computed -v row behind it and refuses any hit that has
+    # none, so the rebuilt argv can only hit again if a dropped source is also
+    # carried by a cover (covers are appended after the rebuild's -v rows and
+    # are not in _UP_RUN_ARGS). No cover shares a computed mount's source
+    # today, so no test reaches it; it stays so that case refuses, not mounts.
+    if [[ "$_pass" -eq 2 ]]; then
+      _bad="${_hits%%$'\n'*}"
+    else
+      while IFS= read -r _src; do
+        [[ -n "$_src" ]] || continue
+        if _up_drop_run_arg_source "$_src"; then
+          _mount_src_authority_warn "computed mount" "$_src" "${_UP_CONF_DIR:-}" || true
+        else
+          _bad="$_src"
+          break
+        fi
+      done <<<"$_hits"
+    fi
+    if [[ -n "$_bad" ]]; then
+      _mount_src_overlaps_authority_dir "$_bad" "${_UP_CONF_DIR:-}" || true
+      _aut="${_PP_AUTH_HIT:-}"
+      echo "Error: the msb create argv for ${_name} mounts ${_bad}, which equals, contains, or lies inside the rc authority directory ${_aut:-(unresolvable path)}; a cage must not reach it; ${_ctx} (ADR-032 D2)." >&2
+      rm -f "$_mlist"
+      return 1
+    fi
+    if ! _up_build_msb_create_argv "$_name"; then
+      echo "Error: failed to rebuild the msb create argv for ${_name} after dropping an overlapping mount" >&2
+      rm -f "$_mlist"
+      return 1
+    fi
+  done
+  if [[ "${_UP_HOST_TOOLS_PRESENT:-absent}" == "present" ]]; then
+    if ! _host_tools_load "$_UP_HOST_TOOLS_FILE" "$_mlist" >/dev/null; then
+      # The loader's Error: line stays the only one; this plain line says what
+      # happened to the cage.
+      echo "rc up: ${_ctx}" >&2
+      rm -f "$_mlist"
+      return 1
+    fi
+    if ! _rc_python3_check "$_mlist" "$_ctx" \
+        || ! _rc_socket_path_check "$_name" "$_ctx"; then
+      rm -f "$_mlist"
+      return 1
+    fi
+  fi
+  rm -f "$_mlist"
+  return 0
+}
+
+# _up_host_tools_site3_ok NAME [start|attach] -- check site 3 of three (ADR-032 D2): an
+# EXISTING cage (stopped, before msb start; running, before attach). With a
+# declaration present now, load it and check python3 against the mount sources
+# msb recorded for the cage (the cage keeps those mounts until recreated). A
+# defect: one Error: line and return 1, and the caller must not start or
+# attach. Child C calls this before every gatekeeper start. With no
+# declaration present now there is nothing to check (a cage labelled present
+# whose file was removed keeps its route until --replace).
+_up_host_tools_site3_ok() {
+  local _name="$1" _mlist _ctx="nothing was started"
+  [[ "${2:-start}" == "attach" ]] && _ctx="not attaching"
+  [[ "${_UP_HOST_TOOLS_PRESENT:-absent}" == "present" ]] || return 0
+  if ! _mlist=$(mktemp "/tmp/rc-host-tools-recorded.XXXXXX"); then
+    echo "Error: cannot create a temp file under /tmp for the recorded mount list" >&2
+    return 1
+  fi
+  if ! _host_tools_mounts_from_inspect "$_name" >"$_mlist"; then
+    echo "Error: cannot read the mounts msb recorded for cage ${_name}, so the host-tool declaration cannot be checked against them; ${_ctx}." >&2
+    rm -f "$_mlist"
+    return 1
+  fi
+  if ! _host_tools_load "$_UP_HOST_TOOLS_FILE" "$_mlist" >/dev/null; then
+    echo "rc up: ${_ctx}" >&2
+    rm -f "$_mlist"
+    return 1
+  fi
+  if ! _rc_python3_check "$_mlist" "$_ctx"; then
+    rm -f "$_mlist"
+    return 1
+  fi
+  rm -f "$_mlist"
+  return 0
+}
+
+
 # _up_converge_needed NAME CONF
 #
 # True when a STOPPED cage's config file differs from the one it was created
@@ -1169,6 +1382,13 @@ _up_converge_needed() {
   # matter what any label says.
   if [[ "${_UP_CONVERGE_DONE:-false}" == "true" ]]; then
     return 1
+  fi
+
+  # A host-tool declaration added or removed since the cage was created
+  # changes the create-time route: recreate, like a changed sha. Judged on
+  # presence alone, before the sha (a label-less cage reads as absent).
+  if _up_host_tools_presence_differs "$_name"; then
+    return 0
   fi
 
   local _stored _current
@@ -1624,6 +1844,13 @@ _up_build_msb_create_argv() {
     while IFS= read -r _line; do _UP_MSB_ARGV+=("$_line"); done <<< "$_translate_out"
   fi
 
+  # The host-tool route (ADR-032 D6): a create-time shape (ADR-031 D3
+  # carve-out), appended exactly once -- the array is rebuilt from scratch on
+  # every call -- and BEFORE the covers.
+  if [[ "${_UP_HOST_TOOLS_PRESENT:-absent}" == "present" ]]; then
+    _UP_MSB_ARGV+=(--vsock "$(_rc_state_dir "$_name")/host-tool.sock:${RC_HOST_TOOL_PORT}")
+  fi
+
   # Covers go last: each is a more-specific mount over a tree declared above.
   if [[ -n "${_UP_PROTECTED_COVERS[*]:-}" ]]; then
     _UP_MSB_ARGV+=("${_UP_PROTECTED_COVERS[@]}")
@@ -1672,6 +1899,12 @@ _up_start_container() {
       return 1
       ;;
   esac
+
+  # Check site 2: the FINAL argv, immediately before it executes.
+  if ! _up_host_tools_site2 "$_name"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool check refused the msb create argv for $_name (see stderr)" "HOST_TOOLS_SITE2_REFUSED"
+    return 1
+  fi
 
   local msb_stderr
   if ! msb_stderr=$("${_UP_MSB_ARGV[@]}" 2>&1 >/dev/null); then
@@ -2866,6 +3099,12 @@ cmd_up() {
       _up_resolve_resume_image_drift_running "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING END
+      # Check site 3 (read-only): a defective declaration refuses rc up here
+      # exactly as the real attach would.
+      if ! _up_host_tools_site3_ok "$name" attach; then
+        [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool declaration check failed for existing cage ${name} (see stderr)" "HOST_TOOLS_SITE3_REFUSED"
+        exit 1
+      fi
       would_action="would_attach"
     elif [[ "$state" == "exited" ]]; then
       # Surface legacy/invalid-label conditions in dry-run so planners see the
@@ -2883,7 +3122,11 @@ cmd_up() {
       # ADR-031 D3: a STOPPED cage is recreated against the current config
       # when that config has CHANGED since the cage was created, which is a
       # content hash of one file now rather than a merged-structure diff
-      # (_up_converge_needed). --no-reload opts out.
+      # (_up_converge_needed). --no-reload opts out, but cannot apply a
+      # host-tool presence change: that refuses.
+      if [[ -n "$rc_up_no_reload" ]]; then
+        _up_check_no_reload_presence "$name" || exit 1
+      fi
       if [[ -z "$rc_up_no_reload" ]] && _up_converge_needed "$name" "$_UP_CAGE_CONF"; then
         # A recreate fixes a STALE image but cannot fix an ABSENT one, so the
         # guard still runs — it just stops treating staleness as fatal.
@@ -2898,6 +3141,10 @@ cmd_up() {
         _up_resolve_resume_image_drift_stopped "$name" "$path"
         _up_resolve_resume_symlink_fingerprint "$name" "$path"
         # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
+        if ! _up_host_tools_site3_ok "$name"; then
+          [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool declaration check failed for existing cage ${name} (see stderr)" "HOST_TOOLS_SITE3_REFUSED"
+          exit 1
+        fi
         would_action="would_resume"
       fi
     elif [[ "$_inspect_exit" -ne 0 ]]; then
@@ -2955,7 +3202,12 @@ cmd_up() {
         echo "Would cover ${_dry_gc} in-guest before init (protected file inside a read-only mount, rip-cage-849o)"
       done
       if [[ -d "${HOME}/.claude/skills" ]]; then
-        echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
+        # Site 2 (pass 1) drops this fixed mount from the argv when it
+        # overlaps an authority directory, and prints the warning there; the
+        # preview skips the "Would mount" line so it does not announce a mount
+        # the printed argv then lacks.
+        _mount_src_overlaps_authority_dir "${HOME}/.claude/skills" "${_UP_CONF_DIR:-}" \
+          || echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
         local _dry_tdir
         while IFS= read -r _dry_tdir; do
           local _dry_skill_pat
@@ -2979,9 +3231,12 @@ cmd_up() {
           echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       fi
-      [[ -d "${HOME}/.claude/commands" ]] && echo "Would mount ~/.claude/commands -> /home/agent/.rc-context/commands:ro"
+      if [[ -d "${HOME}/.claude/commands" ]] && ! _mount_src_overlaps_authority_dir "${HOME}/.claude/commands" "${_UP_CONF_DIR:-}"; then
+        echo "Would mount ~/.claude/commands -> /home/agent/.rc-context/commands:ro"
+      fi
       if [[ -d "${HOME}/.claude/agents" ]]; then
-        echo "Would mount ~/.claude/agents -> /home/agent/.rc-context/agents:ro"
+        _mount_src_overlaps_authority_dir "${HOME}/.claude/agents" "${_UP_CONF_DIR:-}" \
+          || echo "Would mount ~/.claude/agents -> /home/agent/.rc-context/agents:ro"
         local _dry_agent_tdir
         while IFS= read -r _dry_agent_tdir; do
           local _dry_agent_pat
@@ -3028,6 +3283,7 @@ cmd_up() {
         local _UP_RUN_ARGS=()
         local _UP_DRY_RUN_NO_SIDE_EFFECTS=1
         local _UP_MSB_ARGV=()
+        _up_add_host_tools_labels "$name"
         # The preparation's stderr is held back (the "Would mount" lines above
         # already preview it), but a refusal inside it `exit 1`s rc itself, so
         # the EXIT trap replays the held stderr: the operator sees the refusal's
@@ -3041,6 +3297,12 @@ cmd_up() {
         if _up_prepare_docker_mounts "$path" "$name" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
             && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
             && _up_build_msb_create_argv "$name"; then
+          # Check site 2 on the same final argv the real create runs; a
+          # refusal exits here (the EXIT trap replays the held stderr).
+          if ! _up_host_tools_site2 "$name"; then
+            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool check refused the msb create argv for $name (see stderr)" "HOST_TOOLS_SITE2_REFUSED"
+            exit 1
+          fi
           echo "Would run: ${_UP_MSB_ARGV[*]}"
           # Drops that the human preview above does not mirror (symlink-follow,
           # pi substrate, worktree auto-redirect) are visible only in the held
@@ -3075,6 +3337,12 @@ cmd_up() {
     # rip-cage-yid0: mediator CA env guard applies to running containers too
     # — CA trust env vars are frozen at container-create time, same rationale.
     # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING END
+    # Check site 3: a defective host-tool declaration refuses rc up on a
+    # running cage too (no attach), the same as a defective config.
+    if ! _up_host_tools_site3_ok "$name" attach; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool declaration check failed for existing cage ${name} (see stderr)" "HOST_TOOLS_SITE3_REFUSED"
+      exit 1
+    fi
     # rip-cage-y0u0: a RUNNING cage is NEVER auto-recreated, converge-on-up
     # default or not — recreating would kill a live agent session (agent
     # autonomy is the product). A plain `rc up` on a RUNNING cage with drift
@@ -3115,6 +3383,9 @@ cmd_up() {
     # stop -> remove -> recreate), but recurses cmd_up in the CURRENT output
     # format so an interactive `rc up` still attaches after the cage comes
     # back (the reload verb forced json because it must NOT attach; up must).
+    if [[ -n "$rc_up_no_reload" ]]; then
+      _up_check_no_reload_presence "$name" || exit 1
+    fi
     if [[ -z "$rc_up_no_reload" ]] && _up_converge_needed "$name" "$_UP_CAGE_CONF"; then
         # Same split as the dry-run mirror above: stale is converge-able,
         # absent and unverifiable are not.
@@ -3186,6 +3457,11 @@ cmd_up() {
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard — abort loud if
     # auth.credential_mounts was toggled between real and none since create.
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
+    # Check site 3: not started against a defective host-tool declaration.
+    if ! _up_host_tools_site3_ok "$name"; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool declaration check failed for existing cage ${name} (see stderr)" "HOST_TOOLS_SITE3_REFUSED"
+      exit 1
+    fi
     # msb re-resolves every secret binding from the host env at START time,
     # not just at create time, so the same export create uses must run again
     # here, in THIS process, before msb start.
@@ -3317,6 +3593,9 @@ cmd_up() {
   # the reason a stopped cage with an unchanged config is RESUMED rather than
   # recreated.
   _UP_RUN_ARGS+=(--label "rc.cage-conf-sha=$(_up_cage_conf_sha "${_UP_CAGE_CONF}")")
+  # The host-tool presence (and, when present, state directory) labels: the
+  # same producer the --dry-run preview uses.
+  _up_add_host_tools_labels "$name"
 
   # rip-cage-c1p.2 D4: persist symlink-follow fingerprint as a container label
   # so resume can detect mount-shape drift and abort loud. Computed from sorted
