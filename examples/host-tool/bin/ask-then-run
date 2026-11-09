@@ -6,7 +6,7 @@
 #
 # Everything it trusts is in its own argv, which the declaration fixes:
 #   --asker   absolute path of the program that tells a human a request waits.
-#             Called as: ASKER INBOX/ID.json (stdout discarded, stdin closed).
+#             Called as: ASKER INBOX/ID.json (stdout discarded, stdin on /dev/null).
 #   --inbox   absolute path of a directory that already exists. The wrapper
 #             writes INBOX/ID.json (the request) and polls INBOX/ID.answer.
 #   --budget  whole seconds (1 to 999999, no leading zero) for the asker and
@@ -23,7 +23,7 @@
 # failing asker) exits 2 and COMMAND never runs. On allow the wrapper removes
 # its files and execs COMMAND, so COMMAND's stdout is the reply.
 #
-# A wrapper has no terminal: it runs with stdin closed, detached from any
+# A wrapper has no terminal: it runs with stdin on /dev/null, detached from any
 # session. The answer arrives as a file, not a prompt.
 
 die() { echo "ask-then-run: $*" >&2; exit 2; }
