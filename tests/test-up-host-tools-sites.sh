@@ -31,7 +31,21 @@ T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 LOG="${T}/calls.log"
 : > "$LOG"
 FAKE_BIN=$(fake_runtime_bin "$LOG")
-trap 'rm -rf "$T" "$FAKE_BIN"' EXIT
+# rip-cage-jdl2.3.3: rc now starts the real gatekeeper for a cage with a
+# declaration, so okpy below is a wrapper over the real python3 and every
+# gatekeeper these cases leave behind is swept (they lead their own sessions).
+REAL_PY="$(command -v python3 || true)"
+[[ -n "$REAL_PY" ]] || { echo "SKIP: python3 not on PATH (rc up starts the gatekeeper with it)"; exit 0; }
+REAL_PY="$(readlink -f "$REAL_PY")"
+cleanup() {
+  local _p _c
+  for _p in /proc/[0-9]*; do
+    _c=$({ tr '\0' ' ' < "${_p}/cmdline"; } 2>/dev/null) || continue
+    [[ "$_c" == *host-tool-gatekeeper.py* && "$_c" == *"$T"* ]] && kill -KILL "${_p#/proc/}" 2>/dev/null
+  done
+  rm -rf "$T" "$FAKE_BIN"
+}
+trap cleanup EXIT
 
 export HOME="${T}/home"
 export XDG_CONFIG_HOME="${T}/home/.config"
@@ -45,7 +59,7 @@ mkdir -p "$HOME/.claude/projects" "$HOME/.claude/sessions" "$HOME/.claude/comman
 : > "$T/ws/.git/config"
 : > "$T/ws/.env"
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/tool";  chmod 0755 "$T/bin/tool"
-printf '#!/bin/sh\nexit 0\n' > "$T/bin/okpy";  chmod 0755 "$T/bin/okpy"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PY" > "$T/bin/okpy";  chmod 0755 "$T/bin/okpy"
 printf '#!/bin/sh\nexit 0\n' > "$HOME/.claude/commands/py"; chmod 0755 "$HOME/.claude/commands/py"
 printf '{"dolt_mode":"embedded"}\n' > "$T/rd/.beads/metadata.json"
 

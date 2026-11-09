@@ -51,6 +51,42 @@ fake_runtime_bin() {
   printf '[[ "${1:-}" == "inspect" && -n "${FAKE_MSB_INSPECT_FILE:-}" && ! -e "${FAKE_MSB_INSPECT_FILE}.removed" ]] && cat "${FAKE_MSB_INSPECT_FILE}"\n' >> "${_bin}/msb"
   # shellcheck disable=SC2016  # expanded by the fake at call time
   printf '[[ "${1:-}" == "image" && "${2:-}" == "list" && -n "${FAKE_MSB_IMAGE_LIST_FILE:-}" ]] && cat "${FAKE_MSB_IMAGE_LIST_FILE}"\n' >> "${_bin}/msb"
+  # Lifecycle behaviours (rip-cage-jdl2.3.3), all read at call time, all unset =
+  # exit 0 as before:
+  #   FAKE_MSB_INIT_EXIT      exit code of `msb exec ... init-rip-cage.sh`
+  #   FAKE_MSB_ATTACH_EXIT    exit code of the interactive `msb exec -t ...`
+  #   FAKE_MSB_ATTACH_SLEEP   seconds that attach sleeps before it exits
+  #   FAKE_MSB_ATTACH_STARTED_FILE  written when the attach begins: the pid of
+  #                           the process that called msb (rc itself)
+  #   FAKE_MSB_CREATE_EXIT    exit code of `msb create`
+  #   FAKE_MSB_NO_VOLUMES     when set, `msb volume inspect` exits 1 (no volumes)
+  #   FAKE_MSB_START_EXIT     exit code of `msb start`
+  #   FAKE_MSB_INSPECT_FILE   (above) also makes `msb inspect` exit 1 when that
+  #                           file is missing or consumed: the cage is gone
+  #   FAKE_MSB_REMOVE_PROBE_PIDFILE  a gatekeeper pid-file path: `msb remove`
+  #                           records "probe: gatekeeper.pid present|absent"
+  #                           at the moment it runs
+  printf 'FAKE_LOG=%q\n' "$_log" >> "${_bin}/msb.part"
+  cat >> "${_bin}/msb.part" <<'FAKE'
+if [[ "${1:-}" == "exec" ]]; then
+  if [[ "${!#}" == */init-rip-cage.sh ]]; then exit "${FAKE_MSB_INIT_EXIT:-0}"; fi
+  if [[ "${2:-}" == "-t" ]]; then
+    [[ -n "${FAKE_MSB_ATTACH_STARTED_FILE:-}" ]] && echo "$PPID" > "${FAKE_MSB_ATTACH_STARTED_FILE}"
+    [[ -n "${FAKE_MSB_ATTACH_SLEEP:-}" ]] && sleep "${FAKE_MSB_ATTACH_SLEEP}"
+    exit "${FAKE_MSB_ATTACH_EXIT:-0}"
+  fi
+fi
+[[ "${1:-}" == "start" ]] && exit "${FAKE_MSB_START_EXIT:-0}"
+[[ "${1:-}" == "create" ]] && exit "${FAKE_MSB_CREATE_EXIT:-0}"
+[[ "${1:-}" == "volume" && "${2:-}" == "inspect" && -n "${FAKE_MSB_NO_VOLUMES:-}" ]] && exit 1
+if [[ "${1:-}" == "remove" && -n "${FAKE_MSB_REMOVE_PROBE_PIDFILE:-}" ]]; then
+  if [[ -e "${FAKE_MSB_REMOVE_PROBE_PIDFILE}" ]]; then echo "probe: gatekeeper.pid present" >> "$FAKE_LOG"; else echo "probe: gatekeeper.pid absent" >> "$FAKE_LOG"; fi
+fi
+# A cage that does not exist: FAKE_MSB_INSPECT_FILE set, its file missing or
+# consumed by `msb remove`, makes `msb inspect` fail (exit 1, no output).
+if [[ "${1:-}" == "inspect" && -n "${FAKE_MSB_INSPECT_FILE:-}" && ( ! -e "${FAKE_MSB_INSPECT_FILE}" || -e "${FAKE_MSB_INSPECT_FILE}.removed" ) ]]; then exit 1; fi
+FAKE
+  cat "${_bin}/msb.part" >> "${_bin}/msb"; rm -f "${_bin}/msb.part"
   printf 'exit 0\n' >> "${_bin}/docker"
   printf 'exit 0\n' >> "${_bin}/msb"
   printf '%s\n' "$_bin"

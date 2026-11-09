@@ -502,3 +502,316 @@ _rc_python3_check() {
   fi
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# Gatekeeper start/stop section (rip-cage-jdl2.3.3; ADR-032 D6). The ONE
+# implementation rc up, rc up --replace, rc destroy and the tests share. rc
+# owns the launch, the lock, the stale-socket unlink and the stop; the
+# gatekeeper (cli/lib/host-tool-gatekeeper.py) owns its own session, its
+# environment and its teardown. An optional STATE_DIR argument names the
+# directory a cage's route was created against (its rc.state-dir label);
+# absent, the cage's default under the current state root. Every act under a
+# directory first proves it is a real, symlink-free directory named after the
+# cage (_host_tools_dir_ok): the path may have come from a label.
+# ---------------------------------------------------------------------------
+
+_HT_RECOVERY="To recover: stop the gatekeeper by hand (its pid is in <dir>/gatekeeper.pid) if one runs, then remove the directory yourself; rc will not act through a symlinked or mislabelled path."
+
+# _host_tools_dir_ok CAGE DIR -- DIR is an absolute path none of whose
+# components is a symlink (its real-path walk equals its spelling), whose
+# basename is the cage name, and whose lock file, if any, is not a symlink.
+# Returns 0 when DIR does not exist yet (nothing to act on); one Error: line
+# and 1 otherwise. The symlink check and the later open of the lock are not
+# atomic (bash has no O_NOFOLLOW); what bounds that window is that the state
+# directory is 0700 and operator-owned, so only the operator can plant a link.
+_host_tools_dir_ok() {
+  local _cage="$1" _d="${2%/}" _real _rc=0
+  if [[ "${_d}" != /* || "$(basename "${_d}")" != "${_cage}" ]]; then
+    echo "Error: ${_d} is not an absolute state directory named ${_cage}; not touching it. ${_HT_RECOVERY}" >&2
+    return 1
+  fi
+  _real="$(_protected_paths_walk_path "${_d}")" || _rc=$?
+  if [[ "${_rc}" -ne 0 || "${_real%/}" != "${_d}" ]]; then
+    echo "Error: ${_d} has a symlink on its path (resolves to ${_real:-nowhere}); not touching it. ${_HT_RECOVERY}" >&2
+    return 1
+  fi
+  if [[ -L "${_d}/lock" ]]; then
+    echo "Error: ${_d}/lock is a symlink; not touching ${_d}. ${_HT_RECOVERY}" >&2
+    return 1
+  fi
+  return 0
+}
+
+# _host_tools_state_dir_create CAGE [STATE_DIR] -- the state directory, 0700.
+# Called only after site 1 passed and only when a declaration is present;
+# never under --dry-run (the caller's business).
+_host_tools_state_dir_create() {
+  local _d="${2:-$(_rc_state_dir "$1")}" _parent
+  _d="${_d%/}"
+  _parent="$(dirname "${_d}")"
+  _host_tools_dir_ok "$1" "${_d}" || return 1
+  if ! (umask 077; mkdir -p "${_parent}" "${_d}") 2>/dev/null || ! chmod 0700 "${_d}"; then
+    echo "Error: cannot create the host-tool state directory ${_d}; nothing was started." >&2
+    return 1
+  fi
+  _host_tools_dir_ok "$1" "${_d}"
+}
+
+# _host_tools_gatekeeper_pid CAGE [STATE_DIR] -- the pid in the pid file;
+# non-zero and silent when there is none, it is unreadable, or not a number.
+_host_tools_gatekeeper_pid() {
+  local _d="${2:-$(_rc_state_dir "$1")}" _p
+  [[ -f "${_d}/gatekeeper.pid" ]] || return 1
+  _p="$(tr -d ' \n\t' < "${_d}/gatekeeper.pid" 2>/dev/null)" || return 1
+  [[ "${_p}" =~ ^[0-9]+$ && "${_p}" -gt 1 ]] || return 1
+  printf '%s\n' "${_p}"
+}
+
+# _host_tools_pidfile_check STATE_DIR -- a pid file that exists but cannot be
+# read is an unknown owner: one Error: line naming it and non-zero, so the
+# caller deletes nothing and starts nothing.
+_host_tools_pidfile_check() {
+  local _f="$1/gatekeeper.pid"
+  if [[ -e "${_f}" || -L "${_f}" ]] && ! { : < "${_f}"; } 2>/dev/null; then
+    echo "Error: ${_f} exists but cannot be read (check its permissions); the gatekeeper's owner is unknown, so nothing was signalled, removed or started." >&2
+    return 1
+  fi
+  return 0
+}
+
+# _host_tools_pid_is_gatekeeper PID [STATE_DIR] -- the pid is live AND its
+# command line is the gatekeeper's (with STATE_DIR: this cage's own, by its
+# --socket path). A recycled pid is not ours to signal. Without ps, a live pid
+# is taken as ours.
+_host_tools_pid_is_gatekeeper() {
+  local _cmd
+  kill -0 "$1" 2>/dev/null || return 1
+  # Never a bare `ps -o command=`: ps truncates the line to $COLUMNS (BSD ps to
+  # the terminal width), which made a live gatekeeper read as dead.
+  if [[ -r "/proc/$1/cmdline" ]]; then
+    _cmd="$({ tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null)" || return 1
+    [[ -n "${_cmd}" ]] || return 1   # a zombie has no command line
+  else
+    _cmd="$(env -u COLUMNS ps -ww -o command= -p "$1" 2>/dev/null)" || return 0
+    [[ -n "${_cmd}" ]] || return 0
+  fi
+  [[ "${_cmd}" == *host-tool-gatekeeper.py* ]] || return 1
+  [[ -z "${2:-}" || "${_cmd}" == *"${2%/}/host-tool.sock"* ]]
+}
+
+# _host_tools_gatekeeper_alive CAGE [STATE_DIR] -- the pid file names a live
+# gatekeeper of this cage.
+_host_tools_gatekeeper_alive() {
+  local _pid _d="${2:-$(_rc_state_dir "$1")}"
+  _pid="$(_host_tools_gatekeeper_pid "$1" "${_d}")" || return 1
+  _host_tools_pid_is_gatekeeper "${_pid}" "${_d}"
+}
+
+# _host_tools_sock_probe PYTHON SOCKET -- a connect succeeds (something listens).
+_host_tools_sock_probe() {
+  "$1" -I -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(2)
+s.connect(sys.argv[1])' "$2" >/dev/null 2>&1
+}
+
+# _host_tools_lock_take STATE_DIR -- Linux: flock on fixed descriptor 9 (bash
+# 3.2 has no {fd} form); macOS: mkdir lock.d carrying a pid file, stale when
+# that pid is dead (an empty pid file is a lock just taken: live for 2 s).
+# Waits up to 30 s. Pair with _host_tools_lock_release.
+_host_tools_lock_take() {
+  local _d="$1" _i=0 _holder _empty=0 _rc=0
+  if [[ "$(uname -s)" == Darwin ]]; then
+    while [[ "${_i}" -lt 150 ]]; do
+      if mkdir "${_d}/lock.d" 2>/dev/null; then
+        printf '%s\n' "$$" > "${_d}/lock.d/pid"
+        return 0
+      fi
+      _holder="$(cat "${_d}/lock.d/pid" 2>/dev/null || true)"
+      if [[ -z "${_holder}" ]]; then
+        _empty=$((_empty + 1))
+        [[ "${_empty}" -gt 10 ]] && rm -rf "${_d}/lock.d"
+      elif ! kill -0 "${_holder}" 2>/dev/null; then
+        rm -rf "${_d}/lock.d"
+      else
+        _empty=0
+      fi
+      sleep 0.2
+      _i=$((_i + 1))
+    done
+    echo "Error: timed out after 30 s waiting for the host-tool lock ${_d}/lock.d (held by pid ${_holder:-unknown}); nothing was started." >&2
+    return 1
+  fi
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "Error: flock not found on PATH; the host-tool line needs it on Linux to serialize rc up. Install util-linux's flock; nothing was started." >&2
+    return 1
+  fi
+  if ! { exec 9>"${_d}/lock"; } 2>/dev/null; then
+    echo "Error: cannot open the host-tool lock ${_d}/lock; nothing was started." >&2
+    return 1
+  fi
+  flock -w 30 -E 200 9 || _rc=$?
+  if [[ "${_rc}" -eq 0 ]]; then return 0; fi
+  exec 9>&-
+  if [[ "${_rc}" -eq 200 ]]; then
+    echo "Error: timed out after 30 s waiting for the host-tool lock ${_d}/lock (another rc up holds it); nothing was started." >&2
+  else
+    echo "Error: flock failed on ${_d}/lock (exit ${_rc}); nothing was started." >&2
+  fi
+  return 1
+}
+
+# _host_tools_lock_release STATE_DIR
+_host_tools_lock_release() {
+  if [[ "$(uname -s)" == Darwin ]]; then
+    rm -rf "$1/lock.d"
+  else
+    exec 9>&-
+  fi
+}
+
+# _host_tools_gatekeeper_stop_unlocked CAGE STATE_DIR -- SIGTERM the pid in the
+# pid file, wait up to 5 s, then a further 5 s, then SIGKILL; remove the socket
+# and the pid file. tools.json stays until destroy. Non-zero (and nothing
+# removed) only when the pid file cannot be read. The caller holds the lock.
+_host_tools_gatekeeper_stop_unlocked() {
+  local _d="$2" _pid _i
+  _host_tools_pidfile_check "${_d}" || return 1
+  if _pid="$(_host_tools_gatekeeper_pid "$1" "${_d}")" && _host_tools_pid_is_gatekeeper "${_pid}" "${_d}"; then
+    kill -TERM "${_pid}" 2>/dev/null || true
+    _i=0
+    while [[ "${_i}" -lt 100 ]] && _host_tools_pid_is_gatekeeper "${_pid}" "${_d}"; do
+      sleep 0.1
+      _i=$((_i + 1))
+    done
+    if _host_tools_pid_is_gatekeeper "${_pid}" "${_d}"; then
+      kill -KILL "${_pid}" 2>/dev/null || true
+      sleep 0.2
+    fi
+  fi
+  rm -f "${_d}/host-tool.sock" "${_d}/gatekeeper.pid"
+  return 0
+}
+
+# _host_tools_gatekeeper_start_unlocked CAGE JSON STATE_DIR -- the start, lock
+# already held by the caller. A live gatekeeper is left alone (return 0). On
+# failure: one Error: line naming the log, non-zero, nothing left running.
+_host_tools_gatekeeper_start_unlocked() {
+  local _cage="$1" _json="$2" _d="$3"
+  local _py _sock _pidf _log _gk _i _pid _lpid _fd
+  _sock="${_d}/host-tool.sock"; _pidf="${_d}/gatekeeper.pid"; _log="${_d}/gatekeeper.log"
+  _gk="${SCRIPT_DIR}/cli/lib/host-tool-gatekeeper.py"
+  if ! _py="$(_rc_python3)"; then
+    echo "Error: python3 not found; the host-tool gatekeeper for cage ${_cage} was not started." >&2
+    return 1
+  fi
+  _host_tools_pidfile_check "${_d}" || return 1
+  if _host_tools_gatekeeper_alive "${_cage}" "${_d}"; then
+    return 0
+  fi
+  # A socket left behind by a dead gatekeeper: rc is the one owner of this
+  # unlink (the gatekeeper refuses to start over an existing path).
+  if [[ -e "${_sock}" || -L "${_sock}" ]]; then
+    if _host_tools_gatekeeper_pid "${_cage}" "${_d}" >/dev/null || ! _host_tools_sock_probe "${_py}" "${_sock}"; then
+      rm -f "${_sock}" "${_pidf}"
+    else
+      echo "Error: ${_sock} is accepting connections but no live gatekeeper pid file of this cage names its owner; not starting one for cage ${_cage}." >&2
+      return 1
+    fi
+  fi
+  rm -f "${_pidf}"
+
+  if ! (umask 077; printf '%s\n' "${_json}" > "${_d}/tools.json"); then
+    echo "Error: cannot write ${_d}/tools.json; the host-tool gatekeeper for cage ${_cage} was not started." >&2
+    return 1
+  fi
+
+  # Every inherited descriptor from 3 up is closed in the child, so neither
+  # the lock (9) nor anything the caller left open reaches the gatekeeper.
+  # shellcheck disable=SC2094  # the log path is an argument (the gatekeeper appends to it) and our stdout target; nothing here reads it
+  (
+    for _fd in $(seq 3 255); do eval "exec ${_fd}>&-"; done
+    exec env -i PATH=/usr/bin:/bin HOME="${_d}" LANG="${LANG:-C.UTF-8}" \
+      "${_py}" -I "${_gk}" --socket "${_sock}" --decl "${_d}/tools.json" \
+      --log "${_log}" --pid "${_pidf}" --cwd "${_d}"
+  ) </dev/null >>"${_log}" 2>&1 &
+  _lpid=$!
+
+  _i=0
+  while [[ "${_i}" -lt 50 ]]; do
+    if _pid="$(_host_tools_gatekeeper_pid "${_cage}" "${_d}")" && kill -0 "${_pid}" 2>/dev/null \
+        && _host_tools_sock_probe "${_py}" "${_sock}"; then
+      return 0
+    fi
+    kill -0 "${_lpid}" 2>/dev/null || break
+    sleep 0.1
+    _i=$((_i + 1))
+  done
+  # Not ready: TERM, up to 2 s, then KILL, and take back what it wrote.
+  kill -TERM "${_lpid}" 2>/dev/null || true
+  _i=0
+  while [[ "${_i}" -lt 20 ]] && kill -0 "${_lpid}" 2>/dev/null; do
+    sleep 0.1
+    _i=$((_i + 1))
+  done
+  kill -0 "${_lpid}" 2>/dev/null && kill -KILL "${_lpid}" 2>/dev/null
+  rm -f "${_pidf}" "${_sock}"
+  echo "Error: the host-tool gatekeeper for cage ${_cage} did not become ready within 5 s; see ${_log}." >&2
+  return 1
+}
+
+# _host_tools_gatekeeper_start CAGE NORMALIZED_JSON [STATE_DIR] -- start a
+# gatekeeper serving NORMALIZED_JSON. The lock is held through launch and
+# readiness (pid file written and the socket accepting), never longer.
+_host_tools_gatekeeper_start() {
+  local _d="${3:-$(_rc_state_dir "$1")}" _rc=0
+  _d="${_d%/}"
+  _host_tools_dir_ok "$1" "${_d}" || return 1
+  _host_tools_lock_take "${_d}" || return 1
+  _host_tools_gatekeeper_start_unlocked "$1" "$2" "${_d}" || _rc=$?
+  _host_tools_lock_release "${_d}"
+  return "${_rc}"
+}
+
+# _host_tools_gatekeeper_stop CAGE [STATE_DIR] -- stop the cage's gatekeeper
+# under the lock. A directory that does not exist is nothing to stop (0).
+# Non-zero, one Error: line, nothing removed, when the directory fails
+# _host_tools_dir_ok or the pid file cannot be read.
+_host_tools_gatekeeper_stop() {
+  local _d="${2:-$(_rc_state_dir "$1")}" _rc=0
+  _d="${_d%/}"
+  [[ -e "${_d}" || -L "${_d}" ]] || return 0
+  _host_tools_dir_ok "$1" "${_d}" || return 1
+  _host_tools_lock_take "${_d}" || return 1
+  _host_tools_gatekeeper_stop_unlocked "$1" "${_d}" || _rc=$?
+  _host_tools_lock_release "${_d}"
+  return "${_rc}"
+}
+
+# _host_tools_gatekeeper_restart CAGE NORMALIZED_JSON STATE_DIR -- stop any
+# gatekeeper and start a fresh one as ONE section under the lock, so two
+# rc up serialize. Creates the directory first (0700).
+_host_tools_gatekeeper_restart() {
+  local _d="${3%/}" _rc=0
+  _host_tools_state_dir_create "$1" "${_d}" || return 1
+  _host_tools_lock_take "${_d}" || return 1
+  _host_tools_gatekeeper_stop_unlocked "$1" "${_d}" \
+    && _host_tools_gatekeeper_start_unlocked "$1" "$2" "${_d}" || _rc=$?
+  _host_tools_lock_release "${_d}"
+  return "${_rc}"
+}
+
+# _host_tools_state_dir_remove CAGE STATE_DIR -- remove a cage's whole state
+# directory after its gatekeeper is stopped. Returns 1 with one Error: line,
+# removing nothing, for a path that fails _host_tools_dir_ok; 0 when removed
+# or already absent.
+_host_tools_state_dir_remove() {
+  local _d="${2%/}"
+  [[ -e "${_d}" || -L "${_d}" ]] || return 0
+  _host_tools_dir_ok "$1" "${_d}" || return 1
+  if [[ ! -d "${_d}" ]]; then
+    echo "Error: ${_d} is not a directory; not removing it." >&2
+    return 1
+  fi
+  rm -rf "${_d}"
+}

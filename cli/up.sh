@@ -113,9 +113,10 @@ _emit_denylist_denial() {
 #   $4  status        — e.g. "running", "stopped"  (pass "" to omit)
 #   $5  init          — e.g. "success", "failed"   (pass "" to omit)
 #   $6  dry_run       — non-empty string to include dry_run:true (pass "" to omit)
+#   $7  ht_log        — gatekeeper log path: adds host_tools:{status:"gatekeeper-failed",log}
 # shellcheck disable=SC2016 # jq_filter uses jq variable syntax ($name etc.)
 _up_json_output() {
-  local _name="$1" _action="$2" _source_path="$3" _status="${4:-}" _init="${5:-}" _dry_run="${6:-}"
+  local _name="$1" _action="$2" _source_path="$3" _status="${4:-}" _init="${5:-}" _dry_run="${6:-}" _ht_log="${7:-}"
 
   local jq_args=()
   jq_args+=(--arg name "$_name")
@@ -136,6 +137,11 @@ _up_json_output() {
   if [[ -n "$_init" ]]; then
     jq_args+=(--arg init "$_init")
     jq_filter+=', init: $init'
+  fi
+
+  if [[ -n "$_ht_log" ]]; then
+    jq_args+=(--arg ht_log "$_ht_log")
+    jq_filter+=', host_tools: {status: "gatekeeper-failed", log: $ht_log}'
   fi
 
   if [[ "$wt_detected" == "true" ]]; then
@@ -1351,6 +1357,79 @@ _up_host_tools_site3_ok() {
     return 1
   fi
   rm -f "$_mlist"
+  return 0
+}
+
+
+# ---------------------------------------------------------------------------
+# Host-tool gatekeeper lifecycle under rc up, child C (rip-cage-jdl2.3.3;
+# ADR-032 D6). The start/stop mechanics are cli/lib/host_tools.sh's; these
+# are the cmd_up-side wrappers. A cage's route was created against the state
+# directory in its rc.state-dir label, so every act on an EXISTING cage uses
+# that directory, not whatever RC_STATE_DIR says now.
+# ---------------------------------------------------------------------------
+
+# _up_host_tools_cage_state_dir NAME -- the rc.state-dir label, else the
+# cage's default state directory.
+_up_host_tools_cage_state_dir() {
+  local _d
+  _d=$(_msb_label "$1" "rc.state-dir" 2>/dev/null || true)
+  [[ -n "$_d" ]] || _d=$(_rc_state_dir "$1")
+  printf '%s\n' "$_d"
+}
+
+# _up_host_tools_stop NAME -- stop the cage's gatekeeper, if any (no-op, exit 0,
+# when none runs or the cage never had a state directory); non-zero, one Error:
+# line, when the directory or its pid file is not safe to act on.
+_up_host_tools_stop() {
+  local _d
+  _d=$(_up_host_tools_cage_state_dir "$1")
+  _host_tools_gatekeeper_stop "$1" "$_d"
+}
+
+# _up_host_tools_stop_precheck NAME -- the stop's preconditions (safe directory,
+# readable pid file) checked BEFORE the cage is stopped, so a refusal leaves the
+# running cage and its session untouched. Non-zero, Error: line(s), on refusal.
+_up_host_tools_stop_precheck() {
+  local _d
+  _d=$(_up_host_tools_cage_state_dir "$1")
+  _host_tools_dir_ok "$1" "$_d" && _host_tools_pidfile_check "$_d"
+}
+
+# _up_host_tools_gatekeeper_fresh NAME -- with a declaration present: stop any
+# gatekeeper still alive for the cage, create the state directory, start one
+# serving the CURRENT normalized declaration. Absent declaration: nothing.
+# Callers on an existing cage have already passed site 3.
+_up_host_tools_gatekeeper_fresh() {
+  local _d
+  [[ "${_UP_HOST_TOOLS_PRESENT:-absent}" == "present" ]] || return 0
+  _d=$(_up_host_tools_cage_state_dir "$1")
+  _host_tools_gatekeeper_restart "$1" "$_UP_HOST_TOOLS_JSON" "$_d"
+}
+
+# _up_host_tools_running_branch NAME -- the running cage's rules, before attach,
+# in order (site 3 already ran): (1) presence differs from the label: say so,
+# start nothing; (2) label present and the gatekeeper dead: start it; alive:
+# leave it; (3) the file's contents differ from the running gatekeeper's
+# tools.json: say so. A live gatekeeper is never killed here. Non-zero only
+# when a needed start failed.
+_up_host_tools_running_branch() {
+  local _n="$1" _d _was
+  if _up_host_tools_presence_differs "$_n"; then
+    if [[ "${_UP_HOST_TOOLS_PRESENT:-absent}" == "present" ]]; then _was=added; else _was=removed; fi
+    log "host-tool declaration ${_was}; takes effect on \`rc up --replace\`"
+    return 0
+  fi
+  [[ "${_UP_HOST_TOOLS_PRESENT:-absent}" == "present" ]] || return 0
+  _d=$(_up_host_tools_cage_state_dir "$_n")
+  if ! _host_tools_gatekeeper_alive "$_n" "$_d"; then
+    _host_tools_state_dir_create "$_n" "$_d" || return 1
+    _host_tools_gatekeeper_start "$_n" "$_UP_HOST_TOOLS_JSON" "$_d" || return 1
+    return 0
+  fi
+  if [[ "$(cat "$_d/tools.json" 2>/dev/null)" != "$_UP_HOST_TOOLS_JSON" ]]; then
+    log "host-tool declaration changed; takes effect on \`rc up --replace\`"
+  fi
   return 0
 }
 
@@ -3052,8 +3131,12 @@ cmd_up() {
       # through --replace, as through converge; only an explicit
       # RC_MULTIPLEXER=<x> changes it (what 1yqa's refusal tells the operator).
       _UP_KEEP_MUX=$(_container_multiplexer "$name")
+      # The stop precondition runs BEFORE the announcement and the stop, so a
+      # refusal leaves the running cage and its session untouched.
+      _up_host_tools_stop_precheck "$name" || exit 1
       log "Recreating ${_replace_state_word} cage ${name} (--replace): graceful stop, remove, create against the current config."
       _msb_stop_graceful "$name"
+      _up_host_tools_stop "$name" || exit 1
       _msb_remove "$name"
     fi
     # _inspect_exit=1, not 0 (rip-cage-ely4.10 fix). The state branch below
@@ -3343,6 +3426,13 @@ cmd_up() {
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool declaration check failed for existing cage ${name} (see stderr)" "HOST_TOOLS_SITE3_REFUSED"
       exit 1
     fi
+    # Gatekeeper rules for a running cage (ADR-032 D6): presence drift is
+    # announced, a dead gatekeeper restarts (site 3 above has just passed), a
+    # changed file is announced; a live gatekeeper is never touched.
+    if ! _up_host_tools_running_branch "$name"; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool gatekeeper for existing cage ${name} did not start (see stderr)" "HOST_TOOLS_GATEKEEPER_START"
+      exit 1
+    fi
     # rip-cage-y0u0: a RUNNING cage is NEVER auto-recreated, converge-on-up
     # default or not — recreating would kill a live agent session (agent
     # autonomy is the product). A plain `rc up` on a RUNNING cage with drift
@@ -3400,7 +3490,9 @@ cmd_up() {
           exit 1
         fi
         log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
+        _up_host_tools_stop_precheck "$name" || exit 1
         _msb_stop_graceful "$name" 2>/dev/null || true
+        _up_host_tools_stop "$name" || exit 1
         _msb_remove "$name"
         # Exported, not just set: the recreate re-enters cmd_up, and under
         # --output json it does so in a subshell.
@@ -3470,13 +3562,28 @@ cmd_up() {
     # resume-path corollary. _up_init_container immediately after re-runs
     # the SAME init script the create path runs (cockpit
     # re-registration + git-identity re-establishment, bead criteria 3/6).
+    # The gatekeeper first (site 3 above passed): stop any still alive for this
+    # cage, start a fresh one from the CURRENT file. A resume never serves the
+    # old contents, and the route is up before the guest boots.
+    if ! _up_host_tools_gatekeeper_fresh "$name"; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool gatekeeper for cage ${name} did not start (see stderr)" "HOST_TOOLS_GATEKEEPER_START"
+      exit 1
+    fi
+    local _resume_rc=0
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      _msb_start "$name" >/dev/null
+      _msb_start "$name" >/dev/null || _resume_rc=$?
     else
-      _msb_start "$name"
+      _msb_start "$name" || _resume_rc=$?
+    fi
+    if [[ "$_resume_rc" -ne 0 ]]; then
+      _up_host_tools_stop "$name" || true
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "msb start failed for cage ${name}" "MSB_START_FAILED"
+      echo "Error: msb start failed for cage ${name} (exit ${_resume_rc}); the host-tool gatekeeper was stopped." >&2
+      exit 1
     fi
     _up_init_container "$name"
     if [[ "$_UP_INIT_OK" == "false" ]]; then
+      _up_host_tools_stop "$name" || true
       # Graceful stop ONLY (ADR-029 D4 lifecycle corollary / bead criterion
       # 2): _msb_stop_graceful never force-kills, so a completed guest write
       # from this same failed-init session is not silently discarded.
@@ -3679,9 +3786,27 @@ cmd_up() {
     fi
     exit 1
   fi
+  # The gatekeeper, after a successful create and before init: a failed create
+  # started nothing; a failed start leaves the cage as created.
+  if ! _up_host_tools_gatekeeper_fresh "$name"; then
+    # Like a failed init: stop the cage (gracefully, never removed) so the next
+    # rc up takes the stopped path (site 3, fresh gatekeeper, start, init)
+    # instead of attaching to a cage whose init never ran.
+    local _ht_log
+    _ht_log="$(_up_host_tools_cage_state_dir "$name")/gatekeeper.log"
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      _msb_stop_graceful "$name" >/dev/null 2>&1
+      _up_json_output "$name" "created" "$path" "stopped" "not-run" "" "$_ht_log"
+      return 1
+    fi
+    echo "rc up: the host-tool gatekeeper did not start (log: ${_ht_log}). Stopping cage ${name}, init not run, so the next 'rc up' retries." >&2
+    _msb_stop_graceful "$name"
+    exit 1
+  fi
   _up_init_container "$name"
 
   if [[ "$_UP_INIT_OK" == "false" ]]; then
+    _up_host_tools_stop "$name" || true
     # Graceful stop ONLY (ADR-029 D4 lifecycle corollary / bead criterion 2).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _msb_stop_graceful "$name" >/dev/null 2>&1

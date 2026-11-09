@@ -58,6 +58,14 @@ cmd_destroy() {
     exit 2
   fi
 
+  # The name builds host paths below (the state directory): only the charset a
+  # cage name is derived into, and never "." or "..", gets that far.
+  if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ || "$name" == "." || "$name" == ".." ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Not a cage name: $name" "DESTROY_NAME_INVALID"
+    echo "Error: '${name}' is not a cage name (letters, digits, '-', '_' and '.' only, never '.' or '..'). Nothing was touched." >&2
+    exit 2
+  fi
+
   # rip-cage-o5ie: a sandbox that has ALREADY been removed (e.g. a prior
   # `msb remove`, or a test's own EXIT-trap teardown racing a host-side
   # destroy) must not short-circuit destroy here -- its rc-state-<name>/
@@ -70,9 +78,14 @@ cmd_destroy() {
   # volumes (tests/test-cleanup-failsafe.sh is the incident repro for that
   # class of mistake).
   local sandbox_exists=0
+  # The host-tool state directory (ADR-032 D6): read from the rc.state-dir
+  # label BEFORE the sandbox is removed (the label goes with it); a cage with
+  # no label gets its default directory under the current state root.
+  local ht_state_dir=""
   if _msb_exists "$name"; then
     sandbox_exists=1
     verify_rc_container "$name"
+    ht_state_dir=$(_msb_label "$name" "rc.state-dir" 2>/dev/null || true)
   else
     # No sandbox AND no leftover volume under this exact name -- genuinely
     # nothing to destroy. Fail loud here (before any confirmation/dry-run
@@ -80,6 +93,23 @@ cmd_destroy() {
     if ! msb volume inspect "rc-state-${name}" >/dev/null 2>&1 \
         && ! msb volume inspect "rc-history-${name}" >/dev/null 2>&1 \
         && ! msb volume inspect "rc-mise-cache-${name}" >/dev/null 2>&1; then
+      # A gone cage can still have left its gatekeeper and state directory
+      # behind: stop and remove them under the name's default directory, say
+      # so, then refuse as before.
+      if [[ "$DRY_RUN" != "true" ]]; then
+        local ht_orphan_dir
+        ht_orphan_dir=$(_rc_state_dir "$name")
+        if [[ -e "$ht_orphan_dir" || -L "$ht_orphan_dir" ]]; then
+          if _host_tools_gatekeeper_stop "$name" "$ht_orphan_dir" \
+              && _host_tools_state_dir_remove "$name" "$ht_orphan_dir"; then
+            echo "Stopped the orphaned host-tool gatekeeper (if any) and removed its state directory ${ht_orphan_dir}." >&2
+          else
+            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Orphaned host-tool state directory ${ht_orphan_dir} not removed" "HOST_TOOLS_STATE_DIR_KEPT"
+            echo "rc destroy: the orphaned host-tool state directory ${ht_orphan_dir} was NOT removed (see above)." >&2
+            exit 1
+          fi
+        fi
+      fi
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
       # Same refusal shape as an unresolvable name (rip-cage-ely4.7.13): say
       # which cages are still standing, so a typo reads as a typo rather than
@@ -110,6 +140,12 @@ cmd_destroy() {
   # attempted when a sandbox actually exists (rip-cage-o5ie): when it's
   # already absent, skip straight to the volume-removal loop below instead
   # of erroring out before reaching it.
+  [[ -n "$ht_state_dir" ]] || ht_state_dir=$(_rc_state_dir "$name")
+  if ! _host_tools_gatekeeper_stop "$name" "$ht_state_dir"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool gatekeeper for $name could not be stopped safely; nothing was removed" "HOST_TOOLS_STOP_REFUSED"
+    echo "rc destroy: refusing; the host-tool gatekeeper could not be stopped safely (see above). The cage, its volumes and its state directory are untouched. To recover: stop the gatekeeper by hand (pid in ${ht_state_dir}/gatekeeper.pid), remove ${ht_state_dir} yourself, then rerun rc destroy." >&2
+    exit 1
+  fi
   if [[ "$sandbox_exists" -eq 1 ]]; then
     if ! _msb_remove "$name" >/dev/null 2>&1; then
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
@@ -118,6 +154,10 @@ cmd_destroy() {
     # Clean up worktree gitfile if it exists
     rm -f "${HOME}/.cache/rc/${name}.gitfile"
   fi
+  # The whole state directory goes after the sandbox removal (tools.json and
+  # the log outlive the gatekeeper until here).
+  local ht_dir_kept=0
+  _host_tools_state_dir_remove "$name" "$ht_state_dir" || ht_dir_kept=1
   # `msb remove` (above) does NOT delete named volumes (no volume-deletion
   # flag on that command — a separate finding from the migration spike, see
   # this file's own header comment). Explicitly delete this cage's three
@@ -150,6 +190,10 @@ cmd_destroy() {
       '{name: $name, action: $action, volumes_removed: $volumes_removed}'
   else
     echo "Container $name and volumes destroyed."
+  fi
+  if [[ "$ht_dir_kept" -eq 1 ]]; then
+    echo "rc destroy: the host-tool state directory ${ht_state_dir} was NOT removed (see above)." >&2
+    return 1
   fi
 }
 
