@@ -26,10 +26,14 @@ set -uo pipefail
 #   G14 a branch named `config` in a submodule gitdir gets no refs/heads pin
 #   G15 a repo under a ro mount nested inside a rw one gets no cover (a rw
 #       pin would re-expose it)
-#   G16 extensions.worktreeConfig=true with no config.worktree refuses
+#   G16 extensions.worktreeConfig=true with no config.worktree: rc creates it
+#       empty on the host, says so in one line, and covers it read-only
+#   G16b the same when rc cannot create it refuses, naming one touch command
 #   G17 worktree mode: the main .git rc mounts gets the same ro covers, and
 #       rc's own /workspace/.git gitfile is the only mount there
-#   G18 worktree mode refuses, visibly, a missing config.worktree
+#   G18 worktree mode: a missing config.worktree is created empty and covered
+#   G19 the .git scan reaches a repo at depth 4 when RC_PROTECTED_SCAN_DEPTH
+#       is unset (and not at 2); a depth that is not a positive integer refuses
 #
 # G10-G18 fail on 12dd2bc (review findings 1, 2, 3, 5 on rip-cage-rsh9.2).
 #
@@ -187,16 +191,36 @@ else
 fi
 
 # G16: extensions.worktreeConfig=true with no config.worktree -- a file the
-# guest could create, which no mount can cover -- refuses the launch.
+# guest could create, which no mount can cover. rc creates it empty on the host
+# (git reads an empty file as no config) and covers it read-only (B1 ruling,
+# rip-cage-npbb round 2).
 REF="${T}/refrepo"
 mkdir -p "$REF" && git -C "$REF" init -q && git -C "$REF" config extensions.worktreeConfig true
 CONF_REF="${T}/cage-ref.yaml"
 sed -e "s#^  - \"${WS}:/workspace\"#  - \"${REF}:/workspace\"#" "$CONF" > "$CONF_REF"
 _dry_run "$CONF_REF" "$WS"
-if [[ $RCODE -ne 0 ]] && grep -qF "${REF}/.git/config.worktree" <<<"$OUT" && ! grep -q '^Would run: ' <<<"$OUT"; then
-  pass "G16 worktreeConfig=true with config.worktree missing refuses, naming the file"
+ARGV=$(grep '^Would run: ' <<<"$OUT" | head -1)
+if [[ $RCODE -eq 0 && -f "${REF}/.git/config.worktree" && ! -s "${REF}/.git/config.worktree" ]] \
+   && _has "${REF}/.git/config.worktree:/workspace/.git/config.worktree:ro" \
+   && [[ $(grep -cF "created it empty" <<<"$OUT") -eq 1 && "$(grep -F "created it empty" <<<"$OUT")" == *"${REF}/.git/config.worktree"* ]]; then
+  pass "G16 worktreeConfig=true with config.worktree missing: created empty, one line says so, covered ro"
 else
-  fail "G16 worktreeConfig refusal (rc ${RCODE}): $(tail -3 <<<"$OUT")"
+  fail "G16 worktreeConfig create-and-cover (rc ${RCODE}, file: $(ls -l "${REF}/.git/config.worktree" 2>&1)): $(tail -3 <<<"$OUT")"
+fi
+
+# G16b: rc cannot create it (the gitdir is not writable): refuse, naming the
+# one touch command that fixes every missing file at once.
+REF3="${T}/refrepo3"
+mkdir -p "$REF3" && git -C "$REF3" init -q && git -C "$REF3" config extensions.worktreeConfig true
+chmod a-w "${REF3}/.git"
+CONF_REF3="${T}/cage-ref3.yaml"
+sed -e "s#^  - \"${WS}:/workspace\"#  - \"${REF3}:/workspace\"#" "$CONF" > "$CONF_REF3"
+_dry_run "$CONF_REF3" "$WS"
+chmod u+w "${REF3}/.git"
+if [[ $RCODE -ne 0 ]] && grep -qF "touch ${REF3}/.git/config.worktree" <<<"$OUT" && ! grep -q '^Would run: ' <<<"$OUT"; then
+  pass "G16b config.worktree that rc cannot create refuses, naming the touch command"
+else
+  fail "G16b uncreatable config.worktree (rc ${RCODE}): $(tail -3 <<<"$OUT")"
 fi
 
 # G17: worktree mode -- rc up on the linked worktree. rc mounts the main .git
@@ -219,8 +243,8 @@ else
   fail "G17 worktree mode (rc ${RCODE}, /workspace/.git mounts: ${_n}) -- missing:${_miss} $(tail -3 <<<"$OUT")"
 fi
 
-# G18: worktree mode, worktreeConfig=true, no config.worktree anywhere: the
-# refusal reaches stderr (the dry-run mount preview silences its own).
+# G18: worktree mode, worktreeConfig=true, no config.worktree anywhere: rc
+# creates the main and the linked worktree's files empty and covers both.
 REF2="${T}/ref2"
 mkdir -p "$REF2" && git -C "$REF2" init -q && _git -C "$REF2" commit -q --allow-empty -m init
 _git -C "$REF2" worktree add -q "${T}/ref2-wt" -b r2
@@ -228,11 +252,38 @@ git -C "$REF2" config extensions.worktreeConfig true
 CONF_WT2="${T}/cage-wt2.yaml"
 sed -e "s#^  - \"${WS}:/workspace\"#  - \"${T}/ref2-wt:/workspace\"#" "$CONF" > "$CONF_WT2"
 _dry_run "$CONF_WT2" "${T}/ref2-wt"
-if [[ $RCODE -ne 0 ]] && grep -qF "${REF2}/.git/worktrees/ref2-wt/config.worktree" <<<"$OUT" && ! grep -q '^Would run: ' <<<"$OUT"; then
-  pass "G18 worktree mode refuses a missing config.worktree under worktreeConfig, visibly"
+ARGV=$(grep '^Would run: ' <<<"$OUT" | head -1)
+if [[ $RCODE -eq 0 && -f "${REF2}/.git/config.worktree" && -f "${REF2}/.git/worktrees/ref2-wt/config.worktree" ]] \
+   && _has "${REF2}/.git/config.worktree:/workspace/.git-main/config.worktree:ro" \
+   && _has "${REF2}/.git/worktrees/ref2-wt/config.worktree:/workspace/.git-main/worktrees/ref2-wt/config.worktree:ro"; then
+  pass "G18 worktree mode creates the missing config.worktree files and covers them ro"
 else
-  fail "G18 worktree-mode refusal (rc ${RCODE}): $(tail -3 <<<"$OUT")"
+  fail "G18 worktree-mode create-and-cover (rc ${RCODE}): $(tail -3 <<<"$OUT")"
 fi
+
+# G19: the .git leg's own default depth (R4). A repo at depth 4 inside a rw
+# mount is pinned with RC_PROTECTED_SCAN_DEPTH unset, and not at 2 -- so this
+# goes red if only the .git leg's default reverts to 2. Sourced directly: the
+# protected-name leg is not in play.
+BENCH="${T}/bench"
+mkdir -p "${BENCH}/a/b/c/repo" && git -C "${BENCH}/a/b/c/repo" init -q
+printf 'mounts:\n  - "%s:/w"\n' "$BENCH" > "${T}/bench.yaml"
+_gx() { ( unset RC_PROTECTED_SCAN_DEPTH; [[ $# -gt 0 ]] && export RC_PROTECTED_SCAN_DEPTH="$1"
+          # shellcheck source=/dev/null
+          source "${REPO_ROOT}/cli/lib/protected_paths.sh"; _git_exec_covers "${T}/bench.yaml" ) 2>&1; }
+_c="${BENCH}/a/b/c/repo/.git/config:/w/a/b/c/repo/.git/config:ro"
+_o=$(_gx)
+if grep -qxF -- "$_c" <<<"$_o"; then pass "G19 depth unset: the .git scan covers a repo at depth 4"; else fail "G19 depth unset: depth-4 repo not covered: $(tail -3 <<<"$_o")"; fi
+_o=$(_gx 2)
+if ! grep -qxF -- "$_c" <<<"$_o"; then pass "G19 RC_PROTECTED_SCAN_DEPTH=2 still caps the .git scan"; else fail "G19 depth 2 did not cap the .git scan"; fi
+for _d in 0 -1 abc unlimited 2.5; do
+  _o=$(_gx "$_d"); _r=$?
+  if [[ $_r -ne 0 ]] && grep -q 'positive integer' <<<"$_o" && ! grep -q -- '^-v$' <<<"$_o"; then
+    pass "G19 RC_PROTECTED_SCAN_DEPTH=${_d} refuses the .git scan, naming the valid values"
+  else
+    fail "G19 RC_PROTECTED_SCAN_DEPTH=${_d} (rc ${_r}): $(tail -2 <<<"$_o")"
+  fi
+done
 
 if grep -Eq '^(docker (save|tag|pull|build|image load)|msb (load|create|pull|image load))' "$CALL_LOG"; then
   fail "G9 dry-run reached a mutating runtime call: $(grep -E '^(docker|msb) ' "$CALL_LOG" | head -3 | tr '\n' ';')"

@@ -121,7 +121,9 @@ _protected_paths_load() {
 #
 # If any COMPONENT of PATH equals a protected entry, echo that entry and
 # return 0; otherwise echo nothing and return 1. Matching is component-equals,
-# never substring (ADR-023 D4's rule, kept).
+# never substring (ADR-023 D4's rule, kept). A "file:NAME" entry matches only
+# PATH's last component, and only when PATH is not a directory; a
+# "prune:NAME" entry never matches (see the list file's header).
 #
 # This is the single-path form, for paths rc computes from the host filesystem
 # rather than reads from the cage config. Callers split by what a hit means:
@@ -142,6 +144,20 @@ _protected_paths_path_match() {
 
   while IFS= read -r _entry; do
     [[ -z "${_entry}" ]] && continue
+    case "${_entry}" in
+      # A prune: line names no secret; it only steers the scan.
+      prune:*) continue ;;
+      # A file: line protects a FILE so named: the last component, never a
+      # directory.
+      file:*)
+        _component="${_path%/}"
+        _component="${_component##*/}"
+        if [[ "${_component}" == "${_entry#file:}" && ! -d "${_path}" ]]; then
+          printf '%s' "${_entry}"
+          return 0
+        fi
+        continue ;;
+    esac
     local _oldifs="$IFS"
     IFS='/'
     # shellcheck disable=SC2206
@@ -708,18 +724,34 @@ _protected_paths_breadcrumb() {
 #
 # SCAN DEPTH. Leg (b) walks each mounted tree to any depth by default, so a
 # workbench cage mounting ~/code covers the credentials in ~/code/<group>/
-# <repo>/ (rip-cage-npbb). Measured 2026-11-09: ~/code, 545k files, 0.19s
-# warm, 30 hits, 10 of them deeper than 5. A set $RC_PROTECTED_SCAN_DEPTH
-# caps the walk (find -maxdepth) for a tree too large to walk every launch;
+# <repo>/ (rip-cage-npbb). The walk is paid on EVERY rc up. Measured
+# 2026-11-09, GNU find in a plain non-interactive bash, ~/code (545k files):
+# 1.6s and 23 covers with the shipped prune: lines (2.2s and 30 covers
+# without them; the 7 dropped were SDK and source directories named
+# credentials), plus 0.5s for _git_exec_covers' .git walk. A set
+# $RC_PROTECTED_SCAN_DEPTH (a positive integer; anything else refuses) caps
+# the walk (find -maxdepth) for a tree too large to walk every launch;
 # anything past the cap is then uncovered.
+#
+# LIST PREFIXES (the list file's header has the operator's version): a
+# "file:NAME" line covers a FILE so named and never a directory, though the
+# scan still descends into such a directory; a "prune:NAME" line protects
+# nothing and stops the scan descending into a directory so named.
 # --------------------------------------------------------------------------
 _protected_paths_enforce() {
   local _conf="$1"
   # Depth bound for find: none unless RC_PROTECTED_SCAN_DEPTH is set (see
   # SCAN DEPTH above). Expanded as ${_depth_args[@]+...}: bash 3.2 + set -u
-  # rejects a bare empty-array expansion (ADR-008 D5).
+  # rejects a bare empty-array expansion (ADR-008 D5). Fail closed: 0, a
+  # negative or a non-integer would make find cover nothing.
   local -a _depth_args=()
-  [[ -n "${RC_PROTECTED_SCAN_DEPTH:-}" ]] && _depth_args=(-maxdepth "${RC_PROTECTED_SCAN_DEPTH}")
+  if [[ -n "${RC_PROTECTED_SCAN_DEPTH:-}" ]]; then
+    if [[ ! "${RC_PROTECTED_SCAN_DEPTH}" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Error: RC_PROTECTED_SCAN_DEPTH='${RC_PROTECTED_SCAN_DEPTH}' is not a positive integer. Unset it to scan each mounted tree whole (the default), or set it to a whole number 1 or more to cap the scan at that depth. Refusing to launch before any msb call (ADR-031 D2, fail closed)." >&2
+      return 1
+    fi
+    _depth_args=(-maxdepth "${RC_PROTECTED_SCAN_DEPTH}")
+  fi
 
   _protected_paths_check_deps || return 1
 
@@ -737,14 +769,38 @@ _protected_paths_enforce() {
   _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
-  # Build the find expression once: -name a -o -name b -o ...
-  local -a _find_expr=()
-  local _entry
+  # Build the find expressions once: -name a -o -name b -o ... for the
+  # protected names, and the same for the prune: names. A file: name is
+  # searched like any other; a directory it finds is dropped in the loop
+  # below, so the scan still descends into it. _plain and _fileonly hold
+  # newline-framed name sets for that check.
+  local -a _find_expr=() _prune_expr=()
+  local _entry _plain=$'\n' _fileonly=$'\n'
   while IFS= read -r _entry; do
     [[ -z "${_entry}" ]] && continue
+    case "${_entry}" in
+      prune:*)
+        if [[ ${#_prune_expr[@]} -gt 0 ]]; then _prune_expr+=(-o); fi
+        _prune_expr+=(-name "${_entry#prune:}")
+        continue ;;
+      file:*) _entry="${_entry#file:}"; _fileonly+="${_entry}"$'\n' ;;
+      *) _plain+="${_entry}"$'\n' ;;
+    esac
     if [[ ${#_find_expr[@]} -gt 0 ]]; then _find_expr+=(-o); fi
     _find_expr+=(-name "${_entry}")
   done <<< "${_entries}"
+  # A name match prints and keeps descending; only a non-matching prune:
+  # name stops the walk. -mindepth 1 keeps a mount root that carries a
+  # prune: name scanned (leg (a) already checked the root itself).
+  if [[ ${#_prune_expr[@]} -gt 0 ]]; then
+    _prune_expr=(-o \( "${_prune_expr[@]}" \) -prune)
+  fi
+  # A list of prune: lines alone protects nothing: the empty-list opt-out
+  # again, which _protected_paths_load refuses for the same reason.
+  if [[ ${#_find_expr[@]} -eq 0 ]]; then
+    echo "Error: the protected-paths list at ${_list:-\$RC_PROTECTED_PATHS} has only prune: lines, so it protects nothing. Refusing to launch — the mount-side floor has no opt-out (ADR-031 D2). Restore the protected names." >&2
+    return 1
+  fi
 
   local _breadcrumb=""
   local _host _guest _mode _real _component _found _rel _guest_target
@@ -796,6 +852,13 @@ _protected_paths_enforce() {
       done
       [[ "${_skip}" == "true" ]] && continue
 
+      # A file: name covers files only (~/.aws/credentials), not a directory
+      # such as an SDK's lib/credentials/ -- unless a plain line names it too.
+      if [[ -d "${_found}" && "${_fileonly}" == *$'\n'"${_found##*/}"$'\n'* \
+            && "${_plain}" != *$'\n'"${_found##*/}"$'\n'* ]]; then
+        continue
+      fi
+
       _guest_target="${_guest%/}/${_rel}"
 
       if [[ -d "${_found}" ]]; then
@@ -832,7 +895,7 @@ _protected_paths_enforce() {
         echo "Error: the cage config ${_conf} mounts ${_host}, which contains the protected path ${_found} — and that is neither a regular file nor a directory, so msb has no mount that can cover it. Refusing to launch rather than leaving it exposed (ADR-031 D2, fail closed). Move it out of the mounted tree, or narrow the mount." >&2
         return 1
       fi
-    done < <(find "${_host}" ${_depth_args[@]+"${_depth_args[@]}"} \( "${_find_expr[@]}" \) -print 2>/dev/null | LC_ALL=C sort)
+    done < <(find "${_host}" -mindepth 1 ${_depth_args[@]+"${_depth_args[@]}"} \( "${_find_expr[@]}" \) -print ${_prune_expr[@]+"${_prune_expr[@]}"} 2>/dev/null | LC_ALL=C sort)
   done <<< "${_mounts}"
 
   if [[ ${#_covers[@]} -gt 0 ]]; then
@@ -886,9 +949,17 @@ _protected_paths_enforce() {
 # --------------------------------------------------------------------------
 _git_exec_covers() {
   local _conf="$1"
-  # Same depth bound as _protected_paths_enforce's scan.
+  # Same depth bound, and the same fail-closed check, as
+  # _protected_paths_enforce's scan. No prune: lines here: a repo under
+  # node_modules still has a config the host's tools may read.
   local -a _depth_args=()
-  [[ -n "${RC_PROTECTED_SCAN_DEPTH:-}" ]] && _depth_args=(-maxdepth "${RC_PROTECTED_SCAN_DEPTH}")
+  if [[ -n "${RC_PROTECTED_SCAN_DEPTH:-}" ]]; then
+    if [[ ! "${RC_PROTECTED_SCAN_DEPTH}" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Error: RC_PROTECTED_SCAN_DEPTH='${RC_PROTECTED_SCAN_DEPTH}' is not a positive integer. Unset it to scan each mounted tree whole (the default), or set it to a whole number 1 or more to cap the scan at that depth. Refusing to launch before any msb call (ADR-002 D11, fail closed)." >&2
+      return 1
+    fi
+    _depth_args=(-maxdepth "${RC_PROTECTED_SCAN_DEPTH}")
+  fi
   local _mounts
   _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
@@ -988,17 +1059,19 @@ _git_exec_covers_one() {
 #   worktrees/*/commondir,       the same two, per linked worktree
 #   worktrees/*/config.worktree
 # config.worktree is read only under extensions.worktreeConfig=true; then a
-# missing one could be created, so this refuses rather than leave it open.
+# missing one could be created by the guest. So rc creates it EMPTY on the host
+# first (git reads an empty file as no config), says so in one stderr line, and
+# covers it read-only like the others (rip-cage-npbb ruling). The create is
+# exclusive (noclobber: O_EXCL), so it never writes through a symlink planted
+# at that name. If rc cannot create one, it refuses, naming the one touch
+# command that fixes every missing file.
 # Worktree mode calls this for the main .git rc mounts itself (cli/up.sh).
 _git_exec_ro_covers() {
-  local _h="$1" _g="$2" _wtc="" _missing="" _w _n
+  local _h="$1" _g="$2" _wtc="" _missing="" _created="" _w _n _wt=""
   [[ "$(git config -f "${_h}/config" --bool extensions.worktreeConfig 2>/dev/null)" == "true" ]] && _wtc=1
   [[ -f "${_h}/config" ]] && printf '%s\n' -v "${_h}/config:${_g}/config:ro"
-  if [[ -f "${_h}/config.worktree" ]]; then
-    printf '%s\n' -v "${_h}/config.worktree:${_g}/config.worktree:ro"
-  elif [[ -n "${_wtc}" ]]; then
-    _missing+=" ${_h}/config.worktree"
-  fi
+  # config.worktree for this gitdir and each linked worktree, as HOST<TAB>GUEST.
+  _wt="${_h}/config.worktree"$'\t'"${_g}/config.worktree"$'\n'
   [[ -f "${_h}/commondir" ]] && printf '%s\n' -v "${_h}/commondir:${_g}/commondir:ro"
   [[ -d "${_h}/info" ]] && printf '%s\n' -v "${_h}/info:${_g}/info:ro"
   [[ -d "${_h}/hooks" ]] && printf '%s\n' -v "${_h}/hooks:${_g}/hooks:ro"
@@ -1007,14 +1080,25 @@ _git_exec_ro_covers() {
     _w="${_w%/}"
     _n="${_w##*/}"
     [[ -f "${_w}/commondir" ]] && printf '%s\n' -v "${_w}/commondir:${_g}/worktrees/${_n}/commondir:ro"
-    if [[ -f "${_w}/config.worktree" ]]; then
-      printf '%s\n' -v "${_w}/config.worktree:${_g}/worktrees/${_n}/config.worktree:ro"
-    elif [[ -n "${_wtc}" ]]; then
-      _missing+=" ${_w}/config.worktree"
-    fi
+    _wt+="${_w}/config.worktree"$'\t'"${_g}/worktrees/${_n}/config.worktree"$'\n'
   done
+  while IFS=$'\t' read -r _w _n; do
+    [[ -n "${_w}" ]] || continue
+    if [[ ! -f "${_w}" && -n "${_wtc}" ]]; then
+      if ( set -C; : > "${_w}" ) 2>/dev/null; then
+        _created+=" ${_w}"
+      else
+        _missing+=" ${_w}"
+        continue
+      fi
+    fi
+    [[ -f "${_w}" ]] && printf '%s\n' -v "${_w}:${_n}:ro"
+  done <<< "${_wt}"
+  if [[ -n "${_created}" ]]; then
+    echo "Note: ${_h}/config sets extensions.worktreeConfig=true and config.worktree was missing, so rc created it empty (git reads an empty file as no config) and mounts it read-only:${_created}" >&2
+  fi
   if [[ -n "${_missing}" ]]; then
-    echo "Error: ${_h}/config sets extensions.worktreeConfig=true, so git also reads config.worktree, and these do not exist:${_missing}. A guest could create one and set a key the host's git runs, and rc can only make a file that exists read-only. Create them empty on the host (touch${_missing}) and rerun. Refusing to launch rather than leaving them writable (ADR-002 D11, fail closed)." >&2
+    echo "Error: ${_h}/config sets extensions.worktreeConfig=true, so git also reads config.worktree, and rc could not create these empty:${_missing}. A guest could create one and set a key the host's git runs, and rc can only make a file that exists read-only. Create them empty on the host (touch${_missing}) and rerun. Refusing to launch rather than leaving them writable (ADR-002 D11, fail closed)." >&2
     return 1
   fi
   return 0

@@ -61,7 +61,7 @@ Before it starts an existing cage, `rc up` checks the cage's image against an **
 Before any msb call, `rc up` reads `share/rip-cage/protected-paths` — a shipped list of known credential locations — and:
 
 - **refuses to launch** a config that mounts a listed path directly;
-- **covers** any listed path found inside a mounted tree (an empty read-only file over a file, an empty tmpfs over a directory);
+- **covers** any listed path found inside a mounted tree, at any depth (an empty read-only file over a file, an empty tmpfs over a directory; the list's `file:` and `prune:` prefixes are defined in its header). `RC_PROTECTED_SCAN_DEPTH=N`, a positive integer, caps the walk; any other value refuses;
 - **covers a listed *file* inside a *read-only* mount from inside the cage** — msb cannot create a file cover there, so after boot and before init `rc` bind-mounts an empty file over it as guest root, on every create and resume; if any cover fails, `rc up` stops the cage before init, naming the file. A listed directory inside a read-only mount is covered by msb, as before. Like every cover, a visibility default that in-guest root can undo ([config.md](config.md#the-floor-you-do-not-write-protected-paths));
 - **aborts** if the list itself is unreadable.
 

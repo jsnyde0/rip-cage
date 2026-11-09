@@ -189,7 +189,7 @@ The config is the whole project config, but a few things are computed from the h
 `share/rip-cage/protected-paths` is a shipped list of known credential locations — ssh, cloud, gpg, kube, env files. Before any msb call, `rc up`:
 
 - **refuses to launch** a config that mounts a listed path directly;
-- **covers** any listed path found inside a mounted tree (an empty read-only file over a file, an empty tmpfs over a directory);
+- **covers** any listed path found inside a mounted tree, at any depth (an empty read-only file over a file, an empty tmpfs over a directory). Two line prefixes, defined in the list's header: `file:` covers files only (the shipped `file:credentials` leaves an SDK's `lib/credentials/` directory visible), and `prune:` keeps the scan out of dependency trees (`node_modules`, `.venv`, `venv`, `site-packages`);
 - **covers a listed *file* inside a *read-only* mount from inside the cage.** msb cannot create a file cover there (the cage would die at boot; upstream [microsandbox#2000](https://github.com/superradcompany/microsandbox/issues/2000)), so `rc` mounts the tree without one and, after boot and before init, runs `mount --bind -o ro <empty> <file>` as guest root for each such file. Every resume re-applies them. If any cover fails, `rc up` stops the cage before init and names the file; the floor probe then asserts each covered file reads empty (`file-covers`). `rc up --dry-run` lists them as `Would cover <path> in-guest`. A listed directory inside a read-only mount is covered by msb, as before;
 - **refuses to launch** a mount line it cannot read unambiguously — a `:` inside a host or guest path — rather than scan the wrong tree;
 - **aborts** if the list is unreadable.

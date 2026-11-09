@@ -17,19 +17,30 @@
 #   (b) a listed path found INSIDE a mounted tree is auto-covered — a file with
 #       an empty read-only file mount, a directory with an empty tmpfs mount —
 #       so the cage sees the name but none of the content. A listed FILE inside
-#       a READ-ONLY mount cannot be covered (msb cannot create the cover's
-#       mount point there, and the boot dies), so `rc up` refuses that config
-#       instead, naming the file: narrow the mount so the file sits outside it;
+#       a READ-ONLY mount is covered from inside the cage, before init;
 #   (c) if this file cannot be read, `rc up` aborts before any msb call. There
 #       is no fail-open path and no opt-out.
 #
 # If a cover cannot be expressed for an entry, `rc up` refuses rather than
 # launching uncovered.
 #
+# TWO PREFIXES change what a line means:
+#   file:NAME   protects only a FILE so named (the ~/.aws/credentials shape);
+#               a DIRECTORY so named — an SDK's lib/credentials/ — stays
+#               visible, and the scan still looks inside it.
+#   prune:NAME  protects nothing: the (b) scan does not descend into a
+#               directory so named. For dependency trees, whose files are a
+#               package's own, not your secrets; a .env inside one is NOT
+#               covered. A mount whose own root has that name is still scanned.
+#
 # SCAN DEPTH: the (b) scan walks each mounted tree to any depth, so a cage
-# mounting ~/code covers ~/code/<group>/<repo>/.env (~0.2s warm for 545k
-# files). Set RC_PROTECTED_SCAN_DEPTH=N to cap the walk on a tree too large
-# to scan every launch; anything deeper than N is then left uncovered.
+# mounting ~/code covers ~/code/<group>/<repo>/.env. That walk is paid on every
+# `rc up`: measured 2026-11-09 with GNU find over ~/code (545k files), about
+# 1.6s for this scan and 0.5s for the .git scan beside it (2.2s before the
+# prune: lines below).
+# Set RC_PROTECTED_SCAN_DEPTH to a positive integer N to cap both walks on a
+# tree too large to scan every launch; anything deeper than N is then left
+# uncovered. Any other value refuses the launch.
 #
 # Blank lines and lines starting with '#' are ignored. Leading/trailing
 # whitespace is stripped.
@@ -56,7 +67,7 @@ private_key
 .pypirc
 
 # --- Generic credential files ------------------------------------------
-credentials
+file:credentials
 .secret
 
 # --- Environment files -------------------------------------------------
@@ -68,3 +79,9 @@ credentials
 .env
 .env.local
 .envrc
+
+# --- Dependency trees (prune: the scan skips them) ----------------------
+prune:node_modules
+prune:.venv
+prune:venv
+prune:site-packages

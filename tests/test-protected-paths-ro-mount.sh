@@ -20,6 +20,14 @@ set -uo pipefail
 #   R3  ro mount holding it two levels down           -> guest cover (scan depth)
 #   S1  depth-4 file in a rw mount, RC_PROTECTED_SCAN_DEPTH unset -> covered
 #   S2  the same with RC_PROTECTED_SCAN_DEPTH=2                -> not reached
+#   V1  RC_PROTECTED_SCAN_DEPTH not a positive integer -> refused, nothing emitted
+#   F1  a file:NAME entry covers a FILE so named, never a DIRECTORY (whose
+#       contents are still scanned)
+#   P1  a prune:NAME entry stops the scan descending into a dir so named; a
+#       mount whose root has that name is still scanned
+#   L1  the shipped list: credentials is file-only and dependency trees are
+#       pruned (an SDK's lib/credentials/ dir stays visible; ~/.aws/credentials
+#       shapes are covered)
 #   R4  any readonly value but absent/false is ro     -> guest cover (fail closed)
 #   R5  a guest target carrying a newline             -> refused (one token per line)
 #   D1  ro mount holding only a protected DIRECTORY   -> tmpfs cover, no guest cover
@@ -117,6 +125,59 @@ if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/w/a/b/c/$S:ro$"; th
 export RC_PROTECTED_SCAN_DEPTH=2
 run "$T/s1.yaml"
 if [[ $_rc -eq 0 ]] && ! printf '%s\n' "$_out" | grep -q -- "/w/a/b/c/$S"; then pass "S2 RC_PROTECTED_SCAN_DEPTH=2 still caps: the depth-4 file is not reached"; else fail "S2 depth 2 did not cap (rc $_rc, out: $_out, err: $_err)"; fi
+export RC_PROTECTED_SCAN_DEPTH="$_saved_depth"
+
+# --- V1: the depth override must be a positive integer (R5 of the review) ---
+for _d in 0 -1 abc unlimited 2.5; do
+  export RC_PROTECTED_SCAN_DEPTH="$_d"
+  run "$T/s1.yaml"
+  if [[ $_rc -ne 0 && -z "$_out" ]] && grep -q 'positive integer' <<<"$_err"; then pass "V1 RC_PROTECTED_SCAN_DEPTH=${_d} refuses, naming the valid values"; else fail "V1 RC_PROTECTED_SCAN_DEPTH=${_d} (rc $_rc, out: $_out, err: $_err)"; fi
+done
+export RC_PROTECTED_SCAN_DEPTH=3
+run "$T/s1.yaml"
+if [[ $_rc -eq 0 ]]; then pass "V1 RC_PROTECTED_SCAN_DEPTH=3 is accepted"; else fail "V1 depth 3 refused (err: $_err)"; fi
+export RC_PROTECTED_SCAN_DEPTH="$_saved_depth"
+
+# --- F1/P1: file-only and prune entries (B2 of the review) ------------------
+unset RC_PROTECTED_SCAN_DEPTH   # whole tree, the default; restored after L1
+printf '%s\n' "$S" "file:rc-dummy-cred" "prune:rc-dummy-deps" > "$T/protected-paths-fp"
+mkdir -p "$T/fptree/src/rc-dummy-cred" "$T/fptree/cfg" "$T/fptree/rc-dummy-deps/pkg" "$T/rc-dummy-deps"
+printf 'code\n' > "$T/fptree/src/rc-dummy-cred/client.py"
+printf 'MARKER\n' > "$T/fptree/src/rc-dummy-cred/$S"
+printf 'MARKER\n' > "$T/fptree/cfg/rc-dummy-cred"
+printf 'MARKER\n' > "$T/fptree/rc-dummy-deps/pkg/$S"
+printf 'MARKER\n' > "$T/rc-dummy-deps/$S"
+conf "$T/fp.yaml" "  - \"$T/fptree:/w\""
+RC_PROTECTED_PATHS="$T/protected-paths-fp" run "$T/fp.yaml"
+if [[ $_rc -eq 0 ]] && ! printf '%s\n' "$_out" | grep -qx -- "/w/src/rc-dummy-cred"; then pass "F1 a directory named by a file: entry gets no tmpfs cover"; else fail "F1 file: entry covered a directory (rc $_rc, out: $_out, err: $_err)"; fi
+if printf '%s\n' "$_out" | grep -q -- ":/w/cfg/rc-dummy-cred:ro$"; then pass "F1 a file named by a file: entry is covered"; else fail "F1 file: entry missed the file (out: $_out)"; fi
+if printf '%s\n' "$_out" | grep -q -- ":/w/src/rc-dummy-cred/$S:ro$"; then pass "F1 the scan still descends into that directory"; else fail "F1 the file-only dir's contents were not scanned (out: $_out)"; fi
+if ! printf '%s\n' "$_out" | grep -q -- "/w/rc-dummy-deps"; then pass "P1 nothing under a prune: dir is covered"; else fail "P1 the prune: dir was scanned (out: $_out)"; fi
+conf "$T/fp2.yaml" "  - \"$T/rc-dummy-deps:/d\""
+RC_PROTECTED_PATHS="$T/protected-paths-fp" run "$T/fp2.yaml"
+if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/d/$S:ro$"; then pass "P1 a mount whose root has a prune: name is still scanned"; else fail "P1 mount root pruned (rc $_rc, out: $_out, err: $_err)"; fi
+_pm=$(RC_PROTECTED_PATHS="$T/protected-paths-fp" _protected_paths_path_match "$T/fptree/rc-dummy-deps/pkg") && _pmr=0 || _pmr=1
+if [[ $_pmr -eq 1 ]]; then pass "P1 a prune: entry protects nothing (no path match)"; else fail "P1 prune: entry matched a path ($_pm)"; fi
+_pm=$(RC_PROTECTED_PATHS="$T/protected-paths-fp" _protected_paths_path_match "$T/fptree/src/rc-dummy-cred") && _pmr=0 || _pmr=1
+if [[ $_pmr -eq 1 ]]; then pass "F1 a file: entry does not match a directory path"; else fail "F1 file: entry matched a directory ($_pm)"; fi
+_pm=$(RC_PROTECTED_PATHS="$T/protected-paths-fp" _protected_paths_path_match "$T/fptree/cfg/rc-dummy-cred") && _pmr=0 || _pmr=1
+if [[ $_pmr -eq 0 ]]; then pass "F1 a file: entry matches a file path"; else fail "F1 file: entry missed a file path"; fi
+
+# --- L1: the shipped list carries the ruling --------------------------------
+L="$T/ltree"
+mkdir -p "$L/.venv/lib/python3.12/site-packages/anthropic/lib/credentials" "$L/node_modules/pkg" \
+         "$L/svc/src/credentials" "$L/aws" "$L/lib/venv/x" "$L/py/site-packages/y"
+printf 'code\n' > "$L/.venv/lib/python3.12/site-packages/anthropic/lib/credentials/__init__.py"
+printf 'x\n' > "$L/node_modules/pkg/.env"
+printf 'x\n' > "$L/lib/venv/x/.env"
+printf 'x\n' > "$L/py/site-packages/y/.env"
+printf 'code\n' > "$L/svc/src/credentials/mod.ts"
+printf 'x\n' > "$L/aws/credentials"
+conf "$T/l1.yaml" "  - \"$L:/w\""
+RC_PROTECTED_PATHS="${REPO_ROOT}/share/rip-cage/protected-paths" run "$T/l1.yaml"
+if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/w/aws/credentials:ro$"; then pass "L1 shipped list covers a credentials FILE"; else fail "L1 credentials file not covered (rc $_rc, out: $_out, err: $_err)"; fi
+if ! printf '%s\n' "$_out" | grep -qx -- "/w/svc/src/credentials" && ! printf '%s\n' "$_out" | grep -q -- "lib/credentials$"; then pass "L1 shipped list leaves credentials DIRECTORIES visible"; else fail "L1 a credentials directory was covered (out: $_out)"; fi
+if ! printf '%s\n' "$_out" | grep -qE -- "/(node_modules|\.venv|venv|site-packages)/"; then pass "L1 shipped list prunes node_modules, .venv, venv, site-packages"; else fail "L1 a dependency tree was scanned (out: $_out)"; fi
 export RC_PROTECTED_SCAN_DEPTH="$_saved_depth"
 
 # --- R5: a control character in a guest target is refused ------------------
