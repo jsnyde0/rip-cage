@@ -815,3 +815,123 @@ _host_tools_state_dir_remove() {
   fi
   rm -rf "${_d}"
 }
+
+# ---------------------------------------------------------------------------
+# rc doctor / rc test visibility (rip-cage-jdl2.6; ADR-032 D7). Read-only: no
+# function below starts, stops or signals anything. The pure text and state
+# producers live here so the human and JSON arms of doctor, and rc test's
+# drift line, say the same thing.
+# ---------------------------------------------------------------------------
+
+_HT_BYPASS_SENTENCE="A host tool reaches whatever its command reaches on the host; network.allow does not see it; rc checked the files its argv names, not the code they load."
+
+# _host_tools_drift_kind FILE_PRESENT LABEL -- "added", "removed" or "" (no
+# drift) from the declaration file's presence (present|absent) and the cage's
+# rc.host-tools label value (present|absent; a missing label reads absent).
+_host_tools_drift_kind() {
+  if [[ "$1" == present && "$2" == absent ]]; then echo added
+  elif [[ "$1" == absent && "$2" == present ]]; then echo removed
+  fi
+  return 0
+}
+
+# _host_tools_drift_text KIND -- the presence-drift line (KIND: added|removed).
+_host_tools_drift_text() {
+  printf 'declaration %s; rc up on the stopped cage, or rc up --replace, recreates\n' "$1"
+}
+
+# _host_tools_presence_drift CAGE -- "added", "removed" or "" for an existing cage.
+_host_tools_presence_drift() {
+  local _conf
+  _conf=$(_msb_label "$1" "rc.cage-conf" 2>/dev/null || true)
+  _host_tools_drift_kind "$(_host_tools_present "$1" "${_conf}")" "$(_up_host_tools_label_value "$1")"
+}
+
+# _host_tools_doctor_state CAGE [CAGE_STATE] -- the cage's host_tools object,
+# one line of JSON, for both output arms of rc doctor:
+#   {declared, state_dir, tools:[{name, verbs:[{name, timeout, possession_mode}]}],
+#    gatekeeper:{state: none|alive|dead, pid, cage_stopped}, presence_drift:
+#    null|"added"|"removed", contents_drift, load_error, sentence}
+# The declaration is located beside the config the rc.cage-conf label names;
+# the state directory is the rc.state-dir label, else the default. Tools come
+# from the current file when it loads, else from tools.json (what the running
+# gatekeeper loaded). Contents are compared only when the cage has the route
+# (label present), the file exists and tools.json exists.
+_host_tools_doctor_state() {
+  local _cage="$1" _cstate="${2:-}" _conf _file _present _label _sd
+  local _gstate=none _gpid="" _stopped=false _drift _cdrift=false _lerr="" _cur="" _src=""
+  local _mlist _errf _lrc=0 _declared=false
+  _conf=$(_msb_label "$_cage" "rc.cage-conf" 2>/dev/null || true)
+  _file=$(_host_tools_file "$_cage" "${_conf}")
+  _present=$(_host_tools_present "$_cage" "${_conf}")
+  _label=$(_up_host_tools_label_value "$_cage")
+  _sd=$(_msb_label "$_cage" "rc.state-dir" 2>/dev/null || true)
+  [[ -n "${_sd}" ]] || _sd=$(_rc_state_dir "$_cage")
+  _drift=$(_host_tools_drift_kind "${_present}" "${_label}")
+  if [[ "${_present}" == present || "${_label}" == present ]]; then _declared=true; fi
+
+  if _gpid=$(_host_tools_gatekeeper_pid "$_cage" "${_sd}"); then
+    if _host_tools_pid_is_gatekeeper "${_gpid}" "${_sd}"; then
+      _gstate=alive
+      if [[ -n "${_cstate}" && "${_cstate}" != running ]]; then _stopped=true; fi
+    else
+      _gstate=dead
+    fi
+  else
+    _gpid=""
+  fi
+
+  if [[ "${_present}" == present ]]; then
+    _mlist=$(mktemp "/tmp/rc-host-tools-doctor.XXXXXX") || _mlist=""
+    if [[ -n "${_mlist}" ]]; then
+      _errf="${_mlist}.err"
+      _host_tools_mounts_from_inspect "$_cage" >"${_mlist}" 2>/dev/null || true
+      _cur=$(_host_tools_load "${_file}" "${_mlist}" 2>"${_errf}") || _lrc=1
+      if [[ "${_lrc}" -ne 0 ]]; then
+        _cur=""
+        _lerr=$(head -1 "${_errf}" 2>/dev/null || true)
+        [[ -n "${_lerr}" ]] || _lerr="declaration does not load"
+      fi
+      rm -f "${_mlist}" "${_errf}"
+    fi
+  fi
+  if [[ -n "${_cur}" ]]; then
+    _src="${_cur}"
+  elif [[ -f "${_sd}/tools.json" ]]; then
+    _src=$(cat "${_sd}/tools.json" 2>/dev/null || true)
+  fi
+  # A tools.json that is not JSON lists nothing (and counts as drift below).
+  jq -e . <<<"${_src}" >/dev/null 2>&1 || _src=""
+  # A declaration that no longer loads is a change the running gatekeeper has
+  # not seen, whether or not tools.json exists.
+  if [[ "${_lrc}" -ne 0 ]]; then
+    _cdrift=true
+  elif [[ "${_present}" == present && "${_label}" == present && -f "${_sd}/tools.json" ]]; then
+    if [[ "$(jq -cS . <<<"${_cur}" 2>/dev/null)" != "$(jq -cS . "${_sd}/tools.json" 2>/dev/null)" ]]; then
+      _cdrift=true
+    fi
+  fi
+
+  jq -nc \
+    --argjson declared "${_declared}" \
+    --arg state_dir "${_sd}" \
+    --arg src "${_src}" \
+    --arg gstate "${_gstate}" \
+    --arg gpid "${_gpid}" \
+    --argjson stopped "${_stopped}" \
+    --arg drift "${_drift}" \
+    --argjson cdrift "${_cdrift}" \
+    --arg lerr "${_lerr}" \
+    --arg sentence "${_HT_BYPASS_SENTENCE}" \
+    '{declared: $declared,
+      state_dir: $state_dir,
+      tools: (if $src == "" then [] else
+        ($src | fromjson | [.tools // {} | to_entries[]
+          | {name: .key, verbs: [.value.verbs // {} | to_entries[]
+            | {name: .key, timeout: .value.timeout, possession_mode: (.value.returns_secret == true)}]}]) end),
+      gatekeeper: {state: $gstate, pid: (if $gpid == "" then null else ($gpid | tonumber) end), cage_stopped: $stopped},
+      presence_drift: (if $drift == "" then null else $drift end),
+      contents_drift: $cdrift,
+      load_error: (if $lerr == "" then null else $lerr end),
+      sentence: (if $declared then $sentence else null end)}'
+}

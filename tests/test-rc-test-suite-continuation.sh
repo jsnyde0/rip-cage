@@ -90,6 +90,12 @@ JSON
     echo "=== STUB HEADER: run-recipe-smokes.sh ==="
     exit "${RTC_SUITE4_EXIT:-0}"
     ;;
+  *"test-host-tool.sh"*)
+    # rip-cage-jdl2.6: the host-tool suite rc test appends after the five; the
+    # stub only needs it to answer (the arm and port ride on -e flags).
+    echo "=== STUB HEADER: test-host-tool.sh ==="
+    exit 0
+    ;;
   *)
     echo "stub msb: unhandled args: $*" >&2
     exit 1

@@ -569,6 +569,46 @@ _doctor_format_posture_probe() {
 }
 
 
+# _doctor_format_host_tools JSON -- the human "Host tools" section from the
+# host_tools object _host_tools_doctor_state built (ADR-032 D7). The JSON arm
+# embeds the same object, so the two arms cannot disagree.
+_doctor_format_host_tools() {
+  local _j="$1" _declared _gs _gp _stopped _drift _lerr
+  _declared=$(jq -r '.declared' <<<"$_j")
+  _gs=$(jq -r '.gatekeeper.state' <<<"$_j")
+  _gp=$(jq -r '.gatekeeper.pid // empty' <<<"$_j")
+  _stopped=$(jq -r '.gatekeeper.cage_stopped' <<<"$_j")
+  if [[ "$_declared" != "true" ]]; then
+    echo "Host tools: none declared"
+  else
+    echo "Host tools:"
+    jq -r '.tools[] | "  \(.name)", (.verbs[] | "    \(.name)  (timeout \(.timeout)s)" + (if .possession_mode then "  [possession-mode: the reply may carry a credential]" else "" end))' <<<"$_j"
+    echo "  $(jq -r '.sentence' <<<"$_j")"
+  fi
+  case "$_gs" in
+    alive)
+      if [[ "$_stopped" == "true" ]]; then
+        echo "  gatekeeper : alive (pid ${_gp}); the cage is stopped, and the gatekeeper restarts on rc up"
+      else
+        echo "  gatekeeper : alive (pid ${_gp})"
+      fi ;;
+    dead)
+      echo "  gatekeeper : dead (pid ${_gp}); the pid file names no live gatekeeper of this cage, so host-tool calls get no answer until rc up restarts it" ;;
+    *)
+      [[ "$_declared" == "true" ]] && echo "  gatekeeper : not running (no pid file)" ;;
+  esac
+  _drift=$(jq -r '.presence_drift // empty' <<<"$_j")
+  [[ -n "$_drift" ]] && echo "  drift      : $(_host_tools_drift_text "$_drift")"
+  _lerr=$(jq -r '.load_error // empty' <<<"$_j")
+  if [[ -n "$_lerr" ]]; then
+    echo "  drift      : declaration changed; rc up --replace applies it (rc up, if the cage is stopped) — it no longer loads: ${_lerr}"
+  elif [[ "$(jq -r '.contents_drift' <<<"$_j")" == "true" ]]; then
+    echo "  drift      : declaration changed; rc up --replace applies it (rc up, if the cage is stopped)"
+  fi
+  return 0
+}
+
+
 cmd_doctor() {
   if [[ "${1:-}" == "--host" ]]; then
     _doctor_host
@@ -577,7 +617,17 @@ cmd_doctor() {
   local name
   name=$(resolve_name "${1:-}") || exit 1
   if ! _msb_exists "$name"; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
+    # ADR-032 D7: a cage destroyed by hand leaves its state directory, and
+    # maybe a gatekeeper, behind. Name it before the exit.
+    local _orphan_line="" _orphan_pid
+    if _orphan_pid=$(_host_tools_gatekeeper_pid "$name") \
+        && _host_tools_pid_is_gatekeeper "$_orphan_pid" "$(_rc_state_dir "$name")"; then
+      _orphan_line="host-tool gatekeeper still running for this name (pid ${_orphan_pid}); rc destroy ${name} stops it"
+    fi
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container not found: $name${_orphan_line:+; $_orphan_line}" "CONTAINER_NOT_FOUND"
+    fi
+    [[ -n "$_orphan_line" ]] && echo "$_orphan_line" >&2
     echo "Error: container $name not found" >&2; exit 1
   fi
   verify_rc_container "$name"
@@ -783,6 +833,12 @@ cmd_doctor() {
 
   fi
 
+  # ADR-032 D7: the host-tool line, beside the egress findings. Host-side
+  # files and the state directory only, so it works on stopped cages too.
+  local host_tools_json
+  host_tools_json=$(_host_tools_doctor_state "$name" "$state") \
+    || host_tools_json='{"declared":false,"state_dir":"","tools":[],"gatekeeper":{"state":"none","pid":null,"cage_stopped":false},"presence_drift":null,"contents_drift":false,"load_error":"host-tool state could not be read","sentence":null}'
+
   # Uptime (humanized) — derive from updated_at ISO timestamp (msb's closest
   # counterpart to docker's State.StartedAt — see the field-read comment
   # above). Derived via
@@ -817,6 +873,7 @@ cmd_doctor() {
       --arg egress_config_override "$egress_config_override_label" \
       --arg transcript_persistence_probe "$transcript_persistence_probe" \
       --arg source_path_missing_hint "$source_path_missing_hint" \
+      --argjson host_tools "$host_tools_json" \
       '{
         name: $name,
         state: $state,
@@ -836,7 +893,8 @@ cmd_doctor() {
           cwd: $cwd_probe,
           workspace_resolution: $workspace_probe,
           bd_version_skew: $bd_version_probe
-        }
+        },
+        host_tools: $host_tools
       }
       + (if $source_path_missing_hint == "" then {}
          else {source_path_missing_hint: $source_path_missing_hint} end)'
@@ -862,6 +920,8 @@ cmd_doctor() {
     echo "  cwd                  : $cwd_probe"
     echo "  workspace-resolution : $workspace_probe"
     echo "  bd-version-skew      : $bd_version_probe"
+    echo ""
+    _doctor_format_host_tools "$host_tools_json"
   fi
 }
 

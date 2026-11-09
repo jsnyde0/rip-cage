@@ -104,6 +104,8 @@ Everything a docker flag used to express belongs in the Dockerfile, which is you
 | `rc test --e2e` | Full lifecycle end to end (slow; `RC_E2E_REBUILD=1` to rebuild first). |
 | `rc test --e2e-security` | Injection-exfil integration probes against real cages (slow). |
 
+The host-tool checks run when the cage's `rc.host-tools` label selects them: with a declared line, the client's list matches the running gatekeeper's `tools.json`, an unlisted verb and tool exit 2, the declared vsock port answers while its neighbour is refused and egress stays denied (a sample of the route, not a proof of msb's isolation); without one, `host-tool --list` exits 5. Nothing on the host is stopped, and no declared verb is called.
+
 The suite runs against **your** composed image, not a reference image someone else built. Checks that depend on a recipe you did not compose report `SKIP` with a reason rather than failing.
 
 ---
@@ -140,6 +142,7 @@ Top-level keys of `rc doctor <name> --output json`:
 | `source_path` | string | always | Host path recorded in the `rc.source.path` label at creation; empty string if unset. |
 | `labels` | object | always | One sub-key today: `rc.egress.config-override` (`"true"`/`"false"` — the workspace base-URL-override posture, [ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md) D1). |
 | `probes` | object | always | Ten status strings: `posture`, `beads_server`, `auth`, `dead_mounts`, `transcript_persistence`, `skills_mount`, `cwd`, `workspace_resolution`, `bd_version_skew`, `host_auth`. The first nine are the literal `"not running, no live probe"` when the cage is down; `host_auth` checks the host CCTOK secrets file, so it is computed either way, and reads `n/a — …` when the config declares no CCTOK secret. Otherwise each is prefixed `OK —` / `WARN —` / `FAIL —` / `INFO —`. |
+| `host_tools` | object | always | The host-tool line ([ADR-032](../decisions/ADR-032-host-tool-line.md) D7). Keys: `declared` (bool: the file exists or the cage's `rc.host-tools` label is `present`); `state_dir` (string); `tools` (array of `{name, verbs: [{name, timeout (seconds), possession_mode (bool, true for `returns_secret` verbs)}]}`, from the declaration when it loads, else from `tools.json`); `gatekeeper` (`{state: none\|alive\|dead, pid (number or null), cage_stopped (bool)}`); `presence_drift` (`"added"`, `"removed"` or null); `contents_drift` (bool); `load_error` (string or null); `sentence` (the fixed bypass sentence when declared, else null). |
 | `source_path_missing_hint` | string | only when the recorded host path no longer exists | The fix-hint text. The key is **omitted entirely** on a healthy cage, not set to an empty string. |
 
 The `posture` probe is where a recently-denied host surfaces: `rc doctor` mines the cage's trace log for `DNS query denied by network policy domain=<host>` and prints the exact config line to add. See [egress.md](egress.md).

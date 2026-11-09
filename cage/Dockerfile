@@ -181,6 +181,11 @@ COPY cage/guards/ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY tests/run-recipe-smokes.sh /usr/local/lib/rip-cage/run-recipe-smokes.sh
+# The host-tool line's in-guest checks (ADR-032 D7), run by `rc test`: root-owned and
+# 0555 like the floor probe, so the agent cannot edit the check of its own route.
+COPY tests/test-host-tool.sh /usr/local/lib/rip-cage/test-host-tool.sh
+RUN chown root:root /usr/local/lib/rip-cage/test-host-tool.sh \
+    && chmod 0555 /usr/local/lib/rip-cage/test-host-tool.sh
 COPY cage/agent/settings.json /etc/rip-cage/settings.json
 # cage-claude.md, cage-pi.md and the CC managed-settings floor-lock are provisioned
 # by composable recipes — examples/claude/, examples/pi/ and examples/dcg/

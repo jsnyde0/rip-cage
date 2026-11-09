@@ -30,6 +30,79 @@ _test_floor_probe_missing_line() {
 }
 
 
+# _test_suite_exec NAME SUITE ARM -- run one baked in-guest suite. The host-tool
+# suite also gets the line's port (rc's own constant, so the script holds no
+# copy) and the arm the cage's rc.host-tools label selects (present|absent).
+_test_suite_exec() {
+  local _name="$1" _suite="$2" _arm="$3"
+  if [[ "$_suite" == "test-host-tool.sh" ]]; then
+    _msb_exec "$_name" -e "RC_HOST_TOOL_PORT=${RC_HOST_TOOL_PORT}" -e "RC_HOST_TOOLS_DECLARED=${_arm}" -- "/usr/local/lib/rip-cage/${_suite}"
+  else
+    _msb_exec "$_name" -- "/usr/local/lib/rip-cage/${_suite}"
+  fi
+}
+
+# _test_host_tools_host_half NAME -- the declared arm's host-side check (ADR-032
+# D7 (a)): the client's list, taken through rc test's own exec at the absolute
+# path, names the same tools and verbs as <state>/tools.json -- what the RUNNING
+# gatekeeper loaded, never the file on disk (a changed file is doctor's contents
+# drift, not a test failure). Retries on busy for up to 30 s (RC_TEST_LIST_BUSY_SECS
+# shortens it for the hermetic test). Prints PASS/FAIL lines naming no tool or
+# verb; returns 1 on a FAIL. Calls no declared verb and stops nothing.
+# _test_ht_counts JSON -- "N tool(s)/M verb(s)" from a [[tool,[verbs]]] array, or
+# "unreadable" when it is not one. Counts only: rc names no tool (ADR-005 D12).
+_test_ht_counts() {
+  jq -r '"\(length) tool(s)/\([.[][1] | length] | add // 0) verb(s)"' <<<"${1:-}" 2>/dev/null || echo unreadable
+}
+
+_test_host_tools_host_half() {
+  local _name="$1" _sd _tj _out _rc _i=0 _max=30
+  local _jq_listed='[.result.tools // {} | to_entries[] | [.key, (.value | keys)]] | sort'
+  local _jq_loaded='[.tools // {} | to_entries[] | [.key, (.value.verbs // {} | keys)]] | sort'
+  local _got _want _ntools _nverbs
+  if [[ -n "${RC_TEST_LIST_BUSY_SECS:-}" ]]; then
+    if [[ "${RC_TEST_LIST_BUSY_SECS}" =~ ^[0-9]+$ ]]; then
+      _max="${RC_TEST_LIST_BUSY_SECS}"
+    else
+      echo "rc test: RC_TEST_LIST_BUSY_SECS='${RC_TEST_LIST_BUSY_SECS}' is not a non-negative integer; using 30" >&2
+    fi
+  fi
+  _sd=$(_up_host_tools_cage_state_dir "$_name")
+  _tj="${_sd}/tools.json"
+  if [[ ! -f "$_tj" ]]; then
+    echo "FAIL  [0] host-tools: list matches the running gatekeeper's declaration — ${_tj} is missing, so there is no record of what the gatekeeper loaded; run rc up"
+    return 1
+  fi
+  while :; do
+    _rc=0
+    _out=$(_msb_exec "$_name" -- /usr/local/bin/host-tool --list --json 2>&1) || _rc=$?
+    if [[ "$_rc" -eq 4 && "$_out" == *'"busy"'* && "$_i" -lt "$_max" ]]; then
+      sleep 1
+      _i=$((_i + 1))
+      continue
+    fi
+    break
+  done
+  if [[ "$_rc" -eq 4 && "$_out" == *'"busy"'* ]]; then
+    echo "FAIL  [0] host-tools: list matches the running gatekeeper's declaration — saturated line: the gatekeeper answered busy for ${_max} s"
+    return 1
+  fi
+  if [[ "$_rc" -ne 0 ]]; then
+    echo "FAIL  [0] host-tools: list matches the running gatekeeper's declaration — host-tool --list exited ${_rc}: $(printf '%s' "$_out" | head -1)"
+    return 1
+  fi
+  _got=$(jq -c "$_jq_listed" <<<"$_out" 2>/dev/null) || _got=""
+  _want=$(jq -c "$_jq_loaded" "$_tj" 2>/dev/null) || _want=""
+  if [[ -z "$_got" || -z "$_want" || "$_got" != "$_want" ]]; then
+    echo "FAIL  [0] host-tools: list does not match the running gatekeeper's declaration — list has $(_test_ht_counts "$_got"), loaded has $(_test_ht_counts "$_want") (names withheld; compare host-tool --list inside the cage with ${_tj})"
+    return 1
+  fi
+  _ntools=$(jq 'length' <<<"$_want")
+  _nverbs=$(jq '[.[][1] | length] | add // 0' <<<"$_want")
+  echo "PASS  [0] host-tools: list matches the running gatekeeper's declaration — ${_ntools} tool(s), ${_nverbs} verb(s)"
+}
+
+
 cmd_test() {
   if [[ "${1:-}" == "--host" ]]; then
     shift
@@ -62,6 +135,16 @@ cmd_test() {
   # --test-mode to get a PASS|FAIL [0] beads-host-dolt — <detail> line.
   local ws_source
   ws_source=$(_msb_label "$name" "rc.source.path" 2>/dev/null || true)
+  # _beads_redirect_refusal rule 6 reads _UP_CONF_DIR, which rc up sets from the
+  # config it launched with. Set it from the cage's rc.cage-conf label so this
+  # check sees the same --conf directory (ADR-032 D2; rip-cage-jdl2.3.1 note).
+  local _tc_conf
+  _tc_conf=$(_msb_label "$name" "rc.cage-conf" 2>/dev/null || true)
+  if [[ -n "$_tc_conf" ]]; then
+    _UP_CONF_DIR="$(dirname "$(_protected_paths_walk_path "$_tc_conf" 2>/dev/null || printf '%s' "$_tc_conf")")"
+  else
+    _UP_CONF_DIR=""
+  fi
   local preflight_beads_dir="" preflight_dolt_mode=""
   local preflight_skip_line=""  # if set, skip _bd_host_preflight and use this line
   if [[ -n "$ws_source" ]]; then
@@ -131,12 +214,27 @@ cmd_test() {
   # image's floor is broken, that is the finding. A missing probe is reported as
   # a FAIL line (overall_rc=1) and the probe is left out of the run.
   local floor_missing_line="" overall_rc=0
-  local suites=(floor-probe.sh test-safety-stack.sh test-skills.sh test-bd-roundtrip.sh run-recipe-smokes.sh)
+  local suites=(floor-probe.sh test-safety-stack.sh test-skills.sh test-bd-roundtrip.sh run-recipe-smokes.sh test-host-tool.sh)
   if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then
     suites=("${suites[@]:1}")
     overall_rc=1
   else
     floor_missing_line=""
+  fi
+
+  # ADR-032 D7: the arm is keyed on the cage's rc.host-tools label (the route
+  # it actually has), not on the file. Under presence drift say so, then run
+  # the arm the label selects. The declared arm's host-side list check runs
+  # here; the in-guest half is the baked test-host-tool.sh in the suite list.
+  local ht_arm ht_drift ht_lines="" ht_fail=0
+  ht_arm=$(_up_host_tools_label_value "$name")
+  ht_drift=$(_host_tools_presence_drift "$name")
+  if [[ -n "$ht_drift" ]]; then
+    log "INFO  host-tools: $(_host_tools_drift_text "$ht_drift")"
+  fi
+  if [[ "$ht_arm" == "present" ]]; then
+    ht_lines=$(_test_host_tools_host_half "$name") || ht_fail=1
+    [[ "$ht_fail" -ne 0 ]] && overall_rc=1
   fi
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -148,7 +246,7 @@ cmd_test() {
     local suite suite_output suite_rc
     for suite in "${suites[@]}"; do
       suite_rc=0
-      suite_output=$(_msb_exec "$name" -- "/usr/local/lib/rip-cage/${suite}" 2>&1) || suite_rc=$?
+      suite_output=$(_test_suite_exec "$name" "$suite" "$ht_arm" 2>&1) || suite_rc=$?
       output="${output}
 ${suite_output}"
       if [[ "$suite_rc" -ne 0 ]]; then
@@ -163,6 +261,7 @@ FAIL  [0] ${suite%.sh}: suite exited ${suite_rc} — a suite that exits non-zero
     done
     # Prepend host-side preflight line so the parse loop handles it uniformly
     output="${preflight_line}
+${ht_lines}
 ${output}"
     # Parse PASS/FAIL lines into JSON array
     local checks="[]" overall="pass"
@@ -193,9 +292,10 @@ ${output}"
     # exits non-zero and later suites would never run. Mirrors the json arm.
     local suite suite_rc
     [[ -n "$floor_missing_line" ]] && echo "$floor_missing_line"
+    [[ -n "$ht_lines" ]] && echo "$ht_lines"
     for suite in "${suites[@]}"; do
       suite_rc=0
-      _msb_exec "$name" -- "/usr/local/lib/rip-cage/${suite}" || suite_rc=$?
+      _test_suite_exec "$name" "$suite" "$ht_arm" || suite_rc=$?
       [[ "$suite_rc" -ne 0 ]] && overall_rc=1
     done
     return "$overall_rc"
