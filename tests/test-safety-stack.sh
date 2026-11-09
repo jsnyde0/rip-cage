@@ -509,6 +509,63 @@ else
   check "sudo dpkg is refused" "pass"
 fi
 
+# Symlink-chown negative control (rip-cage-rsh9.1 round 2). The pre-fix grant
+# `chown agent:agent /home/agent/.pi/agent` followed a symlink: point the path at
+# a root file, run the grant, own the file (measured: /etc/rip-cage/release went
+# agent:agent). This runs the attack for real against both the old raw grant and
+# the own-agent-dir helper that replaced it, then asserts the target stays root.
+# ~/.pi/agent is set aside and restored; a mount there cannot be renamed, which
+# also blocks the attack, so the check reports info and skips.
+# IF THIS GOES RED the release marker in THIS cage is now agent-owned: recreate
+# the cage (rc up --replace) after fixing the grant.
+_rsh9_target=/etc/rip-cage/release
+_rsh9_pa=/home/agent/.pi/agent
+_rsh9_aside="${_rsh9_pa}.rc-rsh9-aside.$$"
+_rsh9_ready=1
+if [[ -e "$_rsh9_pa" || -L "$_rsh9_pa" ]]; then
+  mv "$_rsh9_pa" "$_rsh9_aside" 2>/dev/null || _rsh9_ready=0
+fi
+if [[ "$_rsh9_ready" -eq 1 ]] && mkdir -p /home/agent/.pi && ln -s "$_rsh9_target" "$_rsh9_pa" 2>/dev/null; then
+  _rsh9_raw_rc=0; sudo -n /usr/bin/chown agent:agent "$_rsh9_pa" >/dev/null 2>&1 || _rsh9_raw_rc=$?
+  _rsh9_owner_raw=$(stat -c '%U' "$_rsh9_target")
+  _rsh9_h_rc=0; sudo -n /usr/local/lib/rip-cage/own-agent-dir pi-agent >/dev/null 2>&1 || _rsh9_h_rc=$?
+  _rsh9_owner_h=$(stat -c '%U' "$_rsh9_target")
+  rm -f "$_rsh9_pa"
+  if [[ "$_rsh9_owner_raw" != "root" ]]; then
+    check "sudo chown via a symlinked ~/.pi/agent cannot take a root file" "fail" "raw chown grant (rc ${_rsh9_raw_rc}) made ${_rsh9_target} owned by ${_rsh9_owner_raw}"
+  else
+    check "sudo chown via a symlinked ~/.pi/agent cannot take a root file" "pass" "raw chown refused (rc ${_rsh9_raw_rc}); ${_rsh9_target} still root"
+  fi
+  if [[ "$_rsh9_owner_h" != "root" ]]; then
+    check "own-agent-dir refuses a symlinked ~/.pi/agent" "fail" "helper (rc ${_rsh9_h_rc}) made ${_rsh9_target} owned by ${_rsh9_owner_h}"
+  elif [[ "$_rsh9_h_rc" -ne 2 ]]; then
+    check "own-agent-dir refuses a symlinked ~/.pi/agent" "fail" "helper exit ${_rsh9_h_rc} (expected 2, refused) — owner stayed root but the refusal path did not run"
+  else
+    check "own-agent-dir refuses a symlinked ~/.pi/agent" "pass" "refused (exit 2); ${_rsh9_target} still root"
+  fi
+else
+  info "sudo chown via a symlinked ~/.pi/agent cannot take a root file" "could not substitute ${_rsh9_pa} (a mount point?) — the attack is blocked there"
+fi
+if [[ -e "$_rsh9_aside" || -L "$_rsh9_aside" ]]; then
+  mv "$_rsh9_aside" "$_rsh9_pa" 2>/dev/null \
+    || echo "WARN: could not restore ${_rsh9_pa} from ${_rsh9_aside}" >&2
+fi
+
+# Hardlink negative control: the guest boots with fs.protected_hardlinks=0, so
+# the agent can hardlink a root file into its mise tree; the old `chown -R`
+# then chowned that inode. own-agent-dir skips multi-link files. When the mise
+# dir is a named volume (another filesystem) the link cannot be made at all.
+_rsh9_hl=/home/agent/.local/share/mise/.rc-rsh9-hardlink.$$
+if [[ -d /home/agent/.local/share/mise && ! -L /home/agent/.local/share/mise ]] \
+   && ln "$_rsh9_target" "$_rsh9_hl" 2>/dev/null; then
+  _rsh9_m_rc=0; sudo -n /usr/local/lib/rip-cage/own-agent-dir mise >/dev/null 2>&1 || _rsh9_m_rc=$?
+  _rsh9_owner_m=$(stat -c '%U' "$_rsh9_target")
+  rm -f "$_rsh9_hl"
+  check "own-agent-dir mise skips a hardlinked root file" "$([[ "$_rsh9_owner_m" == "root" ]] && echo pass || echo fail)" "helper exit ${_rsh9_m_rc}; ${_rsh9_target} owned by ${_rsh9_owner_m}"
+else
+  info "own-agent-dir mise skips a hardlinked root file" "cannot hardlink ${_rsh9_target} into the mise dir here (separate volume or protected_hardlinks=1) — the attack is blocked there"
+fi
+
 # TIOCSTI keystroke injection: init lowers dev.tty.legacy_tiocsti to 0 each boot.
 if [[ -r /proc/sys/dev/tty/legacy_tiocsti ]]; then
   _rsh9_tiocsti=$(cat /proc/sys/dev/tty/legacy_tiocsti)

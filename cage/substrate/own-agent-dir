@@ -1,0 +1,135 @@
+#!/usr/bin/python3 -I
+"""own-agent-dir TARGET -- give one fixed agent directory back to the agent.
+
+The agent's ONLY ownership grant (ADR-002 D12, rip-cage-rsh9.1). msb creates a
+mount's parent dirs and a fresh named volume as root, so init needs root to hand
+them to `agent`. A raw `sudo chown agent:agent /home/agent/X` grant does that
+and more: chown follows a symlink, so the agent replaces X with a symlink to any
+root file, runs the grant, and owns the file (/etc/passwd -> root). `chown -h`
+still follows symlinks in the intermediate components (~/.pi, ~/.local), and the
+guest boots with fs.protected_hardlinks=0, so a hardlinked root file in a -R tree
+is chowned through its inode. All three were measured live on the pre-fix image.
+
+This helper closes all of them by construction:
+  - TARGET is one of four fixed names; the path is never caller-supplied.
+  - Every component from /home/agent down is opened with O_NOFOLLOW|O_DIRECTORY,
+    so a symlink anywhere in the path refuses (exit 2). Directories cannot be
+    hardlinked, so the directory fd is the real directory.
+  - The one recursive target (mise) is walked by fd with os.fwalk, never
+    following symlinks or leaving its filesystem. Each non-directory entry is
+    opened O_PATH|O_NOFOLLOW and chowned through that same fd, so the inode
+    checked is the inode changed. Symlinks are left alone; a file with more than
+    one hard link is skipped, since it may be a root file linked in.
+
+Root-owned 0555 in the image; installed at /usr/local/lib/rip-cage/own-agent-dir.
+Run under sudo with -I: no PYTHON* env, no user site, no script-dir imports.
+Exit: 0 done (or nothing to do), 2 refused (substitution), 64 usage.
+"""
+import os
+import stat
+import sys
+
+HOME = "/home/agent"
+AGENT_UID = 1000
+AGENT_GID = 1000
+TARGETS = {
+    "claude": ((".claude",), False),
+    "claude-state": ((".claude-state",), False),
+    "pi-agent": ((".pi", "agent"), False),
+    "mise": ((".local", "share", "mise"), True),
+}
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _open_nofollow(home, parts):
+    """fd of home/parts with no symlink anywhere; None if absent. Raises on substitution."""
+    fd = os.open(home, _DIR_FLAGS)
+    try:
+        for part in parts:
+            try:
+                nfd = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            except FileNotFoundError:
+                os.close(fd)
+                return None
+            os.close(fd)
+            fd = nfd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _own_fd(fd, uid, gid):
+    st = os.fstat(fd)
+    if st.st_uid != uid or st.st_gid != gid:
+        os.fchown(fd, uid, gid)
+    return True
+
+
+def fix(home, target, uid, gid):
+    """Return (rc, chowned paths, skipped paths). Core of the sudo entry point."""
+    done, skipped = [], []
+    if target not in TARGETS:
+        return 64, done, skipped
+    parts, recursive = TARGETS[target]
+    top = os.path.join(home, *parts)
+    try:
+        fd = _open_nofollow(home, parts)
+    except OSError as e:
+        # ELOOP (a symlink) or ENOTDIR (a file, a symlink to one): substitution.
+        print(f"own-agent-dir: refused {top}: not a real directory ({e.strerror})", file=sys.stderr)
+        return 2, done, skipped
+    if fd is None:
+        return 0, done, skipped
+    try:
+        _own_fd(fd, uid, gid)
+        done.append(top)
+        if not recursive:
+            return 0, done, skipped
+        top_dev = os.fstat(fd).st_dev
+        for root, dirs, files, rfd in os.fwalk(".", dir_fd=fd, follow_symlinks=False):
+            base = os.path.normpath(os.path.join(top, root))
+            if os.fstat(rfd).st_dev != top_dev:
+                dirs[:] = []
+                skipped.append(base)
+                continue
+            if root != ".":
+                _own_fd(rfd, uid, gid)
+                done.append(base)
+            for name in files:
+                path = os.path.join(base, name)
+                try:
+                    efd = os.open(name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=rfd)
+                except OSError:
+                    skipped.append(path)
+                    continue
+                try:
+                    st = os.fstat(efd)
+                    if stat.S_ISLNK(st.st_mode) or st.st_nlink > 1:
+                        skipped.append(path)
+                        continue
+                    if st.st_uid != uid or st.st_gid != gid:
+                        # The O_PATH fd's /proc magic link names exactly this inode.
+                        os.chown(f"/proc/self/fd/{efd}", uid, gid)
+                    done.append(path)
+                finally:
+                    os.close(efd)
+        return 0, done, skipped
+    finally:
+        os.close(fd)
+
+
+def main(argv):
+    if len(argv) != 2:
+        print("usage: own-agent-dir {" + "|".join(sorted(TARGETS)) + "}", file=sys.stderr)
+        return 64
+    rc, _done, skipped = fix(HOME, argv[1], AGENT_UID, AGENT_GID)
+    if rc == 64:
+        print(f"own-agent-dir: unknown target {argv[1]!r}", file=sys.stderr)
+    for path in skipped:
+        print(f"own-agent-dir: skipped {path} (symlink, hardlink or other filesystem)", file=sys.stderr)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

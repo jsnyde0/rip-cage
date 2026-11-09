@@ -132,14 +132,17 @@ RUN mkdir -p /usr/local/lib/rip-cage/bin \
        done
 
 # Non-root user. The sudo grant is scoped to commands that cannot run code as
-# root (ADR-002 D12): the four chown lines init needs for root-created mount
-# parents, and one exact-argv sysctl that can only LOWER legacy_tiocsti (closes
-# TIOCSTI keystroke injection; init runs it each boot). No package manager:
-# apt-get/dpkg each run arbitrary code as root, so installs belong in the
-# FROM-extension Dockerfile at build time (ADR-031 D4, rip-cage-rsh9.1).
+# root or hand the agent a root file (ADR-002 D12): own-agent-dir with each of
+# its four fixed targets (init hands root-created mount parents and volumes back
+# to the agent; the helper refuses a symlink anywhere in the path and skips
+# hardlinks, which a raw `chown` grant did not -- rip-cage-rsh9.1 round 2), and
+# one exact-argv sysctl that can only LOWER legacy_tiocsti (closes TIOCSTI
+# keystroke injection; init runs it each boot). No package manager: apt-get/dpkg
+# each run arbitrary code as root, so installs belong in the FROM-extension
+# Dockerfile at build time (ADR-031 D4, rip-cage-rsh9.1).
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sysctl -w dev.tty.legacy_tiocsti\=0, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sysctl -w dev.tty.legacy_tiocsti\=0, /usr/local/lib/rip-cage/own-agent-dir claude, /usr/local/lib/rip-cage/own-agent-dir claude-state, /usr/local/lib/rip-cage/own-agent-dir pi-agent, /usr/local/lib/rip-cage/own-agent-dir mise" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 # rip-proxy user + /opt/rip-cage-proxy venv (PyYAML/dnspython for the SNI
@@ -211,6 +214,11 @@ COPY cage/init/init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY cage/substrate/host-tool /usr/local/bin/host-tool
 RUN chown root:root /usr/local/bin/host-tool \
     && chmod 0555 /usr/local/bin/host-tool
+# The agent's only ownership grant (ADR-002 D12): root-owned 0555 so the agent
+# cannot edit what sudo runs; probe-checked (guard-file).
+COPY cage/substrate/own-agent-dir /usr/local/lib/rip-cage/own-agent-dir
+RUN chown root:root /usr/local/lib/rip-cage/own-agent-dir \
+    && chmod 0555 /usr/local/lib/rip-cage/own-agent-dir
 COPY cage/substrate/skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 COPY tests/_agent-readability.sh /usr/local/lib/rip-cage/_agent-readability.sh
@@ -232,8 +240,8 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
 USER agent
 WORKDIR /home/agent
 # Pre-create mount targets so Docker inherits agent ownership on first use.
-# If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
-# sudo chown as a fallback (see sudoers above).
+# If msb creates a mount target root-owned, init-rip-cage.sh hands it back via
+# `sudo own-agent-dir` (see sudoers above).
 RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/share/mise
 # Mise global config: enable idiomatic version file detection for tools that use
 # .nvmrc (node) and packageManager field in package.json (yarn). Without this,

@@ -30,7 +30,7 @@ Host (macOS/Linux)
 │   ├── cage.yaml.template      The shipped project-config template — a native msb --conf file
 │   └── protected-paths         Fail-closed list of credential locations rc refuses to mount
 ├── cage/Dockerfile             The base image, built via `docker build`, loaded into msb
-├── cage/floor/floor-probe.sh   Fail-closed containment check ON THE BUILT IMAGE (21 checks)
+├── cage/floor/floor-probe.sh   Fail-closed containment check ON THE BUILT IMAGE
 ├── cage/boot/boot.json         Boot descriptor — daemons + multiplexers; schema in its _readme key
 ├── cage/init/init-rip-cage.sh  Runs in the sandbox at start: floor probe first, then auth,
 │                               settings, git identity, beads
@@ -59,7 +59,7 @@ Upgrade path: when `ms` publishes Linux binaries, swap `command`/`args` in `sett
 
 ## Key gotchas
 
-- Mounts get their parent dirs created as root, which is why `init-rip-cage.sh` starts with `sudo chown agent:agent ~/.claude`.
+- Mounts get their parent dirs created as root, which is why `init-rip-cage.sh` starts with `sudo own-agent-dir claude` (the agent's only ownership grant; a raw `chown` grant follows symlinks, ADR-002 D12).
 - `container_name()` (`cli/lib/container.sh`) derives cage names from the last two path components; collisions get a 4-char hash suffix.
 - Every resume is a fresh kernel boot under msb — processes die between stop and start, so `rc` re-runs init on each resume.
 - msb does not follow a host-side symlink in a mount source; since msb 0.7.x it refuses at validation (use the resolved path, or msb's `follow-root-symlinks`). On macOS write `/private/tmp/...`, never `/tmp/...`.

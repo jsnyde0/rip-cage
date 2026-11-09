@@ -396,10 +396,10 @@ else
   echo "[rip-cage] Beads: no metadata.json — defaulting to embedded mode"
 fi
 
-# 1. Fix ownership of bind-mounted dirs (Docker may create them as root)
-if [[ ! -L /home/agent/.claude ]]; then
-  sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
-fi
+# 1. Fix ownership of mount parents msb may create as root. own-agent-dir is
+# the agent's only ownership grant (ADR-002 D12): it refuses a symlink anywhere
+# in the path, so a caller-side -L check is not needed.
+sudo -n /usr/local/lib/rip-cage/own-agent-dir claude 2>/dev/null || true
 # BASE-INFRA (pi, rip-cage-p35a.3 audit): Pi config dir is container-local
 # (ADR-019 D1 evolved). Nothing in the image mkdirs .pi/agent at build time,
 # and the shipped template mounts nothing under it (rip-cage-3w82), so init
@@ -417,7 +417,7 @@ fi
 # this genuinely cannot move to pi's recipe. Stays base-infra.
 if [[ ! -L /home/agent/.pi/agent ]]; then
   mkdir -p /home/agent/.pi/agent
-  sudo chown agent:agent /home/agent/.pi/agent 2>/dev/null || true
+  sudo -n /usr/local/lib/rip-cage/own-agent-dir pi-agent 2>/dev/null || true
 fi
 # rip-cage-fwp3's extensions/ mkdir RELOCATED (rip-cage-p35a.3) to pi's own
 # recipe as a TOOL 'init' agent-context boot-hook (examples/pi/manifest-
@@ -705,9 +705,7 @@ if _is_mountpoint /home/agent/.claude/projects; then
     echo "[rip-cage] Warning: RC_HOST_PROJECT_KEY unset — sessions will land under -workspace/ on host (not unified with host project key)" >&2
   fi
 elif [ -d /home/agent/.claude-state ]; then
-  if [[ ! -L /home/agent/.claude-state ]]; then
-    sudo chown agent:agent /home/agent/.claude-state 2>/dev/null || true
-  fi
+  sudo -n /usr/local/lib/rip-cage/own-agent-dir claude-state 2>/dev/null || true
   for dir in projects sessions; do
     # Under a whole-~/.claude mount these are the HOST's own dirs: sessions
     # already persist there, and a link would land inside them (rip-cage-5fny).
@@ -861,7 +859,7 @@ if [ -r /workspace ]; then
     # avoid a recursive chown on every boot once the shared cache grows large.
     if [ ! -L /home/agent/.local/share/mise ] \
        && [ "$(stat -c %U /home/agent/.local/share/mise 2>/dev/null)" != "agent" ]; then
-      sudo chown -R agent:agent /home/agent/.local/share/mise 2>/dev/null || true
+      sudo -n /usr/local/lib/rip-cage/own-agent-dir mise 2>/dev/null || true
     fi
     # Fail-loud on install errors so the agent sees them; but don't block container start —
     # a broken lockfile shouldn't render the whole cage unusable.

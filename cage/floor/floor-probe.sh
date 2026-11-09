@@ -214,10 +214,10 @@ fi
 # host-side that this list and that Dockerfile line still say the same thing —
 # so the two cannot drift apart without a red host suite. Change one, change
 # both.
-_rc_floor_sudo_expected='/usr/bin/chown -R agent:agent /home/agent/.local/share/mise
-/usr/bin/chown agent:agent /home/agent/.claude
-/usr/bin/chown agent:agent /home/agent/.claude-state
-/usr/bin/chown agent:agent /home/agent/.pi/agent
+_rc_floor_sudo_expected='/usr/local/lib/rip-cage/own-agent-dir claude
+/usr/local/lib/rip-cage/own-agent-dir claude-state
+/usr/local/lib/rip-cage/own-agent-dir mise
+/usr/local/lib/rip-cage/own-agent-dir pi-agent
 /usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0'
 _rc_floor_sudoers=/etc/sudoers.d/agent
 if [ ! -f "$_rc_floor_sudoers" ]; then
@@ -263,6 +263,7 @@ fi
 #   /usr/local/bin/bd-real           `COPY --from=go-builder`: the real binary the wrapper defers to
 #   /usr/local/bin/init-rip-cage.sh  `COPY cage/init/init-rip-cage.sh`: this probe's own caller
 #   /usr/local/bin/host-tool         `COPY cage/substrate/host-tool`: the host-tool line's in-cage client (ADR-032 D6)
+#   /usr/local/lib/rip-cage/own-agent-dir      `COPY cage/substrate/own-agent-dir`: what the agent's ownership sudo grant runs
 #   /usr/local/lib/rip-cage/floor-probe.sh     `COPY cage/floor/floor-probe.sh`: this probe itself
 #
 # Paths a composed recipe provisions — checked only when present, because a
@@ -277,6 +278,7 @@ _rc_floor_guard_paths=(
   /usr/local/bin/bd-real
   /usr/local/bin/init-rip-cage.sh
   /usr/local/bin/host-tool
+  /usr/local/lib/rip-cage/own-agent-dir
   /usr/local/lib/rip-cage/floor-probe.sh
   /etc/ssh/ssh_known_hosts
   /etc/ssh/ssh_config.d/00-rip-cage.conf

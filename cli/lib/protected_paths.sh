@@ -23,10 +23,11 @@
 #
 # WHAT THIS IS NOT. A cover is a VISIBILITY default, not a boundary: an
 # in-guest root can `umount` a covered directory in one command and read the
-# host content underneath, and rip-cage's agent has passwordless sudo
-# (measured on msb 0.6.18, spike rip-cage-ely4.16 Q7). That is the cage's
-# blast-radius posture, stated rather than papered over -- this layer stops the
-# accident and the injected instruction, not the motivated attacker.
+# host content underneath. The agent's own sudo grant reaches no root
+# (ADR-002 D12: no package manager, no raw chown), but anything else in the
+# guest that does undoes the cover. That is the cage's blast-radius posture,
+# stated rather than papered over -- this layer stops the accident and the
+# injected instruction, not the motivated attacker.
 #
 # Bash 3.2 compatible (ADR-008 D5): no bash-4-only builtins or array types.
 

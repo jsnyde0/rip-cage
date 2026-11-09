@@ -98,16 +98,18 @@ else
   fail "non-existent env-file was NOT rejected"
 fi
 
-# --- Test 4: Dockerfile sudoers does NOT contain unrestricted chown ---
+# --- Test 4: Dockerfile sudoers grants no raw chown ---
+# A raw chown grant follows a symlink at the granted path (rip-cage-rsh9.1);
+# ownership fixes go through the fixed-target own-agent-dir helper instead.
 echo ""
-echo "-- Test 4: Dockerfile sudoers pins chown to exact paths --"
+echo "-- Test 4: Dockerfile sudoers grants ownership only via own-agent-dir --"
 SUDOERS_LINE=$(grep 'sudoers.d/agent' "${REPO_ROOT}/cage/Dockerfile")
-if echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown \*'; then
-  fail "sudoers still contains unrestricted /usr/bin/chown *"
-elif echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown agent'; then
-  pass "sudoers pins chown to exact paths (static check)"
+if echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown'; then
+  fail "sudoers still grants a raw /usr/bin/chown"
+elif echo "$SUDOERS_LINE" | grep -q '/usr/local/lib/rip-cage/own-agent-dir claude'; then
+  pass "sudoers grants ownership only via own-agent-dir (static check)"
 else
-  fail "sudoers does not contain any chown entry"
+  fail "sudoers does not contain the own-agent-dir grant"
 fi
 if echo "$SUDOERS_LINE" | grep -q 'npm install'; then
   fail "sudoers still contains npm install"
@@ -178,11 +180,11 @@ else
     else
       fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied (rc=$dcg_rc, out=$dcg_out)"
     fi
-    # Should succeed: chown on allowed path
-    if msb exec "$CONTAINER" -- sudo -n chown agent:agent /home/agent/.claude </dev/null 2>/dev/null; then
-      pass "runtime: sudo chown on /home/agent/.claude allowed"
+    # Should succeed: the granted ownership helper on its fixed target
+    if msb exec "$CONTAINER" -- sudo -n /usr/local/lib/rip-cage/own-agent-dir claude </dev/null 2>/dev/null; then
+      pass "runtime: sudo own-agent-dir claude allowed"
     else
-      fail "runtime: sudo chown on /home/agent/.claude denied"
+      fail "runtime: sudo own-agent-dir claude denied"
     fi
   fi
 fi

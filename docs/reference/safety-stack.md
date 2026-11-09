@@ -19,7 +19,7 @@ These hold no matter what you compose into the image:
 
 `/usr/local/lib/rip-cage/floor-probe.sh` is baked `root:root 0555` into the image. Init runs it **before any other work** at every boot, and `rc test` runs it before any other suite. There is no opt-out; a failing check stops the boot.
 
-It checks the artifact: that the agent user is non-root and its home is where the mounts land, that sudo's scope is what the Dockerfile set, that release-marker mode and owner are right, that the git-hooks deny entry is present, that each floor wrapper on `PATH` resolves to the floor's own file **as an interactive login shell resolves it**, that guard files are root-owned and not world-writable, and that `bd`, `python3` and the mise trust path are where init expects them. Twenty checks; the probe's own file header carries the list with the `cage/Dockerfile` line each one guards.
+It checks the artifact: that the agent user is non-root and its home is where the mounts land, that sudo's scope is what the Dockerfile set, that release-marker mode and owner are right, that the git-hooks deny entry is present, that each floor wrapper on `PATH` resolves to the floor's own file **as an interactive login shell resolves it**, that guard files are root-owned and not world-writable, and that `bd`, `python3` and the mise trust path are where init expects them. The probe's own file header carries the list with the `cage/Dockerfile` line each one guards.
 
 Two of those checks exist because the obvious version was too weak to catch the real damage:
 

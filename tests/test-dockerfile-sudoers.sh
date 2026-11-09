@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verification test for bead rip-cage-tha:
-#   - sudoers chown is pinned to exact paths (no wildcard)
+#   - sudoers has no chown wildcard; ownership goes through own-agent-dir (Test 8)
 #   - .claude and .claude-state dirs are pre-created after USER agent
 set -euo pipefail
 PASS=0; FAIL=0
@@ -24,25 +24,8 @@ else
   pass "sudoers does not use chown wildcard"
 fi
 
-# --- Test 2: sudoers pins chown to /home/agent/.claude ---
-echo ""
-echo "-- Test 2: sudoers allows chown for /home/agent/.claude --"
-if echo "$SUDOERS_LINE" | grep -q 'chown agent\\:agent /home/agent/.claude,'; then
-  pass "sudoers allows chown for /home/agent/.claude"
-else
-  fail "sudoers missing chown for /home/agent/.claude"
-  echo "  Line: $SUDOERS_LINE"
-fi
-
-# --- Test 3: sudoers pins chown to /home/agent/.claude-state ---
-echo ""
-echo "-- Test 3: sudoers allows chown for /home/agent/.claude-state --"
-if echo "$SUDOERS_LINE" | grep -q 'chown agent\\:agent /home/agent/.claude-state'; then
-  pass "sudoers allows chown for /home/agent/.claude-state"
-else
-  fail "sudoers missing chown for /home/agent/.claude-state"
-  echo "  Line: $SUDOERS_LINE"
-fi
+# Tests 2-3 (raw chown pinned to .claude / .claude-state) retired: a raw chown
+# grant follows symlinks; Test 8 asserts the own-agent-dir grants instead.
 
 # --- Test 4: Dockerfile pre-creates .claude and .claude-state dirs ---
 echo ""
@@ -115,6 +98,50 @@ elif ! grep -q 'sudo -n /usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0' "$INIT"; t
   fail "init-rip-cage.sh does not run the pinned sysctl grant"
 else
   pass "sysctl grant pinned to legacy_tiocsti=0 and init runs it"
+fi
+
+# --- Test 8: ownership fixes go through the no-follow helper, never raw chown ---
+# A raw `chown agent:agent /home/agent/X` grant follows a symlink (GNU chown
+# dereferences by default): the agent replaces X with a symlink to any root file,
+# runs the grant, and owns that file. `chown -h` is not enough either: it still
+# follows symlinks in the intermediate components (~/.pi, ~/.local), and the
+# guest boots with fs.protected_hardlinks=0, so a hardlinked root file is chowned
+# through its inode. Measured live on the pre-fix image (rip-cage-rsh9.1 round 2).
+echo ""
+echo "-- Test 8: sudoers grants no raw chown; init uses the own-agent-dir helper --"
+HELPER_SRC="${REPO_ROOT}/cage/substrate/own-agent-dir"
+HELPER_DST=/usr/local/lib/rip-cage/own-agent-dir
+_t8_expected=$(printf '%s\n' "${HELPER_DST} claude" "${HELPER_DST} claude-state" \
+  "${HELPER_DST} mise" "${HELPER_DST} pi-agent" | sort)
+_t8_have=$(echo "$DOCKERFILE_GRANT" | grep -F "${HELPER_DST}" | sort || true)
+if echo "$DOCKERFILE_GRANT" | grep -qE '(^|/)chown( |$)'; then
+  fail "sudoers still grants a raw chown: $(echo "$DOCKERFILE_GRANT" | grep -E 'chown' | tr '\n' '|')"
+elif [[ "$_t8_have" != "$_t8_expected" ]]; then
+  fail "sudoers own-agent-dir grants are not exactly the four targets: $(echo "$_t8_have" | tr '\n' '|')"
+elif [[ ! -f "$HELPER_SRC" ]] || ! head -1 "$HELPER_SRC" | grep -qx '#!/usr/bin/python3 -I'; then
+  fail "${HELPER_SRC} missing or not an isolated-mode (-I) python3 script"
+elif ! grep -q "COPY cage/substrate/own-agent-dir ${HELPER_DST}" "$DOCKERFILE"; then
+  fail "Dockerfile does not install the helper at ${HELPER_DST}"
+elif grep -nE 'sudo[^|;]*chown' "${REPO_ROOT}/cage/init/init-rip-cage.sh" | grep -v '^[0-9]*:[[:space:]]*#' | grep -q .; then
+  fail "init-rip-cage.sh still calls sudo chown"
+else
+  pass "ownership grants are the four own-agent-dir targets; no raw chown"
+fi
+
+# --- Test 9: the helper refuses symlink and hardlink substitution ---
+# Host-side behavior test on a scratch home owned by the caller (the helper's
+# core takes home + uid; the sudo entry point pins /home/agent + 1000).
+echo ""
+echo "-- Test 9: own-agent-dir refuses symlinks and skips hardlinks --"
+if [[ ! -f "$HELPER_SRC" ]]; then
+  fail "helper missing — Test 9 cannot run"
+else
+  _t9_out=$(uv run --no-project python -I "${SCRIPT_DIR}/own-agent-dir-check.py" "$HELPER_SRC" 2>&1) && _t9_rc=0 || _t9_rc=$?
+  if [[ "$_t9_rc" -eq 0 ]]; then
+    pass "own-agent-dir: $(echo "$_t9_out" | tail -1)"
+  else
+    fail "own-agent-dir behavior: $(echo "$_t9_out" | tr '\n' '|')"
+  fi
 fi
 
 echo ""
