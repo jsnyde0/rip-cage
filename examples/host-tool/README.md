@@ -41,6 +41,12 @@ sed -e "s|/ABSOLUTE/PATH/TO|$DEST|g" -e "s|/ABSOLUTE/STATE/TO|$STATE|g" \
 ```
 <!-- step1:end -->
 
+**Where the file goes.** `rc` looks for the declaration beside the cage config
+file's **real** path, named `<real-file-stem>.tools.yaml`. The block writes
+`$PROJECTS/<cage>.tools.yaml`, which is right when `$PROJECTS/<cage>.yaml` is a
+plain file (step 2 makes it one). If your config is a symlink, write the
+declaration beside the symlink's target instead, named by the target's stem.
+
 *Done when:* `grep ABSOLUTE "$PROJECTS/<cage>.tools.yaml"` prints nothing and
 `ls "$DEST/bin"` lists the four scripts. Re-running the block is safe.
 
@@ -61,19 +67,30 @@ ends, so a wrapper that waits for an answer needs a fixed path of its own.)
 
 ## 2. Launch and call
 
-The scratch project needs its own cage config before `rc up` will start it:
-the **cage-config** skill writes it, starting from the shipped template.
+The scratch project needs its own cage config before `rc up` will start it.
+The **cage-config** skill writes it, starting from the shipped template; to do
+it by hand:
 
 ```bash
 mkdir -p ~/scratch/ht-demo
 cp share/rip-cage/cage.yaml.template "$PROJECTS/scratch-ht-demo.yaml"   # $PROJECTS from step 1
-# edit that file: fill in the workspace path (the template's comments say where)
+# edit that file: replace EVERY angle-bracket placeholder: <ABSOLUTE_PATH_TO_YOUR_PROJECT>
+# (here ~/scratch/ht-demo, written out in full), <ABSOLUTE_PATH_TO_YOUR_HOME>, <CAGE-NAME>
+# (here scratch-ht-demo). Done when this prints nothing:
+grep -v '^ *#' "$PROJECTS/scratch-ht-demo.yaml" | grep '<[A-Z]'
+rc auth                    # must pass: the template's CCTOK secret needs your saved Claude token
 rc up ~/scratch/ht-demo
 ```
 
-The config and the `<cage>.tools.yaml` from step 1 share the cage name (the last
-two path components of the project, here `scratch-ht-demo`); use that name for
-`<cage>` in step 1.
+`rc auth` checks the `CCTOK` secret file the template's `secrets:` entry reads;
+if it fails, its message says how to save the token (the **cage-config** skill
+covers it too). Do not run `rc up` until `rc auth` passes.
+
+The config and the declaration from step 1 share the cage name (the last two
+path components of the project, here `scratch-ht-demo`); use that name for
+`<cage>` in step 1. Because this config is a plain file, the declaration's
+place is beside it: `$PROJECTS/scratch-ht-demo.tools.yaml`, named after the
+config's real file stem.
 
 `rc up` finds the declaration, checks it, starts the gatekeeper and adds the
 `--vsock` route. Then, inside the cage:
@@ -116,7 +133,7 @@ declaration file on an existing cage is the same two commands.
 
 ## How `ask-then-run` is built, and what to keep when you copy it
 
-- **No terminal.** The gatekeeper runs it with stdin closed, detached from any
+- **No terminal.** The gatekeeper runs it with stdin `/dev/null`, detached from any
   session (ADR-032 D4). A prompt on stdin would hang until the timeout, so it
   asks through a file.
 - **Its authority is its argv.** `--asker`, `--inbox` and `--budget` are fixed

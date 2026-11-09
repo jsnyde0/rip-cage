@@ -307,8 +307,8 @@ then `rc doctor <cage>`.
 | `host-tool` exit 4, `busy` | Every concurrency slot is held by a running command (default 4). Retry shortly. |
 | `host-tool` exit 4, `timed out` | The verb's `timeout` passed and its process group was killed. Raise `timeout:` in the declaration if the command is legitimately slow; for a wrapper that waits on a human, keep its budget under the timeout. |
 
-A host tool bypasses the egress allowlist; `rc doctor` lists every declared verb
-beside `network.allow` so you see both.
+A host tool bypasses the egress allowlist; `rc doctor` lists the host tools and
+states they bypass `network.allow`.
 
 ## Recipes
 

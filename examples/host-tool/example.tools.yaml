@@ -1,5 +1,8 @@
-# A worked host-tool declaration (ADR-032 D2/D3). Copy it to
+# A worked host-tool declaration (ADR-032 D2/D3). Copy it beside the cage
+# config file's REAL path, named <real-file-stem>.tools.yaml -- for a default
+# config that is a plain file,
 #   ${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/projects/<cage>.tools.yaml
+# (a symlinked config: beside its target, named by the target's stem) --
 # after replacing the two placeholders below with absolute paths (the README's
 # first step does it with sed):
 #   /ABSOLUTE/PATH/TO   the directory you copied bin/ into, e.g.

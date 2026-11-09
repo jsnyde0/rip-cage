@@ -182,9 +182,12 @@ rc names no tool: the command is yours. A worked one is
 [`example.tools.yaml`](../../../examples/host-tool/example.tools.yaml) and edit it.
 
 **Where it lives.** A sibling of the config, never inside it (msb's `--conf`
-rejects unknown keys): `~/.config/rip-cage/projects/<cage-name>.tools.yaml`, or,
-when the cage launches from `--conf <path>`, `<stem>.tools.yaml` beside that
-file. No file means no line. Write each key once; a repeated YAML key silently
+rejects unknown keys): beside the config file's **real** path, named
+`<real-file-stem>.tools.yaml`. For a default config that is a plain file that is
+`~/.config/rip-cage/projects/<cage-name>.tools.yaml`; if that config is a
+symlink, the declaration sits beside the symlink's target, named by the
+target's stem; a `--conf <path>` or `RC_CAGE_CONF` config follows the same
+rule. No file means no line. Write each key once; a repeated YAML key silently
 keeps the last.
 
 ```yaml
@@ -206,8 +209,9 @@ tools:
 - **Slot types.** `string` (`max` bytes, default 4096; `regex`, a full match;
   `allow_dash`; `allow_slash`), `int` (`min`, `max`), `enum` (`values`); each may
   have a `default`. Strings reject control characters. A value starting with `-`
-  needs `allow_dash: true` (a negative id); a value with `/` or `..` needs
-  `allow_slash: true` (a message that quotes a URL). Leave both off for anything
+  needs `allow_dash: true` (a negative id); a value that contains `/` or is
+  exactly `..` needs `allow_slash: true` (a message that quotes a URL); a value
+  that merely contains `..`, such as `a..b`, passes. Leave both off for anything
   a tool would read as an option or a file name.
 - **No path slot, and no interpreter plus a free string.** `["/usr/bin/python3",
   "{script}"]` is host code execution however `script` is typed, and so is
@@ -233,7 +237,7 @@ directory, or lies inside the projects or state directory (a mount strictly
 inside the config's directory is allowed). Every declared slot must appear in
 `argv` exactly once; the loader refuses a slot with no placeholder.
 
-**A tool runs with no terminal and a bare environment.** Its stdin is closed. Its
+**A tool runs with no terminal and a bare environment.** Its stdin is `/dev/null`. Its
 environment is exactly `PATH=/usr/bin:/bin`, `HOME` and `LANG`; its working
 directory **and** `HOME` are one fresh, empty directory per call, deleted when the
 call ends. A tool therefore sees no dotfiles and keeps nothing between calls,
@@ -256,12 +260,16 @@ the new value where `secrets:` reads it, so the guest keeps its placeholder.
 **When an edit takes effect.** Adding or removing the file, and changing a
 declared verb, take effect on `rc up` for a stopped cage and on `rc up --replace`
 for a running one (a plain `rc up` on a running cage attaches and prints that the
-declaration changed). Revoking a verb is the same two commands. Repairs:
+declaration changed). One exception: if the gatekeeper of a **running** cage is
+dead, plain `rc up` restarts it from the **current** file and prints no changed
+line, so an edit takes effect then without a message. Revoking a verb is the
+same two commands. Repairs:
 [`cage-ops`](../cage-ops/SKILL.md).
 
 **A line bypasses the allowlist.** A host tool reaches whatever its command
-reaches, and `network.allow` never sees it. `rc doctor <cage>` says so beside the
-allowlist; say it to the human when you add one.
+reaches, and `network.allow` never sees it. `rc doctor <cage>` lists the host
+tools and states they bypass `network.allow`; say it to the human when you add
+one.
 
 *Done when:* `rc up --dry-run <project>` exits 0 with no `host-tool declaration`
 error, every path in the file is absolute and outside every mount you declared,

@@ -11,13 +11,13 @@ rip-cage names no tool: the tools are yours.
 
 **It is a path around the egress allowlist.** A host tool reaches whatever its
 command reaches on the host, and `network.allow` does not see it. `rc doctor`
-says this next to the allowlist.
+lists the host tools and states they bypass `network.allow`.
 
 ## Parts
 
 | Part | Where | Role |
 |---|---|---|
-| Declaration | `${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/projects/<cage>.tools.yaml`, or `<stem>.tools.yaml` beside a `--conf` / `RC_CAGE_CONF` config (the real path's last extension swapped) | per tool, per verb: one fixed `argv`, typed slots, a timeout, `returns_secret` |
+| Declaration | beside the config file's **real** path, named `<real-file-stem>.tools.yaml` (the real basename's last extension swapped). For a default config that is a plain file, `${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/projects/<cage>.tools.yaml`; a symlinked config resolves to its target's directory and stem; a `--conf` / `RC_CAGE_CONF` config follows the same rule | per tool, per verb: one fixed `argv`, typed slots, a timeout, `returns_secret` |
 | Loader | `cli/lib/host_tools.sh` | schema, slot types, `argv[0]` and path-literal checks against the mount list; emits the normalized JSON |
 | Gatekeeper | `cli/lib/host-tool-gatekeeper.py`, one process per cage | listens on a unix socket, validates, executes the argv array, replies |
 | Client | `/usr/local/bin/host-tool` in the image, root-owned | one JSON line out, one in, a typed exit code |
@@ -110,15 +110,18 @@ It is never `rc up`'s environment, which carries the real values of every
 `secrets:` entry. A command therefore finds no dotfiles and keeps nothing between
 calls; anything it needs outside that is a fixed path the declaration or its
 wrapper supplies, and such a path is authority to keep unmounted. The command's
-stdin is closed and it runs detached in its own session; its stderr is the
+stdin is `/dev/null` and it runs detached in its own session; its stderr is the
 gatekeeper log. A command that exceeds its timeout has its whole process group
 killed (a grandchild that calls `setsid` leaves it; that is a known residual).
 
 ## State directory
 
 `${RC_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/rip-cage}/<cage>/`, created
-when a cage first declares a tool, removed by `rc destroy <cage>` (even when the
-cage is already gone). The socket path must fit the platform limit (103 bytes on
+when a cage first declares a tool, removed by `rc destroy <cage>`. For a cage
+that still exists, destroy uses the directory its `rc.state-dir` label records;
+for a cage already gone it can only find the directory under the **current**
+`RC_STATE_DIR` (or its default), so destroy a gone cage with the same
+`RC_STATE_DIR` it was created under. The socket path must fit the platform limit (103 bytes on
 macOS, 107 elsewhere, one definition in `cli/lib/host_tools.sh`); `rc up` refuses
 before any msb call and names `RC_STATE_DIR` as the override.
 
@@ -128,7 +131,7 @@ before any msb call and names `RC_STATE_DIR` as the override.
 | `gatekeeper.pid` | the gatekeeper's pid, written after it detaches |
 | `tools.json` | the normalized declaration the running gatekeeper loaded |
 | `gatekeeper.log` | one line per call (tool, verb, outcome, ms, bytes), each command's stderr |
-| `lock` | held by `rc up` around the start and stop of the gatekeeper |
+| `lock` (`lock.d/` on macOS) | held by `rc up` around the start and stop of the gatekeeper: an `flock` on Linux, a `mkdir` directory carrying a pid file on macOS |
 | `calls/` | the per-call directories; empty between calls |
 
 It holds the normalized declaration and the pid rc signals, so it must never be
@@ -140,14 +143,19 @@ inside a mount: a caged agent that could write it could rewrite its own verbs.
   and, when present, `rc.state-dir=<path>`; a cage with no such label reads as
   `absent`. Adding or removing a declaration therefore takes effect through
   `rc up` on a **stopped** cage (the converge recreates it) or `rc up --replace`
-  on a running one. `--no-reload` with a presence change is refused.
+  on a running one. On a stopped cage, `--no-reload` with a presence change is
+  refused (the refusal is a stopped-cage check; a running cage only attaches
+  and prints that the declaration was added or removed).
 - **Contents** never force a recreate. On a **stopped** cage, `rc up` stops any
   gatekeeper still alive for it and starts a fresh one from the current file
-  before the cage starts. On a **running** cage, `rc up` only attaches: it
-  restarts the gatekeeper if it is dead, never kills a live one, and prints one
-  line when the file differs from what the gatekeeper loaded
-  ("host-tool declaration changed; takes effect on `rc up --replace`").
-  Revocation on a running cage needs `rc up --replace`.
+  before the cage starts. On a **running** cage, `rc up` only attaches and
+  never kills a live gatekeeper; when the live gatekeeper's file differs from
+  the current one it prints one line ("host-tool declaration changed; takes
+  effect on `rc up --replace`"). A **dead** gatekeeper on a running cage is
+  restarted from the **current** declaration file, and no changed line is
+  printed: an edit made since create takes effect on that restart, with
+  nothing said. Revocation on a running cage needs `rc up --replace` (or that
+  silent restart, if the gatekeeper happens to be dead).
 - **Start.** After `msb create` succeeds, before init: the gatekeeper calls
   `setsid()`, writes its pid, and `rc up` waits up to 5 s for the pid file and a
   listening socket. If it fails, `rc up` exits non-zero naming the log; the cage
@@ -161,8 +169,8 @@ inside a mount: a caged agent that could write it could rewrite its own verbs.
   `setsid` itself leaves the group and is not reached.
 - **No supervisor, no restart loop.** A dead gatekeeper is `host-tool` exit 5 and
   a line in `rc doctor`; plain `rc up` restarts it.
-- **`rc doctor <cage>`** lists every declared tool and verb beside
-  `network.allow` with one fixed sentence (a host tool reaches whatever its
+- **`rc doctor <cage>`** lists every declared tool and verb and states they
+  bypass `network.allow`, with one fixed sentence (a host tool reaches whatever its
   command reaches; the allowlist does not see it; rc checked the files `argv`
   names, not the code they load), marks `returns_secret` verbs as possession-mode,
   and reports a dead or orphaned gatekeeper, a presence change since create
@@ -190,8 +198,11 @@ three points (ADR-032 D2):
    **stopped** cage whose converge has already removed the old cage, a refusal
    here leaves the cage removed (host mounts and named volumes are intact);
    the next `rc up` recreates it against the corrected declaration — the same
-   cost as a `--replace`. Defects a config row or the declaration file carry
-   are caught at site 1, before anything is removed.
+   cost as a `--replace`. So site 1 does **not** catch every declaration
+   defect: a declared `argv` path that lies inside a mount rc computes (skill
+   directories, skill-symlink parents, a worktree's `.git`) is refused only
+   here, at site 2. The warn-and-skip above applies to a computed mount that
+   overlaps an rc authority directory, never to a declared path inside one.
 3. **An existing cage** (stopped converge, running attach): the mount set is the
    one msb recorded at create (`msb inspect --format json`,
    `config.mounts[].host`), and every gatekeeper start checks against it.
