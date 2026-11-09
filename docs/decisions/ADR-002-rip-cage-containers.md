@@ -315,7 +315,7 @@ The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking i
 
 **Accepted costs** (measured live in a cage, msb 0.7.8): in-cage git cannot write repo config. `git push -u`, `git branch --set-upstream-to` and `checkout --track` push or branch but record no upstream — git prints `could not write config file .git/config: Device or resource busy` and exits 0 — so there is no ahead/behind tracking, and `git pull` needs explicit arguments. `git remote add` fails; add remotes host-side. A repo-local `git config` fails; `--global` works. Writes under `.git/info` fail (`info/exclude`, `info/sparse-checkout`; `git gc` warns once about `info/refs` and exits 0). `.gitattributes` stays writable: an attribute only selects a driver, and the driver's command lives in the config this decision covers.
 
-**Not covered — so the claim is "every git config source and pointer that exists at launch is read-only", not "the cage cannot write git config the host runs":** msb can only cover a path that exists, and the pinned `.git` stays writable, so a file git honours that is absent at launch can be created. The widest is `.git/commondir`: per gitrepository-layout(5) git reads it in any gitdir and takes the whole config from the dir it names, so a guest can write a config elsewhere in the mount and point a repo at it (documented behaviour; not probed live). Also `.git/hooks` or `.git/info` when the repo has none, a repo or submodule the guest creates after launch (`git init sub`), a linked worktree it adds, and repos deeper than the scan depth — the host's git or IDE may run commands from any of these. Like every rc cover, a guest root can unmount it (passwordless sudo, D12): this stops the accident and the injected instruction, not the motivated attacker. The revisit for a cleaner fix that keeps upstream tracking and `git remote add` is `rip-cage-rsh9.14`.
+**Not covered — so the claim is "every git config source and pointer that exists at launch is read-only", not "the cage cannot write git config the host runs":** msb can only cover a path that exists, and the pinned `.git` stays writable, so a file git honours that is absent at launch can be created. The widest is `.git/commondir`: per gitrepository-layout(5) git reads it in any gitdir and takes the whole config from the dir it names, so a guest can write a config elsewhere in the mount and point a repo at it (documented behaviour; not probed live). Also `.git/hooks` or `.git/info` when the repo has none, a repo or submodule the guest creates after launch (`git init sub`), a linked worktree it adds, and repos deeper than the scan depth — the host's git or IDE may run commands from any of these. Like every rc cover, a guest that reaches root can unmount it (the agent's own sudo grant does not, D12): this stops the accident and the injected instruction, not the motivated attacker. The revisit for a cleaner fix that keeps upstream tracking and `git remote add` is `rip-cage-rsh9.14`.
 
 **Rationale:** A read-only mount is the mechanism the hooks cover already used. It is enforced below every tool and holds for the whole session, for every file it covers. Settings.json still denies `Write(.git/hooks/*)` and `Edit(.git/hooks/*)` as documentation of intent; under `bypassPermissions` (D5) the mounts are the enforcement.
 
@@ -325,13 +325,17 @@ The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking i
 
 > [ADR-029: UNAFFECTED-mechanism-prose-updated — the scoped-sudo posture is an in-guest floor item independent of the container-vs-microVM boundary and is not itself reversed or retired. Light touch only: this decision's rationale names the removed compound blocker ("`sudo chmod -x block-compound-commands.sh`") as an example of tampering it prevents — that blocker no longer exists (removed 2026-06-03, see D5's amendment) and is illustrative-historical text only, not a live consideration.]
 
-**Firmness: FIRM**
+**Firmness: FIRM** *(evolved 2026-11-09, rip-cage-rsh9.1 — human ruling option A: apt-get/dpkg dropped; the grant admits no root-code-execution path)*
 
-**Added:** 2026-03-26 (review finding)
+**Added:** 2026-03-26 (review finding). **Evolved** 2026-11-09 (above).
 
-The agent user has sudo access scoped to: `apt-get`, `dpkg`, `chown`. Blanket `NOPASSWD:ALL` is replaced with command-specific allowances.
+The agent user has sudo scoped to commands that cannot run code as root, each pinned to its exact argv: `chown agent:agent` on `/home/agent/.claude`, `/home/agent/.claude-state` and `/home/agent/.pi/agent`; `chown -R agent:agent /home/agent/.local/share/mise`; and `sysctl -w dev.tty.legacy_tiocsti=0`. No package manager is granted. System packages are installed at build time in the operator's `FROM rip-cage:latest` Dockerfile ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4). The grant is baked in `cage/Dockerfile` and pinned whole by the floor probe's `sudo-scope` check.
 
-**Rationale:** The agent needs sudo for installing system packages (`apt-get install`) and fixing bind-mount ownership (`chown`). But blanket sudo lets the agent disable its own safety stack (`sudo rm /usr/local/bin/dcg`, `sudo chmod -x block-compound-commands.sh`). Scoping sudo to specific commands preserves the needed capability while preventing safety-stack tampering. The safety stack is the container's internal defense-in-depth layer — it should not be user-modifiable at runtime.
+**Rationale:** Blanket sudo lets the agent disable its own safety stack: rewrite `/etc/claude-code/managed-settings.json`, the command guard and its config, `/etc/rip-cage/boot.json`, the release marker. A scoped grant is only scoped if no granted command runs arbitrary code as root. `apt-get` (`-o APT::Update::Pre-Invoke::=<cmd>`) and `dpkg` (`-i` a package with a maintainer script, `--root`) each do, with no egress needed — the same root-lifecycle-script vector the 2026-03-27 amendment removed `npm install -g` for. Verified live on the pre-fix image: the Pre-Invoke hook wrote `uid=0(root)`. So the original list did not meet its own premise. Runtime installs were also never durable: they live in the ephemeral rootfs overlay and vanish on `rc up --replace`, so the image Dockerfile was already their real home. User-level installs (`mise`, `uv`, `npm` without `-g`, `cargo`) need no root. A caged agent that needs a missing package asks the host, the same loop as a denied egress host.
+
+The `chown` lines stay: init needs them because msb creates mount parent dirs as root. The `sysctl` line closes TIOCSTI keystroke injection — the guest kernel boots with `dev.tty.legacy_tiocsti=1`, and init lowers it each boot. Its exact argv can only lower the value.
+
+**Counter-argument to the original rationale (why "the agent needs sudo for `apt-get install`" no longer holds):** ADR-031 D4 gives every operator a build-time install path, and runtime installs do not survive a recreate. The capability the original list preserved was a non-durable convenience that cost the whole safety stack.
 
 **Amendment (2026-03-27):** `npm install -g` removed from sudoers. npm lifecycle scripts (`postinstall`) run as root, allowing a malicious package to tamper with the safety stack — the exact vector D12 exists to prevent. Global npm packages should be pre-installed in the Dockerfile. The agent can still `npm install` locally (no sudo) or use `npx`.
 
@@ -341,12 +345,14 @@ The agent user has sudo access scoped to: `apt-get`, `dpkg`, `chown`. Blanket `N
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Scoped sudo** | Prevents safety tampering, preserves dep install | Must enumerate allowed commands |
-| Blanket NOPASSWD:ALL | Maximum flexibility | Agent can disable all safety hooks |
-| No sudo at all | Maximum safety | Can't install system packages |
-| `--security-opt=no-new-privileges` | Kernel-level enforcement | Breaks all sudo, too restrictive |
+| **Scoped sudo, no root-code-execution path** (chosen) | Safety stack untouchable through sudo; init's chowns still work | No runtime system-package installs — they move to the image Dockerfile |
+| Scoped sudo incl. `apt-get`/`dpkg` (the pre-2026-11-09 list) | Runtime `apt-get install` | Rejected — direct: `apt-get -o APT::Update::Pre-Invoke::=` wrote `uid=0` in a live cage (rip-cage-rsh9.1); each grants root code execution |
+| Root-owned wrapper admitting `apt-get install <allowlisted names>` (option B) | Keeps a narrow runtime install | Rejected — direct: human ruling 2026-11-09 on rip-cage-rsh9.1; reasoned: archive packages ship setuid binaries and maintainer scripts, so the wrapper is upkeep for a non-airtight speed bump |
+| Blanket NOPASSWD:ALL | Maximum flexibility | Rejected — reasoned: agent can disable every safety hook |
+| No sudo at all | Maximum safety | Rejected — direct: init's `sudo chown` of root-created mount parents (`cage/init/init-rip-cage.sh`) |
+| `--security-opt=no-new-privileges` | Kernel-level enforcement | Rejected — reasoned: breaks all sudo, including init's chowns |
 
-**What would invalidate this:** Agent needs sudo for commands not in the allow list (e.g., `systemctl`, custom build tools). Add them to the sudoers file as needed.
+**What would invalidate this:** An operator workflow that genuinely needs a root-only runtime action the image cannot pre-bake — the signal is agents repeatedly asking the host for the same in-session root action. Add it only as an exact-argv grant that cannot run code as root, and extend the floor probe's pin with it.
 
 ### D13: Image-based devcontainer with `rc init` scaffolding
 

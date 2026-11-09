@@ -50,7 +50,7 @@ rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file F
 - A **stopped** cage converges on a plain `rc up` — it is recreated against the current config.
 - A **running** cage needs `rc up --replace`, explicitly.
 
-Either way the recreate is cold: it is a fresh kernel boot, not a resumed process tree. **Host mounts and named volumes survive** — so your Claude session resumes, because `~/.claude/projects` and `~/.claude/sessions` are mounts. **The guest's ephemeral rootfs overlay does not** — an `apt-get install` you ran at runtime and never baked into the image is gone.
+Either way the recreate is cold: it is a fresh kernel boot, not a resumed process tree. **Host mounts and named volumes survive** — so your Claude session resumes, because `~/.claude/projects` and `~/.claude/sessions` are mounts. **The guest's ephemeral rootfs overlay does not** — anything you installed at runtime and never baked into the image is gone.
 
 ### The image check on resume
 

@@ -131,10 +131,15 @@ RUN mkdir -p /usr/local/lib/rip-cage/bin \
          chmod 0755 "${_p}"; \
        done
 
-# Non-root user
+# Non-root user. The sudo grant is scoped to commands that cannot run code as
+# root (ADR-002 D12): the four chown lines init needs for root-created mount
+# parents, and one exact-argv sysctl that can only LOWER legacy_tiocsti (closes
+# TIOCSTI keystroke injection; init runs it each boot). No package manager:
+# apt-get/dpkg each run arbitrary code as root, so installs belong in the
+# FROM-extension Dockerfile at build time (ADR-031 D4, rip-cage-rsh9.1).
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/sbin/sysctl -w dev.tty.legacy_tiocsti\=0, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 # rip-proxy user + /opt/rip-cage-proxy venv (PyYAML/dnspython for the SNI

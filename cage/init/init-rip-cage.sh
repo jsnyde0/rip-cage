@@ -370,6 +370,16 @@ if ! /usr/local/lib/rip-cage/floor-probe.sh; then
   exit 1
 fi
 
+# Close TIOCSTI keystroke injection (rip-cage-rsh9.1): the guest kernel boots
+# with dev.tty.legacy_tiocsti=1, which lets a process push input into a tty it
+# holds. The sudo grant is pinned to exactly this argv, so it can only lower the
+# value. Every resume is a fresh kernel boot, so this runs on each init.
+# Best-effort: a kernel without the knob leaves TIOCSTI policy to the kernel.
+if [ -e /proc/sys/dev/tty/legacy_tiocsti ]; then
+  sudo -n /usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0 >/dev/null 2>&1 \
+    || echo "[rip-cage] WARN: could not set dev.tty.legacy_tiocsti=0 — TIOCSTI keystroke injection stays open" >&2
+fi
+
 # Beads: determine storage mode from project's metadata.json
 # Embedded mode (default): bd uses in-process Dolt on the bind mount — no server needed
 # Server mode: connect to host's Dolt server via host.microsandbox.internal

@@ -36,8 +36,8 @@ live-mutation path, so there is no hot reload to reach for.
 | host skills, the host Claude config | mounts, read-only |
 | `rc-state-<cage>`, `rc-history-<cage>`, `rc-mise-cache-<cage>` | named volumes outlive the sandbox |
 
-**Lost:** the guest's own ephemeral rootfs scratch. In practice: a package you
-`apt-get install`ed at runtime that was never baked into the image and sits on
+**Lost:** the guest's own ephemeral rootfs scratch. In practice: anything you
+installed at runtime that was never baked into the image and sits on
 no mount.
 
 That is a narrow, deliberate trade — not a session-continuity loss. If you find

@@ -235,10 +235,10 @@ fi
 # rip-cage-lli5). A floor-only build leaves tools[claude] without a launch.
 # So the launch line is a reliable COMPOSITION signal -- "was this recipe
 # merged at build time" -- without being the artifact under test. It is NOT a
-# tamper-resistance claim: the agent holds a NOPASSWD sudo grant for
-# /usr/bin/dpkg (cage/Dockerfile), an unrestricted root write primitive, so a
-# motivated in-cage adversary could forge or remove both the descriptor entry
-# and managed-settings.json. That adversary is explicitly out of this
+# tamper-resistance claim: the agent's own sudo grant reaches no root write
+# (ADR-002 D12), but a motivated in-cage adversary that reaches root another
+# way could forge or remove both the descriptor entry and managed-settings.json.
+# That adversary is explicitly out of this
 # project's threat model (CLAUDE.md: accidents and prompt-injection, not a
 # motivated adversary) -- this signal targets accidental/config-drift
 # absence, not tamper detection.

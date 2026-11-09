@@ -194,7 +194,7 @@ The config is the whole project config, but a few things are computed from the h
 - **refuses to launch** a mount line it cannot read unambiguously — a `:` inside a host or guest path — rather than scan the wrong tree;
 - **aborts** if the list is unreadable.
 
-**Strength.** A cover is a visibility default, not a boundary — in-guest or msb-native alike. It stops the accident and the injected instruction; in-guest root can `umount` any cover and read what is underneath, and the agent's scoped sudo (apt-get, dpkg) reaches root. A cover nothing in the cage can undo is an open question, not a shipped property.
+**Strength.** A cover is a visibility default, not a boundary — in-guest or msb-native alike. It stops the accident and the injected instruction; in-guest root can `umount` any cover and read what is underneath. The agent's own sudo grant does not reach root ([ADR-002 D12](../decisions/ADR-002-rip-cage-containers.md)), but anything else that does undoes the cover. A cover nothing in the cage can undo is an open question, not a shipped property.
 
 You do not declare this, and a cage config cannot point at the list. It is operator-editable *configuration* — `$RC_PROTECTED_PATHS`, then `$XDG_CONFIG_HOME/rip-cage/protected-paths`, then the copy shipped beside `rc` — but it is not part of a cage's composition ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D5d, [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)).
 

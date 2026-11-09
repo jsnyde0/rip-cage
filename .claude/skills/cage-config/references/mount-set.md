@@ -66,7 +66,7 @@ One line is `:ro` deliberately (rc's own skills projection is read-only too):
 ## What a recreate actually costs
 
 **Lost:** only the guest's own ephemeral rootfs scratch. In practice that means
-anything you installed at runtime inside the cage — an ad-hoc `apt-get install`
+anything you installed at runtime inside the cage — an ad-hoc tool download
 — that was neither baked into the image nor captured by a mount or a named
 volume.
 

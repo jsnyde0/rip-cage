@@ -98,7 +98,7 @@ rc up --replace ~/code/my-project
 **This is a cold recreate, not a hot reload.** msb's net rules have no live-mutation path on a running sandbox — `msb modify` carries no network parameter — so the cage is gracefully stopped, removed, and created again against the now-current config.
 
 - **Survives:** everything host-mounted or volume-backed — the workspace, `~/.claude/{projects,sessions}` (so the Claude session **resumes**), any read-only file a config line mounts (pi's placeholder `auth.json` included), and the named volumes.
-- **Lost:** only the guest's own ephemeral rootfs overlay — an `apt-get install` you ran at runtime and never baked into the image.
+- **Lost:** only the guest's own ephemeral rootfs overlay — anything you installed at runtime and never baked into the image.
 
 A **stopped** cage converges on a plain `rc up`; `--no-reload` resumes it with the old rules instead. A **running** cage never recreates implicitly, because that would kill the live session.
 

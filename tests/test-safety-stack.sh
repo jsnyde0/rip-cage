@@ -485,6 +485,39 @@ check "SSH pinned github.com ED25519 fingerprint matches" "$([[ "$actual_fp" == 
 # exact mode value.
 
 echo ""
+echo "-- Sudo Scope: no root code execution (rip-cage-rsh9.1) --"
+
+# Negative control for ADR-002 D12 (evolved 2026-11-09): the agent's sudo grant
+# must not include a package manager. apt-get's Pre-Invoke hook runs any command
+# as root; before the fix this probe wrote uid 0. The floor probe's `sudo-scope`
+# pins the whole grant list; this proves the exploit itself is refused.
+_rsh9_out="$(mktemp -u /tmp/rc-rsh9-preinvoke.XXXXXX)"
+_rsh9_rc=0
+_rsh9_msg=$(sudo -n /usr/bin/apt-get -o "APT::Update::Pre-Invoke::=id -u > ${_rsh9_out}" update 2>&1 >/dev/null) || _rsh9_rc=$?
+if [[ -s "$_rsh9_out" && "$(cat "$_rsh9_out")" == "0" ]]; then
+  check "sudo apt-get Pre-Invoke cannot run code as root" "fail" "probe wrote uid 0 — the agent can become root"
+elif [[ "$_rsh9_rc" -eq 0 ]]; then
+  check "sudo apt-get Pre-Invoke cannot run code as root" "fail" "sudo apt-get exited 0 — the grant still admits apt-get"
+else
+  check "sudo apt-get Pre-Invoke cannot run code as root" "pass" "refused: $(printf '%s' "$_rsh9_msg" | head -1)"
+fi
+rm -f "$_rsh9_out" 2>/dev/null || true
+
+if sudo -n /usr/bin/dpkg --version >/dev/null 2>&1; then
+  check "sudo dpkg is refused" "fail" "sudo dpkg exited 0 — dpkg -i <deb with a maintainer script> runs code as root"
+else
+  check "sudo dpkg is refused" "pass"
+fi
+
+# TIOCSTI keystroke injection: init lowers dev.tty.legacy_tiocsti to 0 each boot.
+if [[ -r /proc/sys/dev/tty/legacy_tiocsti ]]; then
+  _rsh9_tiocsti=$(cat /proc/sys/dev/tty/legacy_tiocsti)
+  check "dev.tty.legacy_tiocsti is 0" "$([[ "$_rsh9_tiocsti" == "0" ]] && echo pass || echo fail)" "value ${_rsh9_tiocsti}"
+else
+  info "dev.tty.legacy_tiocsti is 0" "kernel has no legacy_tiocsti knob — TIOCSTI policy is the kernel's"
+fi
+
+echo ""
 echo "-- Mise (ADR-015) --"
 
 # mise binary installed and executable

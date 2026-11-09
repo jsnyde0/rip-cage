@@ -214,12 +214,11 @@ fi
 # host-side that this list and that Dockerfile line still say the same thing —
 # so the two cannot drift apart without a red host suite. Change one, change
 # both.
-_rc_floor_sudo_expected='/usr/bin/apt-get
-/usr/bin/chown -R agent:agent /home/agent/.local/share/mise
+_rc_floor_sudo_expected='/usr/bin/chown -R agent:agent /home/agent/.local/share/mise
 /usr/bin/chown agent:agent /home/agent/.claude
 /usr/bin/chown agent:agent /home/agent/.claude-state
 /usr/bin/chown agent:agent /home/agent/.pi/agent
-/usr/bin/dpkg'
+/usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0'
 _rc_floor_sudoers=/etc/sudoers.d/agent
 if [ ! -f "$_rc_floor_sudoers" ]; then
   check "sudo-scope" "fail" "${_rc_floor_sudoers} is missing — the agent's scoped grant is gone"

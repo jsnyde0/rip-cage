@@ -26,10 +26,10 @@ Go is build-stage only — it compiles `bd` and is not present at runtime.
 
 The cage runs as `agent` (uid 1000), never root. Sudo is restricted to exact command paths in `/etc/sudoers.d/agent`, with no wildcards:
 
-- `/usr/bin/apt-get`, `/usr/bin/dpkg` — install packages at runtime
+- `/usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0` — init closes TIOCSTI keystroke injection each boot (the exact argv, so it can only lower the value)
 - `chown agent:agent` on `/home/agent/.claude`, `/home/agent/.claude-state`, `/home/agent/.pi/agent` — fix mount ownership at init
 - `chown -R agent:agent` on the mise data directory
 
-npm global installs are not available at runtime — there is no sudo for npm. Put global packages in your Dockerfile.
+There is no sudo for a package manager — no `apt-get`, `dpkg` or `npm -g`. Each runs arbitrary code as root, which would let a steered agent rewrite every root-owned guard ([ADR-002 D12](../decisions/ADR-002-rip-cage-containers.md)). System packages go in your `FROM rip-cage:latest` Dockerfile at build time; user-level installs (`mise`, `uv`, `npm` without `-g`, `cargo`) need no root. A caged agent that needs a missing package asks the host to add it, the same loop as a denied egress host.
 
-Runtime `apt-get install`s live in the guest's ephemeral rootfs overlay, which does **not** survive a recreate. Anything you want to keep belongs in the image or behind a mount.
+Anything installed at runtime outside a mount lives in the guest's ephemeral rootfs overlay, which does **not** survive a recreate. Anything you want to keep belongs in the image or behind a mount.

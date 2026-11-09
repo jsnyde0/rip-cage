@@ -83,6 +83,40 @@ else
   echo "  Probe:      $(echo "$PROBE_GRANT" | tr '\n' '|')"
 fi
 
+# --- Test 6: the grant carries no root-code-execution path ---
+# apt-get (-o APT::Update::Pre-Invoke::=<cmd>) and dpkg (-i <deb with a
+# maintainer script>, --root) each run arbitrary commands as root, which hands a
+# steered agent every root-owned guard. ADR-002 D12, evolved 2026-11-09
+# (rip-cage-rsh9.1): installs happen at build time in the FROM-extension
+# Dockerfile (ADR-031 D4), never through runtime sudo.
+echo ""
+echo "-- Test 6: sudoers grants no package manager (root-code-execution path) --"
+_t6_hits=$(echo "$DOCKERFILE_GRANT" | grep -E '(^|/)(apt|apt-get|dpkg|aptitude|npm|pip|pip3)( |$)' || true)
+if [[ -z "$DOCKERFILE_GRANT" ]]; then
+  fail "could not parse the sudoers grant — Test 6 is vacuous"
+elif [[ -n "$_t6_hits" ]]; then
+  fail "sudoers still grants a package manager: $(echo "$_t6_hits" | tr '\n' '|')"
+else
+  pass "sudoers grants no package manager"
+fi
+
+# --- Test 7: TIOCSTI is closed at boot through one exact-argument grant ---
+# dev.tty.legacy_tiocsti=1 lets a process push keystrokes into a tty it holds.
+# The guest boots with it on; init lowers it each boot via sudo. The grant is
+# pinned to the exact argv, so it can only ever LOWER the value.
+echo ""
+echo "-- Test 7: sudoers pins sysctl to legacy_tiocsti=0 and init runs it --"
+INIT="${REPO_ROOT}/cage/init/init-rip-cage.sh"
+if ! echo "$DOCKERFILE_GRANT" | grep -qx '/usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0'; then
+  fail "sudoers lacks the exact '/usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0' grant"
+elif echo "$DOCKERFILE_GRANT" | grep 'sysctl' | grep -vqx '/usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0'; then
+  fail "sudoers grants sysctl beyond the one pinned argv"
+elif ! grep -q 'sudo -n /usr/sbin/sysctl -w dev.tty.legacy_tiocsti=0' "$INIT"; then
+  fail "init-rip-cage.sh does not run the pinned sysctl grant"
+else
+  pass "sysctl grant pinned to legacy_tiocsti=0 and init runs it"
+fi
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [[ "$FAIL" -gt 0 ]]; then
