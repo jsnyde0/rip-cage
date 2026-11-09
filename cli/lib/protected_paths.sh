@@ -706,15 +706,20 @@ _protected_paths_breadcrumb() {
 # one-token-per-line contract _msb_flags_generate uses). Returns non-zero,
 # with the reason on stderr, on any refusal.
 #
-# SCAN DEPTH. Leg (b) walks each mounted tree to $RC_PROTECTED_SCAN_DEPTH
-# (default 2) -- deep enough for a credential at a project root or one level
-# into a monorepo package, shallow enough that mounting a large tree does not
-# stall every launch. This is a latency tradeoff, stated rather than implied:
-# it is not a claim of exhaustive reach.
+# SCAN DEPTH. Leg (b) walks each mounted tree to any depth by default, so a
+# workbench cage mounting ~/code covers the credentials in ~/code/<group>/
+# <repo>/ (rip-cage-npbb). Measured 2026-11-09: ~/code, 545k files, 0.19s
+# warm, 30 hits, 10 of them deeper than 5. A set $RC_PROTECTED_SCAN_DEPTH
+# caps the walk (find -maxdepth) for a tree too large to walk every launch;
+# anything past the cap is then uncovered.
 # --------------------------------------------------------------------------
 _protected_paths_enforce() {
   local _conf="$1"
-  local _depth="${RC_PROTECTED_SCAN_DEPTH:-2}"
+  # Depth bound for find: none unless RC_PROTECTED_SCAN_DEPTH is set (see
+  # SCAN DEPTH above). Expanded as ${_depth_args[@]+...}: bash 3.2 + set -u
+  # rejects a bare empty-array expansion (ADR-008 D5).
+  local -a _depth_args=()
+  [[ -n "${RC_PROTECTED_SCAN_DEPTH:-}" ]] && _depth_args=(-maxdepth "${RC_PROTECTED_SCAN_DEPTH}")
 
   _protected_paths_check_deps || return 1
 
@@ -827,7 +832,7 @@ _protected_paths_enforce() {
         echo "Error: the cage config ${_conf} mounts ${_host}, which contains the protected path ${_found} — and that is neither a regular file nor a directory, so msb has no mount that can cover it. Refusing to launch rather than leaving it exposed (ADR-031 D2, fail closed). Move it out of the mounted tree, or narrow the mount." >&2
         return 1
       fi
-    done < <(find "${_host}" -maxdepth "${_depth}" \( "${_find_expr[@]}" \) -print 2>/dev/null | LC_ALL=C sort)
+    done < <(find "${_host}" ${_depth_args[@]+"${_depth_args[@]}"} \( "${_find_expr[@]}" \) -print 2>/dev/null | LC_ALL=C sort)
   done <<< "${_mounts}"
 
   if [[ ${#_covers[@]} -gt 0 ]]; then
@@ -859,8 +864,8 @@ _protected_paths_enforce() {
 # submodule's or linked worktree's `gitdir:` pointer -- is mounted ro over
 # itself, so it cannot be repointed at a gitdir the guest wrote; besides the
 # scan, each repo's .gitmodules names where those files sit. Repos are found to
-# $RC_PROTECTED_SCAN_DEPTH (default 2), the same latency bound the
-# protected-paths scan uses. Read-only mounts are skipped, and so is anything
+# the same depth the protected-paths scan walks: unlimited unless
+# $RC_PROTECTED_SCAN_DEPTH caps it. Read-only mounts are skipped, and so is anything
 # under a read-only mount's target: a rw pin there would re-expose it.
 #
 # Prints msb argv tokens, one per line, for _UP_PROTECTED_COVERS.
@@ -875,13 +880,15 @@ _protected_paths_enforce() {
 # writable, so a file git honours that is ABSENT at launch can be created:
 # .git/commondir (redirects the whole config to a dir the guest wrote),
 # .git/hooks or .git/info when missing. Also a repo or submodule the guest
-# creates after launch, and any repo deeper than the scan depth. Like every
+# creates after launch, and any repo past a set $RC_PROTECTED_SCAN_DEPTH cap. Like every
 # cover, a guest root can umount it (see this file's header). Follow-up:
 # rip-cage-rsh9.14.
 # --------------------------------------------------------------------------
 _git_exec_covers() {
   local _conf="$1"
-  local _depth="${RC_PROTECTED_SCAN_DEPTH:-2}"
+  # Same depth bound as _protected_paths_enforce's scan.
+  local -a _depth_args=()
+  [[ -n "${RC_PROTECTED_SCAN_DEPTH:-}" ]] && _depth_args=(-maxdepth "${RC_PROTECTED_SCAN_DEPTH}")
   local _mounts
   _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
@@ -928,9 +935,9 @@ _git_exec_covers() {
           _git_exec_covers_one "${_sub}" "${_g}${_sub#"${_entry}"}" || return 1
         done < <(find "${_entry}/modules" -name objects -prune -o -type f -name config -print 2>/dev/null | LC_ALL=C sort)
       fi
-    done < <(find "${_host}" -maxdepth "${_depth}" -name .git -print -prune 2>/dev/null | LC_ALL=C sort)
+    done < <(find "${_host}" ${_depth_args[@]+"${_depth_args[@]}"} -name .git -print -prune 2>/dev/null | LC_ALL=C sort)
 
-    # Submodule .git files the scan depth missed: each repo's .gitmodules
+    # Submodule .git files a capped scan missed: each repo's .gitmodules
     # names their paths. Walked as a queue so nested submodules are found.
     while [[ -n "${_queue}" ]]; do
       _root="${_queue%%$'\n'*}"

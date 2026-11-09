@@ -84,8 +84,9 @@ done
 _git() { git -c user.email=t@t -c user.name=t -c protocol.file.allow=always "$@"; }
 # Real submodules: src-lib carries its own submodule `inner`, so the
 # workspace gets a nested submodule gitdir (.git/modules/vendor/lib/modules/
-# inner) and nested .git files. lib0's .git file sits inside the scan depth;
-# vendor/lib's and deep/x/y/lib2's lie past it, so only .gitmodules finds them.
+# inner) and nested .git files. The scan is capped at depth 2 below (the
+# default is unlimited) so lib0's .git file sits inside it while vendor/lib's
+# and deep/x/y/lib2's lie past it, and only .gitmodules finds them.
 SRC="${T}/src"
 mkdir -p "${SRC}/inner" "${SRC}/lib"
 git -C "${SRC}/inner" init -q && _git -C "${SRC}/inner" commit -q --allow-empty -m i
@@ -117,7 +118,7 @@ sed -e "s#<ABSOLUTE_PATH_TO_YOUR_PROJECT>#${WS}#g" \
 
 _dry_run() {
   : > "$CALL_LOG"
-  OUT=$(HOME="$H" XDG_CONFIG_HOME="${H}/.config" RC_CAGE_CONF="$1" PATH="${BIN}:${PATH}" \
+  OUT=$(HOME="$H" XDG_CONFIG_HOME="${H}/.config" RC_CAGE_CONF="$1" RC_PROTECTED_SCAN_DEPTH=2 PATH="${BIN}:${PATH}" \
         bash "$RC" up --dry-run "$@" 2>&1 </dev/null)
   RCODE=$?
 }

@@ -18,6 +18,8 @@ set -uo pipefail
 #   R1  string-form ":ro" mount holding the file      -> guest cover, no refusal
 #   R2  map-form "readonly: true" mount holding it    -> guest cover
 #   R3  ro mount holding it two levels down           -> guest cover (scan depth)
+#   S1  depth-4 file in a rw mount, RC_PROTECTED_SCAN_DEPTH unset -> covered
+#   S2  the same with RC_PROTECTED_SCAN_DEPTH=2                -> not reached
 #   R4  any readonly value but absent/false is ro     -> guest cover (fail closed)
 #   R5  a guest target carrying a newline             -> refused (one token per line)
 #   D1  ro mount holding only a protected DIRECTORY   -> tmpfs cover, no guest cover
@@ -48,7 +50,7 @@ trap 'rm -rf "$T"' EXIT
 S=rc-dummy-secret
 printf '%s\n' "$S" rc-dummy-dir rc-dummy-keydir > "$T/protected-paths"
 export RC_PROTECTED_PATHS="$T/protected-paths"
-# Pinned: R3 plants the file two levels down and relies on the default depth.
+# Pinned to 2 for every case but S1, which unsets it to prove the default.
 export RC_PROTECTED_SCAN_DEPTH=2
 export HOME="${T}/home"   # the cover breadcrumb lands under $HOME/.cache/rc
 mkdir -p "$HOME"
@@ -101,6 +103,21 @@ if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/mnt/p/$S:ro$" && ! 
 conf "$T/r3.yaml" "  - \"$T/deeptree:/mnt/p:ro\""
 run "$T/r3.yaml"
 if [[ $_rc -eq 0 ]] && guest_cover "/mnt/p/pkg/$S"; then pass "R3 nested file inside an ro mount gets an in-guest cover"; else fail "R3 nested file (rc $_rc, out: $_out, err: $_err)"; fi
+
+# --- S1/S2: scan depth (rip-cage-npbb) -------------------------------------
+# A workbench cage mounting ~/code holds its secrets at ~/code/<group>/<repo>/,
+# depth 3+. Unset RC_PROTECTED_SCAN_DEPTH means no depth cap; a set value caps.
+mkdir -p "$T/benchtree/a/b/c"
+printf 'MARKER\n' > "$T/benchtree/a/b/c/$S"
+conf "$T/s1.yaml" "  - \"$T/benchtree:/w\""
+_saved_depth="$RC_PROTECTED_SCAN_DEPTH"
+unset RC_PROTECTED_SCAN_DEPTH
+run "$T/s1.yaml"
+if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/w/a/b/c/$S:ro$"; then pass "S1 depth unset: a protected file at depth 4 is covered"; else fail "S1 depth unset: depth-4 file not covered (rc $_rc, out: $_out, err: $_err)"; fi
+export RC_PROTECTED_SCAN_DEPTH=2
+run "$T/s1.yaml"
+if [[ $_rc -eq 0 ]] && ! printf '%s\n' "$_out" | grep -q -- "/w/a/b/c/$S"; then pass "S2 RC_PROTECTED_SCAN_DEPTH=2 still caps: the depth-4 file is not reached"; else fail "S2 depth 2 did not cap (rc $_rc, out: $_out, err: $_err)"; fi
+export RC_PROTECTED_SCAN_DEPTH="$_saved_depth"
 
 # --- R5: a control character in a guest target is refused ------------------
 mkdir -p "$T/ctltree/a"$'\n'"b"

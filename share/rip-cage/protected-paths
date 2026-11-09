@@ -26,11 +26,10 @@
 # If a cover cannot be expressed for an entry, `rc up` refuses rather than
 # launching uncovered.
 #
-# SCAN DEPTH: the (b) scan walks each mounted tree to a bounded depth
-# (RC_PROTECTED_SCAN_DEPTH, default 2) — deep enough for a credential at a
-# project root or one level into a monorepo package, shallow enough that
-# mounting a large tree does not stall every launch. Depth is a latency
-# tradeoff, not a claim of exhaustive reach.
+# SCAN DEPTH: the (b) scan walks each mounted tree to any depth, so a cage
+# mounting ~/code covers ~/code/<group>/<repo>/.env (~0.2s warm for 545k
+# files). Set RC_PROTECTED_SCAN_DEPTH=N to cap the walk on a tree too large
+# to scan every launch; anything deeper than N is then left uncovered.
 #
 # Blank lines and lines starting with '#' are ignored. Leading/trailing
 # whitespace is stripped.
