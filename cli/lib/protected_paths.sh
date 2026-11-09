@@ -398,7 +398,10 @@ _protected_paths_walk_inner() {
 # The rc authority directories (ADR-032 Terms), one per line, as spelled
 # (unresolved) so a refusal names the path the predicate tested:
 #   1. the default projects directory -- always, whatever --conf points at;
-#   2. CONF_DIR, when non-empty and not the projects directory;
+#   2. CONF_DIR, when non-empty and not the projects directory, printed as
+#      "conf:<dir>" so the predicate can tell it apart: for that one entry only
+#      equals-or-contains applies (a mount strictly inside it cannot expose the
+#      config or its sibling declaration; ruling 2026-11-09);
 #   3. the state directory root.
 # A relative RC_STATE_DIR is resolved against $PWD once, here, so the
 # predicate and its message agree on one absolute path (the rc up wiring,
@@ -415,7 +418,7 @@ _protected_paths_authority_dirs() {
   if [[ -n "${_conf_dir}" ]]; then
     _a="$(_protected_paths_walk_path "${_conf_dir}")" || true
     _b="$(_protected_paths_walk_path "${_projects}")" || true
-    [[ "${_a}" == "${_b}" ]] || printf '%s\n' "${_conf_dir}"
+    [[ "${_a}" == "${_b}" ]] || printf 'conf:%s\n' "${_conf_dir}"
   fi
   printf '%s\n' "${_state}"
 }
@@ -424,7 +427,8 @@ _protected_paths_authority_dirs() {
 # _mount_src_overlaps_authority_dir HOST_SRC CONF_DIR
 #
 # True (exit 0) when HOST_SRC's real path equals, contains, or lies inside
-# any directory _protected_paths_authority_dirs names (ADR-032 D2). Unlike
+# any directory _protected_paths_authority_dirs names (ADR-032 D2); for the
+# --conf directory entry only, equals or contains. Unlike
 # _mount_src_exposes_secrets_dir there is NO existence rule: each authority
 # directory is resolved whether or not it exists (the state root is created by
 # the first declaration, so a mount that would contain it is refused up
@@ -436,14 +440,22 @@ _protected_paths_authority_dirs() {
 # resolution -- the walker has no hard-error exit today -- is skipped.
 # Empty source: false.
 # --------------------------------------------------------------------------
+# On a true return, _PP_AUTH_HIT holds the authority directory (as spelled by
+# _protected_paths_authority_dirs) that matched, or '' when HOST_SRC itself
+# could not be resolved -- so a caller's message can name it. The predicate
+# must be called in the caller's shell (not inside $( )) for it to survive.
+_PP_AUTH_HIT=''
 _mount_src_overlaps_authority_dir() {
   local _host_src="${1:-}" _conf_dir="${2:-}"
   [[ -n "${_host_src}" ]] || return 1
-  local _src _dir _auth _loc _dirs
+  local _src _dir _auth _loc _dirs _is_conf
+  _PP_AUTH_HIT=''
   _src="$(_protected_paths_walk_path "${_host_src}")" || return 0
   _dirs="$(_protected_paths_authority_dirs "${_conf_dir}")"
   while IFS= read -r _dir; do
     [[ -n "${_dir}" ]] || continue
+    _is_conf=0
+    if [[ "${_dir}" == conf:* ]]; then _is_conf=1; _dir="${_dir#conf:}"; fi
     # Called in THIS shell (no $( )) so _PP_RES and _PP_LINKLOC survive: on a
     # dangling component both the lexical target and the dangling link's own
     # location are authority -- a mount holding the link's parent would let
@@ -451,9 +463,20 @@ _mount_src_overlaps_authority_dir() {
     _protected_paths_walk_path "${_dir}" >/dev/null || true
     _auth="${_PP_RES:-/}"
     _loc="${_PP_LINKLOC}"
-    [[ "${_src}" == "${_auth}" || "${_src}" == "${_auth%/}"/* || "${_auth}" == "${_src%/}"/* ]] && return 0
-    if [[ -n "${_loc}" ]]; then
-      [[ "${_src}" == "${_loc}" || "${_src}" == "${_loc%/}"/* || "${_loc}" == "${_src%/}"/* ]] && return 0
+    if [[ "${_src}" == "${_auth}" || "${_auth}" == "${_src%/}"/* ]]; then
+      _PP_AUTH_HIT="${_auth}"   # canonical: ../ and links resolved
+      return 0
+    fi
+    # "lies inside" applies to every authority directory but the --conf one.
+    if [[ "${_is_conf}" -eq 0 && "${_src}" == "${_auth%/}"/* ]]; then
+      _PP_AUTH_HIT="${_auth}"
+      return 0
+    fi
+    if [[ "${_is_conf}" -eq 0 && -n "${_loc}" ]]; then
+      if [[ "${_src}" == "${_loc}" || "${_src}" == "${_loc%/}"/* || "${_loc}" == "${_src%/}"/* ]]; then
+        _PP_AUTH_HIT="${_dir}"
+        return 0
+      fi
     fi
   done <<EOF_DIRS
 ${_dirs}
@@ -484,7 +507,11 @@ EOF_DIRS
 #   2. it is a beads dir: named .beads and holding metadata.json;
 #   3. it is not inside a $HOME dotdir, and no ancestor of ~/.claude or ~/.pi;
 #   4. no component matches the protected-paths list;
-#   5. it does not expose the CCTOK secrets dir (ADR-031 D5(a)).
+#   5. it does not expose the CCTOK secrets dir (ADR-031 D5(a));
+#   6. it does not equal or contain an rc authority directory, nor lie inside
+#      the projects dir or the state root (the --conf dir leg is
+#      equals-or-contains only; ADR-032 D2; _UP_CONF_DIR, exported by rc up,
+#      supplies the config dir).
 # --------------------------------------------------------------------------
 _beads_redirect_refusal() {
   local _target="$1" _home_real _pat _list
@@ -503,6 +530,9 @@ _beads_redirect_refusal() {
     return 2
   elif _mount_src_exposes_secrets_dir "$_target"; then
     echo "${_target} is or contains $(_protected_paths_secrets_dir) -- the CCTOK secrets directory msb --secret reads the real token value from, which no cage mount may expose (ADR-031 D5(a)). Point the redirect at a .beads that does not contain it, or delete it"
+    return 2
+  elif _mount_src_overlaps_authority_dir "$_target" "${_UP_CONF_DIR:-}"; then
+    echo "${_target} equals, contains, or lies inside ${_PP_AUTH_HIT:-an rc authority directory} (rc's authority directories are the projects directory, the config's directory and the state directory root), which no cage mount may reach (ADR-032 D2). Point the redirect at a .beads outside it, or delete it"
     return 2
   else
     return 0
@@ -586,6 +616,60 @@ _protected_paths_conf_secrets_dir_mount() {
       return 1
     fi
   done <<< "${_mounts}"
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# _protected_paths_conf_authority_dir_mount CONF_FILE ROWS CONF_DIR
+#
+# Refuse (non-zero, one Error: line on stderr naming the authority directory
+# and the mount row) when a mount declared in the cage config equals,
+# contains, or lies inside an rc authority directory (ADR-032 D2): the default
+# projects directory, CONF_DIR (the directory holding the config when --conf
+# or RC_CAGE_CONF chose it; empty otherwise), or the state directory root.
+# Same shape as _protected_paths_conf_secrets_dir_mount, own JSON code
+# (AUTHORITY_DIR_INSIDE_MOUNT, cli/up.sh). Runs for every config, declaration
+# or not: the state root is authority for every cage. ROWS is the
+# _protected_paths_conf_bind_mounts output (pass it; may be empty).
+# --------------------------------------------------------------------------
+_protected_paths_conf_authority_dir_mount() {
+  local _conf="$1" _conf_dir="${3:-}"
+  local _mounts _host _guest _mode
+  _mounts="$(_protected_paths_conf_rows "$1" "${2:-}")" || return 1
+  [[ -z "${_mounts}" ]] && return 0
+
+  while IFS=$'\t' read -r _host _guest _mode; do
+    [[ -z "${_host}" ]] && continue
+    if _mount_src_overlaps_authority_dir "${_host}" "${_conf_dir}"; then
+      if [[ -n "${_PP_AUTH_HIT}" ]]; then
+        echo "Error: the cage config ${_conf} mount row ${_host}:${_guest} equals, contains, or lies inside the rc authority directory ${_PP_AUTH_HIT} (rc authority directories are the projects directory, this config's directory, or the state directory root). Refusing to launch before any msb call: a cage that can write there decides what the next cage may do (ADR-032 D2). Remove or narrow that mount line in ${_conf}." >&2
+      else
+        echo "Error: the cage config ${_conf} mount row ${_host}:${_guest} cannot be resolved (dangling symlink or loop), so rc cannot rule out that it covers an rc authority directory. Refusing to launch before any msb call (ADR-032 D2). Fix or remove that mount line in ${_conf}." >&2
+      fi
+      return 1
+    fi
+  done <<< "${_mounts}"
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# _mount_src_authority_warn KIND HOST_SRC CONF_DIR
+#
+# The warn-and-skip posture for an rc-COMPUTED mount (ADR-032 D2; ADR-023 D6):
+# when HOST_SRC overlaps an authority directory, print one Warning: line on
+# stderr naming that directory and the dropped mount, and return 0 so the
+# caller skips the mount; return 1 (silently) when it does not overlap.
+# Optional 4th argument: a note appended to the warning.
+# Call as `if _mount_src_authority_warn "skill symlink mount" "$src" "$dir"; then continue; fi`.
+# --------------------------------------------------------------------------
+_mount_src_authority_warn() {
+  local _kind="$1" _src="$2" _conf_dir="${3:-}" _note="${4:-}"
+  _mount_src_overlaps_authority_dir "${_src}" "${_conf_dir}" || return 1
+  if [[ -n "${_PP_AUTH_HIT}" ]]; then
+    echo "Warning: skipping ${_kind} ${_src} -- it equals, contains, or lies inside the rc authority directory ${_PP_AUTH_HIT}, which a cage must not reach (ADR-032 D2)${_note:+; ${_note}}" >&2
+  else
+    echo "Warning: skipping ${_kind} ${_src} -- its path cannot be resolved (dangling symlink or loop), so rc cannot rule out that it reaches an rc authority directory (ADR-032 D2)" >&2
+  fi
   return 0
 }
 

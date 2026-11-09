@@ -394,3 +394,109 @@ _host_tools_load() {
 
   printf '%s\n' "${_norm}"
 }
+
+# ---------------------------------------------------------------------------
+# rc up site-1 helpers (rip-cage-jdl2.3.1; ADR-032 D2, D6). Nothing here
+# creates a directory or starts a process: the state directory is created by
+# the gatekeeper-start section, only after every check has passed.
+# ---------------------------------------------------------------------------
+
+# _rc_state_root -- the directory every cage's state directory lives under:
+# ${RC_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/rip-cage}, a relative
+# RC_STATE_DIR resolved against $PWD once (the authority-directory predicate
+# resolves it the same way, so the path a refusal names is the path in force).
+_rc_state_root() {
+  local _root="${RC_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/rip-cage}"
+  [[ "${_root}" == /* ]] || _root="${PWD}/${_root}"
+  # Canonical: ../ and symlinks resolved, so a refusal names the real path.
+  _root="$(_protected_paths_walk_path "${_root}")" || true
+  printf '%s\n' "${_root}"
+}
+
+# _rc_state_dir CAGE -- <state root>/<cage>.
+_rc_state_dir() {
+  printf '%s/%s\n' "$(_rc_state_root)" "$1"
+}
+
+# _rc_sun_path_max -- the usable unix-socket path length, sun_path less its
+# NUL: 103 on Darwin, 107 elsewhere. The one place the number lives.
+_rc_sun_path_max() {
+  case "$(uname -s)" in
+    Darwin) echo 103 ;;
+    *) echo 107 ;;
+  esac
+}
+
+# _rc_socket_path_check CAGE -- exit 1 + one Error: line naming RC_STATE_DIR
+# when <state dir>/host-tool.sock is longer than the platform limit (bytes).
+_rc_socket_path_check() {
+  local _sock _max _len
+  _sock="$(_rc_state_dir "$1")/host-tool.sock"
+  _max="$(_rc_sun_path_max)"
+  _len="$(printf '%s' "${_sock}" | LC_ALL=C wc -c | tr -d ' ')"
+  if [[ "${_len}" -gt "${_max}" ]]; then
+    echo "Error: the host-tool socket path ${_sock} is ${_len} bytes, over this platform's ${_max}-byte unix-socket limit. Refusing to launch before any msb call: set RC_STATE_DIR to a shorter directory (the state directory holds the socket)." >&2
+    return 1
+  fi
+  return 0
+}
+
+# _host_tools_path_outside_mounts PATH MOUNTS_FILE -- the loader's mount-hit
+# logic as a standalone check, for argv[0]-style paths. MOUNTS_FILE: one host
+# mount source per line. Exit 0 when PATH's real path lies outside every
+# mount; exit 1 + the matching mount source on stdout when it equals or lies
+# inside one; exit 2 + nothing when PATH cannot be resolved (dangling link or
+# loop). Fills _HT_MOUNTS (shared loader state).
+_host_tools_path_outside_mounts() {
+  local _p="$1" _mf="$2" _res _src _rc=0
+  _host_tools_load_mounts "${_mf}"
+  _res="$(_host_tools_resolve_path "${_p}")" || _rc=$?
+  [[ "${_rc}" -eq 0 ]] || return 2
+  if _src="$(_host_tools_mount_hit "${_res}")"; then
+    printf '%s\n' "${_src}"
+    return 1
+  fi
+  return 0
+}
+
+# _rc_python3 -- the interpreter rc execs: ${RC_PYTHON3:-$(command -v python3)}
+# resolved to an absolute real path (symlinks followed). Exit 1 and nothing
+# printed when there is none, or the name dangles or is not an executable file.
+_rc_python3() {
+  local _p="${RC_PYTHON3:-}" _real _rc=0
+  if [[ -z "${_p}" ]]; then
+    _p="$(command -v python3 2>/dev/null)" || _p=''
+  elif [[ "${_p}" != */* ]]; then
+    _p="$(command -v "${_p}" 2>/dev/null)" || _p=''
+  fi
+  [[ -n "${_p}" ]] || return 1
+  _real="$(_host_tools_resolve_path "${_p}")" || _rc=$?
+  [[ "${_rc}" -eq 0 && -f "${_real}" && -x "${_real}" ]] || return 1
+  printf '%s\n' "${_real}"
+}
+
+# _rc_python3_check MOUNTS_FILE -- the host prerequisite (ADR-032 D6): the
+# interpreter exists, lies outside every mount the cage gets (the mount check
+# runs BEFORE the interpreter is executed: a script under a mount is code the
+# cage can rewrite), and imports socket, json and subprocess under -I. One
+# Error: line on refusal.
+_rc_python3_check() {
+  local _mf="$1" _py _src _rc=0 _want="${RC_PYTHON3:-python3}"
+  if ! _py="$(_rc_python3)"; then
+    echo "Error: python3 not found or not an executable file (looked for ${_want}). The host-tool line needs the Python 3 standard library on the host; install python3 or set RC_PYTHON3 to its path. Refusing to launch before any msb call (ADR-032 D6)." >&2
+    return 1
+  fi
+  _src="$(_host_tools_path_outside_mounts "${_py}" "${_mf}")" || _rc=$?
+  if [[ "${_rc}" -eq 1 ]]; then
+    echo "Error: python3 resolves to ${_py}, inside mount source ${_src}: host code the cage could rewrite. Refusing to launch before any msb call; set RC_PYTHON3 to an interpreter outside every mount (ADR-032 D6)." >&2
+    return 1
+  elif [[ "${_rc}" -ne 0 ]]; then
+    echo "Error: python3 at ${_py} cannot be resolved against the mount list. Refusing to launch before any msb call (ADR-032 D6)." >&2
+    return 1
+  fi
+  if ! "${_py}" -I -c 'import socket, json, subprocess' >/dev/null 2>&1; then
+    echo "Error: python3 at ${_py} cannot run 'import socket, json, subprocess' under -I (a stub, such as macOS without the Command Line Tools, counts as missing). Install Python 3 or set RC_PYTHON3. Refusing to launch before any msb call (ADR-032 D6)." >&2
+    return 1
+  fi
+  return 0
+}

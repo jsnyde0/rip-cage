@@ -450,6 +450,10 @@ _symlink_follow_fingerprint() {
       if _mount_src_exposes_secrets_dir "$mount_src"; then
         continue
       fi
+      # ADR-032 D2: identical to the mount loop's authority-directory skip.
+      if _mount_src_overlaps_authority_dir "$mount_src" "${_UP_CONF_DIR:-}"; then
+        continue
+      fi
       lines+="${link} → ${mount_src} (${mode})"$'\n'
     done < <(_collect_dangling_symlinks "$pi_root" "$on_dangling" 2>/dev/null || true)
   fi
@@ -567,7 +571,13 @@ _up_prepare_docker_mounts() {
   # this one. Worktree mode mounts the main .git itself, so its covers are here.
 
   # Git worktree mounts: fix .git pointer so git works inside the container
-  if [[ "$wt_detected" == "true" ]]; then
+  # ADR-032 D2: a worktree whose main .git lies in an rc authority directory
+  # (computed from the host's git structure, so warn-and-skip) gets none of the
+  # worktree mounts or covers below; the host's own .git file stays covered.
+  if [[ "$wt_detected" == "true" ]] \
+    && _mount_src_authority_warn "worktree main .git mount" "$wt_main_git" "${_UP_CONF_DIR:-}" "$_UP_WT_SKIP_NOTE"; then
+    :
+  elif [[ "$wt_detected" == "true" ]]; then
     mkdir -p ~/.cache/rc
     local gitfile="${HOME}/.cache/rc/${_name}.gitfile"
     (umask 077; echo "gitdir: /workspace/.git-main/worktrees/${wt_name}" > "$gitfile")
@@ -627,6 +637,12 @@ _up_prepare_docker_mounts() {
         echo "Warning: skipping skill symlink mount ${_asset_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
         continue
       fi
+      # ADR-032 D2: same posture for an rc authority directory (the projects
+      # dir, the config's dir, the state root); _UP_CONF_DIR comes from the
+      # floor block in cmd_up.
+      if _mount_src_authority_warn "skill symlink mount" "$_asset_tdir" "${_UP_CONF_DIR:-}"; then
+        continue
+      fi
       _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
     done < <(_collect_symlink_parents "${HOME}/.claude/skills")
   fi
@@ -645,6 +661,9 @@ _up_prepare_docker_mounts() {
       # above -- see that comment.
       if _mount_src_exposes_secrets_dir "$_agent_tdir"; then
         echo "Warning: skipping agent symlink mount ${_agent_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
+        continue
+      fi
+      if _mount_src_authority_warn "agent symlink mount" "$_agent_tdir" "${_UP_CONF_DIR:-}"; then
         continue
       fi
       _UP_RUN_ARGS+=(-v "${_agent_tdir}:${_agent_tdir}:ro")
@@ -789,6 +808,10 @@ _up_prepare_docker_mounts() {
         echo "Warning: skipping symlink-follow mount ${_sfl_mount_src} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
         continue
       fi
+      # ADR-032 D2: authority directories (mirrored in _symlink_follow_fingerprint).
+      if _mount_src_authority_warn "symlink-follow mount" "$_sfl_mount_src" "${_UP_CONF_DIR:-}"; then
+        continue
+      fi
 
       # Mount spec (mode).
       local _sfl_mode_suffix=""
@@ -860,6 +883,9 @@ _up_prepare_docker_mounts() {
       # "audit the rest of _up_prepare_docker_mounts" ask.
       if _mount_src_exposes_secrets_dir "${_pi_host_real}"; then
         echo "Warning: skipping pi substrate mount ${_pi_host_real} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
+        continue
+      fi
+      if _mount_src_authority_warn "pi substrate mount" "${_pi_host_real}" "${_UP_CONF_DIR:-}"; then
         continue
       fi
       _UP_RUN_ARGS+=(-v "${_pi_host_real}:/home/agent/.rc-context/${_pi_cage_name}:ro")
@@ -1050,6 +1076,9 @@ _up_prepare_environment() {
       # (main_beads_dir is derived from the main repo's own git structure,
       # not raw workspace content), so it stays a warning, not exit 1.
       log "Warning: worktree auto-redirect — main repo .beads/ at $resolved_main_beads contains $(_protected_paths_secrets_dir), the CCTOK secrets directory; refusing to mount"
+    elif _mount_src_overlaps_authority_dir "$resolved_main_beads" "${_UP_CONF_DIR:-}"; then
+      # ADR-032 D2: same warn-and-skip posture as the secrets branch above.
+      echo "Warning: worktree auto-redirect — main repo .beads/ at $resolved_main_beads equals, contains, or lies inside ${_PP_AUTH_HIT:-an rc authority directory}; refusing to mount" >&2
     else
       log "Beads: worktree has no runtime data — auto-redirecting to main repo .beads/ ($resolved_main_beads)"
       beads_dir="$resolved_main_beads"
@@ -1513,7 +1542,14 @@ _up_resolve_conf() {
     echo "Error: the cage config at ${_conf} exists but is not readable. Refusing to launch." >&2
     return 1
   fi
-  printf '%s\n' "$_conf"
+  # The REAL path (rip-cage-jdl2.3.1, ADR-032 D2): a relative ./x.yaml and a
+  # symlinked file both resolve, so the declaration sibling is looked up
+  # beside the real file and the rc.cage-conf label carries the real path.
+  # An existing file always resolves; the walker's best-effort print is used
+  # even on its non-zero (dangling/loop) exit.
+  local _conf_real
+  _conf_real=$(_protected_paths_walk_path "$_conf") || true
+  printf '%s\n' "${_conf_real:-$_conf}"
 }
 
 
@@ -2447,6 +2483,55 @@ cmd_up() {
     exit 1
   fi
 
+  # ADR-032 D2 / rip-cage-jdl2.3.1 -- check site 1 of three (this one runs on
+  # every rc up, real and --dry-run, before any msb call). _UP_CONF_DIR is the
+  # directory holding the config when --conf / RC_CAGE_CONF chose it, else ""
+  # (the default projects directory is always an authority directory anyway);
+  # it is exported for the computed-mount sites, which pass it to the same
+  # predicate.
+  if [[ -n "${_UP_CONF_FLAG:-}" || -n "${RC_CAGE_CONF:-}" ]]; then
+    _UP_CONF_DIR="$(dirname "$_UP_CAGE_CONF")"
+  else
+    _UP_CONF_DIR=""
+  fi
+  export _UP_CONF_DIR
+  _UP_WT_SKIP_NOTE="git inside the cage will see a broken repository until the main repo is moved out of the authority directory (the host .git file still points at a host path)"
+  # (1) A config row that is, contains, or lies inside an authority directory:
+  # every config, declaration or not (the state root is authority for all).
+  if ! _protected_paths_conf_authority_dir_mount "$_UP_CAGE_CONF" "$_up_mount_rows" "$_UP_CONF_DIR"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} mounts an rc authority directory (see stderr)" "AUTHORITY_DIR_INSIDE_MOUNT"
+    exit 1
+  fi
+  # (2) The declaration, when there is one: schema, config-row paths, then the
+  # python3 prerequisite and the socket path length. Creates nothing; a
+  # defect here exits with no msb call recorded.
+  _UP_HOST_TOOLS_FILE=$(_host_tools_file "$_conf_name" "$_UP_CAGE_CONF")
+  _UP_HOST_TOOLS_PRESENT=$(_host_tools_present "$_conf_name" "$_UP_CAGE_CONF")
+  _UP_HOST_TOOLS_JSON=""
+  if [[ "$_UP_HOST_TOOLS_PRESENT" == "present" ]]; then
+    local _ht_mlist
+    if ! _ht_mlist=$(mktemp "/tmp/rc-host-tools-mounts.XXXXXX"); then
+      echo "Error: cannot create a temp file under /tmp for the host-tool mount list" >&2
+      exit 1
+    fi
+    printf '%s\n' "$_up_mount_rows" | cut -f1 >>"$_ht_mlist"
+    if ! _UP_HOST_TOOLS_JSON=$(_host_tools_load "$_UP_HOST_TOOLS_FILE" "$_ht_mlist"); then
+      rm -f "$_ht_mlist"
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool declaration ${_UP_HOST_TOOLS_FILE} refused (see stderr)" "HOST_TOOLS_DECL_REFUSED"
+      exit 1
+    fi
+    if ! _rc_python3_check "$_ht_mlist"; then
+      rm -f "$_ht_mlist"
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "python3 is missing, unusable, or inside a cage mount (see stderr)" "PYTHON3_UNUSABLE"
+      exit 1
+    fi
+    rm -f "$_ht_mlist"
+    if ! _rc_socket_path_check "$_conf_name"; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "The host-tool socket path exceeds the platform limit; set a shorter RC_STATE_DIR" "STATE_DIR_SOCKET_PATH"
+      exit 1
+    fi
+  fi
+
   # rip-cage-ely4.7.17: the CCTOK non-possession bridge -- refused here, same
   # before-any-msb-call floor, when the config declares the secret and no
   # valid token is available yet (see _up_check_cctok_secret for why this
@@ -2853,9 +2938,12 @@ cmd_up() {
       fi
       echo "Would mount $path -> /workspace"
       if [[ "$wt_detected" == "true" ]]; then
-        echo "Would mount worktree main .git/ ($wt_main_git) -> /workspace/.git-main (writable)"
-        echo "Would mount corrected .git pointer -> /workspace/.git:ro"
-        echo "Would mount hooks, config, info -> /workspace/.git-main/{hooks,config,info}:ro (D11)"
+        # Mirror of the skip in _up_prepare_docker_mounts (ADR-032 D2).
+        if ! _mount_src_authority_warn "worktree main .git mount" "$wt_main_git" "${_UP_CONF_DIR:-}" "$_UP_WT_SKIP_NOTE"; then
+          echo "Would mount worktree main .git/ ($wt_main_git) -> /workspace/.git-main (writable)"
+          echo "Would mount corrected .git pointer -> /workspace/.git:ro"
+          echo "Would mount hooks, config, info -> /workspace/.git-main/{hooks,config,info}:ro (D11)"
+        fi
       fi
       local _dry_gc
       for _dry_gc in ${_UP_PROTECTED_COVERS[@]+"${_UP_PROTECTED_COVERS[@]}"}; do
@@ -2885,6 +2973,9 @@ cmd_up() {
             echo "Warning: skipping skill symlink mount ${_dry_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
             continue
           fi
+          if _mount_src_authority_warn "skill symlink mount" "$_dry_tdir" "${_UP_CONF_DIR:-}"; then
+            continue
+          fi
           echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       fi
@@ -2902,6 +2993,9 @@ cmd_up() {
           # preview loop above -- see that comment.
           if _mount_src_exposes_secrets_dir "$_dry_agent_tdir"; then
             echo "Warning: skipping agent symlink mount ${_dry_agent_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
+            continue
+          fi
+          if _mount_src_authority_warn "agent symlink mount" "$_dry_agent_tdir" "${_UP_CONF_DIR:-}"; then
             continue
           fi
           echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"
@@ -2948,6 +3042,10 @@ cmd_up() {
             && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
             && _up_build_msb_create_argv "$name"; then
           echo "Would run: ${_UP_MSB_ARGV[*]}"
+          # Drops that the human preview above does not mirror (symlink-follow,
+          # pi substrate, worktree auto-redirect) are visible only in the held
+          # stderr; replay those Warning: lines, keep everything else held.
+          grep -E '^Warning: (skipping (symlink-follow|pi substrate) mount|worktree auto-redirect)' "$_UP_DRY_PREP_ERR" >&7 || true
         else
           echo "Would run: msb create --conf ${_UP_CAGE_CONF} --name ${name} --log-level trace [mounts]"
         fi

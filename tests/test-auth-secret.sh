@@ -569,11 +569,16 @@ rm -rf "$HOME_I" "$STAT_BIN_I"
 # (j)/(j2)/(k) rip-cage-ely4.7.17 fix round 4: ONE predicate,
 # _mount_src_exposes_secrets_dir (cli/lib/protected_paths.sh), for "does this
 # mount source equal or contain $XDG_CONFIG_HOME/rip-cage/secrets" -- true
-# only when that directory EXISTS. Fix round 3's version had no existence
-# check (over-broad: refused a plain ~/.config mount even when the secrets
-# dir had never been created) -- (j) now creates the dir first, and (j2) is
-# the new negative control proving the directory's absence changes the
-# verdict. The refusal now carries its own JSON error code
+# only when that directory EXISTS (the existence rule). (j) creates the dir and
+# mounts ~/.config above it (refused, the secrets check runs before the
+# authority check); (j2) is the negative control for the existence rule: a
+# mount EQUAL to the secrets dir is not refused while the dir is absent. A
+# plain ~/.config mount can no longer be used for the "contains, absent"
+# direction: ~/.config contains the rc projects directory and is refused as an
+# authority directory (ADR-032 D2, rip-cage-jdl2.3.1). The "contains, absent"
+# direction is therefore asserted directly on the predicate in (j3) below --
+# no rc up mount can reach it any more.
+# The refusal carries its own JSON error code
 # (SECRETS_DIR_INSIDE_MOUNT, distinct from CAGE_CONFIG_INSIDE_MOUNT).
 # =============================================================================
 
@@ -632,15 +637,15 @@ fi
 rm -rf "$HOME_J" "$FAKE_BIN_J" "$CALL_LOG_J"
 
 echo ""
-echo "=== Test (j2): the SAME mount is NOT refused when the secrets dir is ABSENT ==="
+echo "=== Test (j2): a mount EQUAL to the secrets dir is NOT refused when the dir is ABSENT (existence rule) ==="
 HOME_J2=$(_fresh_home)
 PROJ_J2="${HOME_J2}/proj"
 mkdir -p "$PROJ_J2" "${HOME_J2}/.config"
 git -C "$PROJ_J2" init -q >/dev/null 2>&1
-# No secrets/ subdir created, and no CCTOK block in the config -- this is the
-# API-key-only user's plain "~/.config for nvim" case the over-broad half of
-# the old check refused with no way past it.
-CONF_J2=$(_conf_with_extra_mount "$HOME_J2" "$PROJ_J2" "${HOME_J2}/.config" "/home/agent/.config-leak")
+# No secrets/ subdir created, and no CCTOK block in the config.
+# The source is the (absent) secrets directory itself. It is not an authority
+# directory, so only the existence rule decides.
+CONF_J2=$(_conf_with_extra_mount "$HOME_J2" "$PROJ_J2" "${HOME_J2}/.config/rip-cage/secrets" "/home/agent/.config-leak")
 CALL_LOG_J2=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_J2=$(fake_runtime_bin "$CALL_LOG_J2")
 out_j2=$(HOME="$HOME_J2" XDG_CONFIG_HOME="${HOME_J2}/.config" RC_CAGE_CONF="$CONF_J2" PATH="${FAKE_BIN_J2}:${PATH}" bash "$RC" up --dry-run "$PROJ_J2" 2>&1)
@@ -662,6 +667,28 @@ else
   pass "(j2) the call log holds no docker pull/tag/save or msb load/create call"
 fi
 rm -rf "$HOME_J2" "$FAKE_BIN_J2" "$CALL_LOG_J2"
+
+echo ""
+echo "=== Test (j3): the secrets predicate itself — a mount CONTAINING the secrets dir is false while the dir is ABSENT, true once it exists ==="
+HOME_J3=$(_fresh_home)
+mkdir -p "${HOME_J3}/.config"
+# Called directly: rc up cannot exercise this direction since ~/.config is an
+# authority-directory refusal first (ADR-032 D2); the existence rule is the
+# predicate's own and is proven here on the predicate.
+j3_absent=$(HOME="$HOME_J3" XDG_CONFIG_HOME="${HOME_J3}/.config" bash -c 'source "$1/cli/lib/protected_paths.sh"; if _mount_src_exposes_secrets_dir "$HOME/.config"; then echo true; else echo false; fi' _ "$REPO_ROOT" 2>/dev/null)
+mkdir -p "${HOME_J3}/.config/rip-cage/secrets"
+j3_present=$(HOME="$HOME_J3" XDG_CONFIG_HOME="${HOME_J3}/.config" bash -c 'source "$1/cli/lib/protected_paths.sh"; if _mount_src_exposes_secrets_dir "$HOME/.config"; then echo true; else echo false; fi' _ "$REPO_ROOT" 2>/dev/null)
+if [[ "$j3_absent" == "false" ]]; then
+  pass "(j3) ~/.config does NOT expose the secrets dir while it is absent (existence rule)"
+else
+  fail "(j3) predicate returned '$j3_absent' for ~/.config with the secrets dir absent (expected false)"
+fi
+if [[ "$j3_present" == "true" ]]; then
+  pass "(j3) ~/.config DOES expose the secrets dir once it exists (contains direction)"
+else
+  fail "(j3) predicate returned '$j3_present' for ~/.config with the secrets dir present (expected true)"
+fi
+rm -rf "$HOME_J3"
 
 echo ""
 echo "=== Test (k): rc up with an unrelated mount is NOT refused by the secrets-dir check ==="
@@ -729,12 +756,15 @@ fi
 rm -rf "$HOME_L" "$FAKE_BIN_L" "$CALL_LOG_L"
 
 echo ""
-echo "=== Test (l2): the SAME skill symlink mount IS present when secrets is ABSENT ==="
+echo "=== Test (l2): a skill symlink parent mount (skill-src, outside every authority dir) IS present when secrets is ABSENT ==="
 HOME_L2=$(_fresh_home)
 PROJ_L2="${HOME_L2}/proj"
-mkdir -p "$PROJ_L2" "${HOME_L2}/.claude/skills" "${HOME_L2}/.config/skill-target"
+# The target's parent is ${HOME_L2}/skill-src, not ~/.config: ~/.config contains
+# the rc projects directory, so that parent is dropped as an authority
+# directory whether or not the secrets dir exists (ADR-032 D2, rip-cage-jdl2.3.1).
+mkdir -p "$PROJ_L2" "${HOME_L2}/.claude/skills" "${HOME_L2}/skill-src/skill-target"
 git -C "$PROJ_L2" init -q >/dev/null 2>&1
-ln -s "${HOME_L2}/.config/skill-target" "${HOME_L2}/.claude/skills/my-skill"
+ln -s "${HOME_L2}/skill-src/skill-target" "${HOME_L2}/.claude/skills/my-skill"
 CONF_L2=$(_plain_conf "$HOME_L2" "$PROJ_L2")
 CALL_LOG_L2=$(mktemp /tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_L2=$(fake_runtime_bin "$CALL_LOG_L2")
@@ -746,7 +776,7 @@ if [[ $rc_l2 -eq 0 && -n "$argv_line_l2" ]]; then
 else
   fail "(l2) rc up --dry-run did not reach argv assembly (exit=$rc_l2): $out_l2"
 fi
-if printf '%s\n' "$argv_line_l2" | grep -qF "${HOME_L2}/.config:"; then
+if printf '%s\n' "$argv_line_l2" | grep -qF "${HOME_L2}/skill-src:"; then
   pass "(l2) the msb create argv carries the skill symlink parent mount when secrets is absent"
 else
   fail "(l2) the msb create argv did not carry the skill symlink parent mount: $argv_line_l2"

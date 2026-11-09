@@ -60,8 +60,10 @@ yes_ "\$HOME contains it" "$HOME" ""
 echo "--- --conf directory ---"
 yes_ "conf dir itself" "${T}/elsewhere" "${T}/elsewhere"
 yes_ "conf dir parent" "${T}" "${T}/elsewhere"
-yes_ "conf dir child" "${T}/elsewhere/sub" "${T}/elsewhere"
-yes_ "conf file in conf dir" "${T}/elsewhere/proj.yaml" "${T}/elsewhere"
+# Ruling 2026-11-09: for the --conf dir only equals-or-contains applies; a mount
+# strictly inside it cannot expose the config or its sibling declaration.
+no_  "conf dir child (strictly inside) is allowed" "${T}/elsewhere/sub" "${T}/elsewhere"
+no_  "conf file in conf dir (strictly inside) is allowed" "${T}/elsewhere/proj.yaml" "${T}/elsewhere"
 yes_ "default projects dir still refused when conf is elsewhere" "$PROJ" "${T}/elsewhere"
 no_  "conf dir unset: elsewhere is not an authority dir" "${T}/elsewhere" ""
 
@@ -127,8 +129,8 @@ if (
 echo "--- authority list ---"
 _list="$(_protected_paths_authority_dirs "${T}/elsewhere")"
 if [[ "$_list" == "${PROJ}
-${T}/elsewhere
-${STATE}" ]]; then pass "list names projects, conf dir, state root in order"; else fail "authority list: $_list"; fi
+conf:${T}/elsewhere
+${STATE}" ]]; then pass "list names projects, conf: dir, state root in order"; else fail "authority list: $_list"; fi
 _list="$(_protected_paths_authority_dirs "$PROJ")"
 if [[ "$_list" == "${PROJ}
 ${STATE}" ]]; then pass "conf dir equal to projects dir is not repeated"; else fail "authority list (dup): $_list"; fi
