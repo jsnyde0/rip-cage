@@ -1,0 +1,42 @@
+# A worked host-tool declaration (ADR-032 D2/D3). Copy it to
+#   ${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/projects/<cage>.tools.yaml
+# after replacing the two placeholders below with absolute paths (the README's
+# first step does it with sed):
+#   /ABSOLUTE/PATH/TO   the directory you copied bin/ into, e.g.
+#                       ~/.local/share/host-tool-examples (written out in full)
+#   /ABSOLUTE/STATE/TO  the directory that holds the inbox, e.g.
+#                       ~/.local/state/host-tool-examples (written out in full)
+# rc refuses a declaration whose commands, or any path in an argv literal, sit
+# inside a directory the cage mounts; both placeholders must name directories
+# no cage config mounts.
+tools:
+  example:
+    verbs:
+      # Prints TEXT, COUNT times. A URL is a legitimate text, hence allow_slash.
+      echo:
+        argv: ["/ABSOLUTE/PATH/TO/bin/echo-tool", "{text}", "{count}"]
+        slots:
+          text: {type: string, max: 200, allow_slash: true}
+          count: {type: int, min: 1, max: 5, default: 1}
+        timeout: 10s
+
+      # Prints the variables the command was given and its working directory.
+      env:
+        argv: ["/ABSOLUTE/PATH/TO/bin/env-tool"]
+        timeout: 10s
+
+      # Asks a human first, then prints TEXT. Everything the wrapper trusts is
+      # a fixed element here: the asker, the inbox, the answer window in
+      # seconds. Budget = timeout (120s) minus the real command's duration
+      # minus 10s of slack; this command is instant, so 90 leaves the window
+      # long and the margin wide. After "--" comes the real command.
+      notify:
+        argv: ["/ABSOLUTE/PATH/TO/bin/ask-then-run",
+               "--asker", "/ABSOLUTE/PATH/TO/bin/ask-nudge",
+               "--inbox", "/ABSOLUTE/STATE/TO/inbox",
+               "--budget", "90",
+               "--",
+               "/ABSOLUTE/PATH/TO/bin/echo-tool", "{text}", "1"]
+        slots:
+          text: {type: string, max: 200}
+        timeout: 120s

@@ -1,0 +1,130 @@
+#!/bin/sh
+# ask-then-run --asker ASKER --inbox INBOX --budget SECONDS -- COMMAND [ARG]...
+#
+# Ask a human, wait for an answer, then run COMMAND or refuse. The wrapper a
+# verb declares when it should not act until somebody says so.
+#
+# Everything it trusts is in its own argv, which the declaration fixes:
+#   --asker   absolute path of the program that tells a human a request waits.
+#             Called as: ASKER INBOX/ID.json (stdout discarded, stdin closed).
+#   --inbox   absolute path of a directory that already exists. The wrapper
+#             writes INBOX/ID.json (the request) and polls INBOX/ID.answer.
+#   --budget  whole seconds (1 to 999999, no leading zero) for the asker and
+#             the wait for the answer TOGETHER. The asker may block; at the
+#             deadline it is killed and the call is refused. Set the budget to
+#             the verb's timeout, minus the real command's expected duration,
+#             minus 10.
+# It has no config file, reads no environment variable for a path, and looks
+# at no file but the four it names under --inbox: ID.json (the request),
+# ID.answer, ID.asked (the asker's exit status) and ID.apid (its pid).
+#
+# An answer counts only if the file holds exactly "allow" or "allow" plus one
+# newline. Anything else (no answer in time, "deny", extra bytes, a missing or
+# failing asker) exits 2 and COMMAND never runs. On allow the wrapper removes
+# its files and execs COMMAND, so COMMAND's stdout is the reply.
+#
+# A wrapper has no terminal: it runs with stdin closed, detached from any
+# session. The answer arrives as a file, not a prompt.
+
+die() { echo "ask-then-run: $*" >&2; exit 2; }
+
+asker=
+inbox=
+budget=
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --asker) [ "$#" -ge 2 ] || die "--asker needs a value"; asker=$2; shift 2 ;;
+    --inbox) [ "$#" -ge 2 ] || die "--inbox needs a value"; inbox=$2; shift 2 ;;
+    --budget) [ "$#" -ge 2 ] || die "--budget needs a value"; budget=$2; shift 2 ;;
+    --) shift; break ;;
+    *) die "unexpected argument $1" ;;
+  esac
+done
+[ "$#" -ge 1 ] || die "no command after --"
+case $asker in /*) ;; *) die "--asker must be an absolute path" ;; esac
+case $inbox in /*) ;; *) die "--inbox must be an absolute path" ;; esac
+case $budget in '' | *[!0-9]* | 0*) die "--budget must be whole seconds, 1 to 999999, no leading zero" ;; esac
+[ "${#budget}" -le 6 ] || die "--budget must be whole seconds, 1 to 999999, no leading zero"
+[ -d "$inbox" ] || die "inbox is not a directory"
+[ -x "$asker" ] || die "asker is missing or not executable"
+
+# A request id nobody can predict: uuid v4.
+if command -v uuidgen >/dev/null 2>&1; then
+  id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+else
+  id=$(python3 -c 'import uuid; print(uuid.uuid4())') || die "no uuidgen or python3 to make a request id"
+fi
+case $id in '' | *[!0-9a-f-]*) die "bad request id" ;; esac
+
+req="$inbox/$id.json"
+ans="$inbox/$id.answer"
+asked="$inbox/$id.asked"
+apid=
+apidf="$inbox/$id.apid"
+# The asker stays in this wrapper's process group, so the gatekeeper's group
+# kill reaches it too. Here: TERM, up to 1 s of grace, then KILL.
+kill_asker() {
+  [ -n "$apid" ] || return 0
+  p=$(cat "$apidf" 2>/dev/null)
+  case $p in '' | *[!0-9]*) p= ;; esac
+  if [ -n "$p" ]; then
+    if kill -0 "$p" 2>/dev/null; then
+      kill -TERM "$p" 2>/dev/null
+      n=0
+      while [ "$n" -lt 10 ] && kill -0 "$p" 2>/dev/null; do
+        sleep 0.1
+        n=$((n + 1))
+      done
+      kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null
+    fi
+  else
+    kill -TERM "$apid" 2>/dev/null
+  fi
+  apid=
+}
+cleanup() { kill_asker; rm -f "$req" "$ans" "$asked" "$apidf"; }
+trap cleanup EXIT
+trap 'exit 2' HUP INT TERM
+
+# The deadline starts before anything is written: the asker and the wait for
+# the answer share one budget.
+deadline=$(( $(date +%s) + budget ))
+
+# JSON-escape one string: backslash first, then double quote. Control
+# characters cannot occur (the gatekeeper refuses them in slots, the loader in
+# literals).
+jesc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+body=
+for a in "$@"; do
+  body="$body\"$(jesc "$a")\","
+done
+# noclobber: an existing file under this name is never overwritten.
+( set -C; printf '{"id":"%s","argv":[%s]}\n' "$id" "${body%,}" > "$req" ) || die "cannot write the request"
+
+{
+  "$asker" "$req" >&2 </dev/null &
+  echo $! > "$apidf"
+  wait $!
+  echo $? > "$asked"
+} &
+apid=$!
+
+while :; do
+  # A finished asker that failed refuses the call, whatever answer exists.
+  if [ -s "$asked" ]; then
+    [ "$(cat "$asked")" = 0 ] || die "asker failed"
+  fi
+  if [ -f "$ans" ]; then
+    if printf 'allow' | cmp -s - "$ans" || printf 'allow\n' | cmp -s - "$ans"; then
+      break
+    fi
+    die "answer is not allow"
+  fi
+  [ "$(date +%s)" -lt "$deadline" ] || die "no answer within the budget"
+  sleep 0.2
+done
+
+cleanup
+trap - EXIT
+exec "$@"

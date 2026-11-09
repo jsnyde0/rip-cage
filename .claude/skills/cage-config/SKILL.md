@@ -1,6 +1,6 @@
 ---
 name: cage-config
-description: "Write or repair a project's rip-cage config: mounts, secrets, egress allowlist. Use on CAGE_CONFIG_MISSING or to allow a host. Not the image (cage-image) or a live cage (cage-ops)."
+description: "Write or repair a project's rip-cage config: mounts, secrets, egress allowlist, host tools. Use on CAGE_CONFIG_MISSING, to allow a host, or to declare a host command. Not the image (cage-image) or a live cage (cage-ops)."
 ---
 
 # cage-config
@@ -166,6 +166,106 @@ For which hosts a coding agent actually needs and why, see
 **A denied host is not a bug to design around.** When a cage hits one,
 `rc doctor <cage>` prints the exact line to paste. That loop belongs to
 cage-ops; this skill owns the file it edits.
+
+## Declaring host tools
+
+Reach for this when the cage needs a host command whose credential
+`secrets:` cannot swap on the wire: a protocol that is not HTTP (SSH, a
+messaging session, a database wire), a key that signs a request instead of
+riding it, or a reply that must hand a key back. The agent calls
+`host-tool <tool> <verb> --<slot> <value>`; the host runs the one command line
+you declared for that verb, after checking each value against its slot type
+([ADR-032](../../../docs/decisions/ADR-032-host-tool-line.md); mechanism in
+[`docs/reference/host-tool-line.md`](../../../docs/reference/host-tool-line.md)).
+rc names no tool: the command is yours. A worked one is
+[`examples/host-tool/`](../../../examples/host-tool/README.md); copy its
+[`example.tools.yaml`](../../../examples/host-tool/example.tools.yaml) and edit it.
+
+**Where it lives.** A sibling of the config, never inside it (msb's `--conf`
+rejects unknown keys): `~/.config/rip-cage/projects/<cage-name>.tools.yaml`, or,
+when the cage launches from `--conf <path>`, `<stem>.tools.yaml` beside that
+file. No file means no line. Write each key once; a repeated YAML key silently
+keeps the last.
+
+```yaml
+tools:
+  <tool>:                # [a-z][a-z0-9_-]{0,31}, as are verb and slot names
+    verbs:
+      <verb>:
+        argv: ["/abs/path/to/command", "sub", "--chat", "{chat}", "--limit", "{limit}"]
+        slots:
+          chat:  {type: string, regex: "^-?[1-9][0-9]*$", allow_dash: true}
+          limit: {type: int, min: 1, max: 100, default: 20}
+        timeout: 30s     # <n>s or <n>m; a verb that waits on a human declares a long one
+        returns_secret: false
+```
+
+- **`argv` is an array, executed directly; no shell.** Each `{slot}` is a whole
+  element, used once, and fills exactly one argv element whatever it holds.
+  `argv[0]` is a literal absolute path to an existing executable file.
+- **Slot types.** `string` (`max` bytes, default 4096; `regex`, a full match;
+  `allow_dash`; `allow_slash`), `int` (`min`, `max`), `enum` (`values`); each may
+  have a `default`. Strings reject control characters. A value starting with `-`
+  needs `allow_dash: true` (a negative id); a value with `/` or `..` needs
+  `allow_slash: true` (a message that quotes a URL). Leave both off for anything
+  a tool would read as an option or a file name.
+- **No path slot, and no interpreter plus a free string.** `["/usr/bin/python3",
+  "{script}"]` is host code execution however `script` is typed, and so is
+  `["/bin/sh", "-c", "{cmd}"]`. A tool that needs a file reads it from a mount;
+  a tool that needs a program runs a fixed command, not one the agent names.
+
+**Which literals count as paths.** rc resolves every substring of an `argv`
+literal that starts at a `/`, after splitting at each `=`, and refuses the
+declaration if one lies inside a directory the cage mounts. A literal that
+begins `./` or `~`, or holds a `..` segment, is refused outright. So
+`refs/heads/main` and `application/json` pass; `-F/path`, `@/path`, `-I../x` and
+`--opt=/path` are read as paths. This is why the example installs its scripts to
+`~/.local/share/host-tool-examples` and not into the project: the workspace is a
+mount, and a script the cage can rewrite is host code.
+
+**The one instruction that follows.** rc checks the files `argv` names, not the
+code they load (a shebang's interpreter, a venv behind an entry point, a sourced
+library). Declare tools whose whole install, interpreter, venv and libraries,
+lives outside every mount. Keep `~/.local`, the rc checkout and every declared
+tool's install out of your mounts. `rc up` also refuses a mount that equals or
+contains the projects directory, the state directory root or this config's own
+directory, or lies inside the projects or state directory (a mount strictly
+inside the config's directory is allowed). Every declared slot must appear in
+`argv` exactly once; the loader refuses a slot with no placeholder.
+
+**A tool runs with no terminal and a bare environment.** Its stdin is closed. Its
+environment is exactly `PATH=/usr/bin:/bin`, `HOME` and `LANG`; its working
+directory **and** `HOME` are one fresh, empty directory per call, deleted when the
+call ends. A tool therefore sees no dotfiles and keeps nothing between calls,
+unless the declaration or a wrapper hands it a fixed path: a gitconfig through
+`-c include.path=/abs/path/gitconfig`, a wrapper's inbox, a `HOME` it sets for
+itself. **Any such path is authority: keep it out of every mount.** A wrapper that
+needs `SSH_AUTH_SOCK` sets it from a fixed path it owns.
+
+**What it cannot declare yet.** A verb over the mounted workspace itself (`git
+push` on the project with the host's keys): the workspace is a mount, and a tool
+that reads config or hooks from it runs guest-writable code on the host. It waits
+for a project that needs one and a ruling on the repo-config cover (ADR-032 D2).
+
+**Replies.** A request and a reply are each capped at 32 KiB on the wire. A tool
+that can return more pages: give it an offset or a limit slot, and have the agent
+loop. A verb whose reply hands the cage a real secret sets `returns_secret: true`;
+`rc doctor` lists it as possession-mode. The preferred shape is the tool writing
+the new value where `secrets:` reads it, so the guest keeps its placeholder.
+
+**When an edit takes effect.** Adding or removing the file, and changing a
+declared verb, take effect on `rc up` for a stopped cage and on `rc up --replace`
+for a running one (a plain `rc up` on a running cage attaches and prints that the
+declaration changed). Revoking a verb is the same two commands. Repairs:
+[`cage-ops`](../cage-ops/SKILL.md).
+
+**A line bypasses the allowlist.** A host tool reaches whatever its command
+reaches, and `network.allow` never sees it. `rc doctor <cage>` says so beside the
+allowlist; say it to the human when you add one.
+
+*Done when:* `rc up --dry-run <project>` exits 0 with no `host-tool declaration`
+error, every path in the file is absolute and outside every mount you declared,
+and each verb's `timeout` covers its slowest expected run.
 
 ## What rc adds that no config file can hold
 

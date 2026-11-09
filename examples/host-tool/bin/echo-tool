@@ -1,0 +1,12 @@
+#!/bin/sh
+# echo-tool TEXT COUNT -- print TEXT on COUNT lines. The smallest possible
+# host command: it proves a validated slot value arrives as one argv element.
+# Both arguments come from the declaration's slots (see example.tools.yaml).
+[ "$#" -eq 2 ] || { echo "usage: echo-tool TEXT COUNT" >&2; exit 2; }
+text=$1
+n=$2
+case $n in '' | *[!0-9]*) echo "echo-tool: COUNT must be a number" >&2; exit 2 ;; esac
+while [ "$n" -gt 0 ]; do
+  printf '%s\n' "$text"
+  n=$((n - 1))
+done

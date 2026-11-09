@@ -1,0 +1,28 @@
+#!/bin/sh
+# ask-nudge REQUEST-FILE -- the default asker for ask-then-run. It tells a
+# human that a request is waiting and exits 0. It NEVER answers: an answer is
+# a file, <inbox>/<id>.answer, that a human (or a desk) writes.
+#
+# macOS: a notification. Linux: notify-send, with the session bus taken from
+# /run/user/<uid>/bus when that socket exists (the gatekeeper's environment has
+# no DBUS_SESSION_BUS_ADDRESS). Otherwise the request path goes to stderr,
+# which is the gatekeeper's log.
+#
+# Runs with no terminal and stdin closed. Anything it prints on stdout would be
+# discarded by ask-then-run; it writes only to stderr.
+req=$1
+[ -n "$req" ] || { echo "usage: ask-nudge REQUEST-FILE" >&2; exit 2; }
+msg="Host tool request waiting: ${req}"
+
+if [ "$(uname -s)" = Darwin ] && command -v osascript >/dev/null 2>&1; then
+  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "host-tool"' -e 'end run' "$msg" >/dev/null 2>&1 && exit 0
+elif command -v notify-send >/dev/null 2>&1; then
+  bus="/run/user/$(id -u)/bus"
+  if [ -S "$bus" ]; then
+    DBUS_SESSION_BUS_ADDRESS="unix:path=${bus}" notify-send "host-tool" "$msg" >/dev/null 2>&1 && exit 0
+  else
+    notify-send "host-tool" "$msg" >/dev/null 2>&1 && exit 0
+  fi
+fi
+printf '%s\n' "$msg" >&2
+exit 0

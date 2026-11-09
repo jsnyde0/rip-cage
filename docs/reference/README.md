@@ -33,6 +33,7 @@ Worked recipes live in [`examples/`](../../examples/README.md), outside the bina
 ### Setup
 | File | What it covers |
 |---|---|
+| [host-tool-line.md](host-tool-line.md) | The declared, typed cage-to-host call line (ADR-032): declaration file and schema, the gatekeeper's wire, error table and exit codes, the three check sites, the state directory, the three-variable environment and per-call directory, what rc checks and what it does not |
 | [auth.md](auth.md) | The `CCTOK` `--secret` bridge for Claude Code, the `ANTHROPIC_API_KEY` possession fallback, pi's providers |
 | [whats-in-the-box.md](whats-in-the-box.md) | What the base image carries, the cage user model, sudo scope |
 | [cli-reference.md](cli-reference.md) | The six verbs — `up`, `auth`, `doctor`, `build`, `test`, `destroy` — their flags and JSON output |

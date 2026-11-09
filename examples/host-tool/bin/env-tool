@@ -1,0 +1,9 @@
+#!/bin/sh
+# env-tool -- print the variables this command was given, then its working
+# directory. It shows what a host tool actually inherits from the line: exactly
+# PATH, HOME and LANG, with HOME and the cwd the same fresh per-call directory.
+#
+# The four names filtered below are ones the shell itself adds when it starts;
+# they are not from the caller.
+/usr/bin/env | grep -v -e '^PWD=' -e '^OLDPWD=' -e '^SHLVL=' -e '^_=' | sort
+printf 'cwd=%s\n' "$(pwd -P)"

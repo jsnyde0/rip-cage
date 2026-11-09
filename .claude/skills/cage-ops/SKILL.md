@@ -281,6 +281,34 @@ pressed it). The operator can skip the modal with the `onboarding = false`
 line in the herdr recipe's README. Evidence for this block: the notes on
 rip-cage-8jg5.7 (spike) and rip-cage-8jg5.9 (re-check).
 
+## The host-tool line: repairs
+
+A cage with a declaration has a `host-tool` command inside it and a gatekeeper
+process on the host
+([ADR-032](../../../docs/decisions/ADR-032-host-tool-line.md); writing the
+declaration is **cage-config**, "Declaring host tools"; mechanism:
+[`docs/reference/host-tool-line.md`](../../../docs/reference/host-tool-line.md)).
+When the agent reports a `host-tool` failure, start with the exit code it saw,
+then `rc doctor <cage>`.
+
+| Symptom | Cause and repair |
+|---|---|
+| `host-tool` exit 5, "did not answer" (three causes named) | The line gave no answer. `rc doctor <cage>` names which of the three: no declaration exists for this cage, a declaration was added but the cage was not recreated, or the gatekeeper is down. Fix that one. Nothing ran. |
+| `host-tool` exit 5, "stopped answering after the request was sent; the command may have run" | The call reached the gatekeeper and the answer was lost. **Do not retry a side-effecting verb**: check the tool's effect on the host first (`<state dir>/gatekeeper.log` has one line per call). |
+| gatekeeper dead (doctor says so; calls exit 5) | `rc up <project>`. A dead gatekeeper is restarted on any `rc up`, running cage included. There is no supervisor. |
+| declaration changed (doctor, or `rc up` printed "host-tool declaration changed; takes effect on `rc up --replace`") | Stopped cage: `rc up <project>` loads it. Running cage: `rc up --replace <project>`. A running gatekeeper is never killed by plain `rc up`, so an in-flight call finishes. |
+| declaration added or removed after the cage was created | The route is a create-time shape. Stopped cage: `rc up <project>` converges it. Running cage: `rc up --replace <project>`. |
+| `host-tool` exit 2 (`no-such-tool`, `no-such-verb`, `bad-argument`, `request-too-large`) | Refused, nothing ran. `host-tool --list` shows the declared tools, verbs, slots and types; fix the call, or the declaration (**cage-config**) and apply it as in the "declaration changed" row. `bad-argument: slot unknown` means an argument name the verb does not declare. |
+| `host-tool` exit 3 (`tool-failed`, `reply-too-large`) | The command ran. `tool-failed` is the command's non-zero exit; for an ask-then-run style wrapper it is the normal refusal (no answer, a deny), not a fault. `reply-too-large`: the reply passed 32 KiB and was withheld; the command ran, so page it (an offset or limit slot). |
+| `host-tool` exit 4, `unavailable` | The gatekeeper answered but could not execute the command: it is missing or not executable. Fix the install at the declared path, then `rc up` (a restart is only needed if the declaration changed). |
+| `rc up` refused: "equals, contains, or lies inside the rc authority directory" | A mount row in the config reaches the projects directory (`~/.config/rip-cage/projects`), this config's directory (equals or contains only) or the state directory root (`RC_STATE_DIR`, default `~/.local/state/rip-cage`). Narrow or remove that mount line (**cage-config**), then `rc up` again. |
+| `rc up` refused: a declared path "inside mount source" | A command or `argv` path sits inside a mounted directory. Move the tool's install outside every mount (the recipe's first step is the pattern) and update the declaration. |
+| `host-tool` exit 4, `busy` | Every concurrency slot is held by a running command (default 4). Retry shortly. |
+| `host-tool` exit 4, `timed out` | The verb's `timeout` passed and its process group was killed. Raise `timeout:` in the declaration if the command is legitimately slow; for a wrapper that waits on a human, keep its budget under the timeout. |
+
+A host tool bypasses the egress allowlist; `rc doctor` lists every declared verb
+beside `network.allow` so you see both.
+
 ## Recipes
 
 - [`recipes/denied-host.md`](recipes/denied-host.md) — blocked request → fix
