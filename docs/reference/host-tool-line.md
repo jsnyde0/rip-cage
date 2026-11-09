@@ -186,7 +186,12 @@ three points (ADR-032 D2):
 2. **The final `msb create` argv**, as assembled, immediately before it runs: every
    host source in it, rc's computed mounts included, is checked against the same
    rule. For a mount rc computes, the overlap is warn-and-skip; for a config row
-   it is a refusal. `--dry-run` shows the refusal.
+   it is a refusal. `--dry-run` shows the refusal. One cost to know: on a
+   **stopped** cage whose converge has already removed the old cage, a refusal
+   here leaves the cage removed (host mounts and named volumes are intact);
+   the next `rc up` recreates it against the corrected declaration — the same
+   cost as a `--replace`. Defects a config row or the declaration file carry
+   are caught at site 1, before anything is removed.
 3. **An existing cage** (stopped converge, running attach): the mount set is the
    one msb recorded at create (`msb inspect --format json`,
    `config.mounts[].host`), and every gatekeeper start checks against it.
