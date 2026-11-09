@@ -114,6 +114,43 @@ for code in 2 3 4 5; do
   fi
 done
 
+# --- G6: the skill's own example loads through the real loader ---------------
+# The acceptance clause "an agent holding only the cage-config skill can write a
+# valid declaration without reading rc source" needs traversing evidence, not a
+# vocabulary match: take the yaml block the section shows, fill its placeholders
+# the way a reader would (a tool name, a verb name, an absolute command), and
+# load it through _host_tools_load against a plain mount list. G5 stays as the
+# vocabulary floor (adjudication 2026-11-09, rip-cage-jdl2.5).
+if command -v yq >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  G6_YAML="$(printf '%s\n' "$CFG_SEC" | awk '/^```yaml/{p=1;next} p&&/^```/{exit} p')"
+  if [[ -n "$G6_YAML" ]]; then
+    pass "G6 the cage-config section carries a yaml example"
+  else
+    fail "G6 the cage-config section has no yaml example block"
+  fi
+  mkdir -p "$T/g6/bin" "$T/g6/ws"
+  printf '#!/bin/sh\nexit 0\n' > "$T/g6/bin/cmd"; chmod 0755 "$T/g6/bin/cmd"
+  printf '%s\n' "$T/g6/ws" > "$T/g6/mounts"
+  printf '%s\n' "$G6_YAML" | sed -e "s|<tool>|demo|" -e "s|<verb>|send|" -e "s|/abs/path/to/command|$T/g6/bin/cmd|" > "$T/g6/demo.tools.yaml"
+  G6_OUT="$(bash -c 'source cli/lib/protected_paths.sh; source cli/lib/msb_runtime.sh; source cli/lib/host_tools.sh; _host_tools_load "$1" "$2"' _ "$T/g6/demo.tools.yaml" "$T/g6/mounts" 2>"$T/g6/err")"; G6_RC=$?
+  if [[ "$G6_RC" -eq 0 && -n "$G6_OUT" ]]; then
+    pass "G6 the filled-in skill example loads clean through _host_tools_load (exit 0)"
+  else
+    fail "G6 the filled-in skill example did not load (exit $G6_RC): $(cat "$T/g6/err")"
+  fi
+  g6() { # DESC JQ-BOOL
+    if [[ -n "$G6_OUT" ]] && printf '%s' "$G6_OUT" | jq -e "$2" >/dev/null 2>&1; then pass "G6 $1"; else fail "G6 $1"; fi
+  }
+  g6 "tool and verb are as declared" '.tools.demo.verbs.send | type == "object"'
+  g6 "argv[0] is the filled-in absolute command" ".tools.demo.verbs.send.argv[0] == \"$T/g6/bin/cmd\""
+  g6 "argv carries the two placeholders as whole elements" '.tools.demo.verbs.send.argv | index("{chat}") != null and index("{limit}") != null'
+  g6 "slot chat: string, regex kept, allow_dash true, max defaulted to 4096" '.tools.demo.verbs.send.slots.chat | .type == "string" and .regex == "^-?[1-9][0-9]*$" and .allow_dash == true and .max == 4096'
+  g6 "slot limit: int 1..100 default 20 (integer)" '.tools.demo.verbs.send.slots.limit | .type == "int" and .min == 1 and .max == 100 and .default == 20'
+  g6 "timeout 30s normalised to 30, returns_secret false" '.tools.demo.verbs.send | .timeout == 30 and .returns_secret == false'
+else
+  echo "SKIP: G6 needs yq and jq on PATH"
+fi
+
 echo
 if [[ "$FAILURES" -eq 0 ]]; then echo "ALL PASSED"; exit 0; fi
 echo "FAILED: ${FAILURES}"
