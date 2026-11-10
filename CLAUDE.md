@@ -26,6 +26,10 @@ Containment-flavored language ("the thing inside the cage is not you") reads as 
 Host (macOS/Linux)
 ├── rc                          CLI entrypoint (bash), sourcing cli/*.sh + cli/lib/*.sh.
 │                               Six verbs: up, auth, doctor, build, test, destroy.
+├── cli/lib/host_tools.sh       Declaration loader, authority-directory check, gatekeeper lifecycle,
+│                               state dir (ADR-032)
+├── cli/lib/host-tool-gatekeeper.py  Host-side gatekeeper: validates each host-tool call against
+│                               the declaration, runs it as argv (ADR-032)
 ├── share/rip-cage/
 │   ├── cage.yaml.template      The shipped project-config template — a native msb --conf file
 │   └── protected-paths         Fail-closed list of credential locations rc refuses to mount
@@ -35,11 +39,13 @@ Host (macOS/Linux)
 ├── cage/init/init-rip-cage.sh  Runs in the sandbox at start: floor probe first, then auth,
 │                               settings, git identity, beads
 ├── cage/agent/settings.json    Claude Code config — bypassPermissions, deny rules
+├── cage/substrate/host-tool    In-cage client: one JSON line over AF_VSOCK CID 2 port 7700;
+│                               baked root-owned, guarded by the floor probe
 ├── examples/                   Composition recipes (Dockerfile.snippet + boot-fragment.json + README)
 └── tests/                      Tiered suites; `tests/run-host.sh --host-only` is the host gate
 ```
 
-Each project launches from **one file**: `~/.config/rip-cage/projects/<cage>.yaml`, msb's own `--conf` schema, carrying its lists in full. `rc` merges nothing into it ([ADR-031](docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2). Composition inputs — the Dockerfile, the boot descriptor, the config, the protected-paths list — all live host-side, outside every cage mount (D5a).
+Each project launches from **one file**: `~/.config/rip-cage/projects/<cage>.yaml`, msb's own `--conf` schema, carrying its lists in full. `rc` merges nothing into it ([ADR-031](docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2). Composition inputs — the Dockerfile, the boot descriptor, the config, the protected-paths list, and the host-tool declaration (`<cage>.tools.yaml` beside the config's real file, [ADR-032](docs/decisions/ADR-032-host-tool-line.md) D2) — all live host-side, outside every cage mount (D5a).
 
 **Usage:** `rc up <project>` creates or resumes the cage, runs init, and attaches. The project directory is mounted at `/workspace`; file changes sync live, no git push. `RC_MULTIPLEXER` selects a multiplexer, which the image's boot descriptor must declare; the default is none.
 
@@ -64,6 +70,7 @@ Upgrade path: when `ms` publishes Linux binaries, swap `command`/`args` in `sett
 - Every resume is a fresh kernel boot under msb — processes die between stop and start, so `rc` re-runs init on each resume.
 - msb does not follow a host-side symlink in a mount source; since msb 0.7.x it refuses at validation (use the resolved path, or msb's `follow-root-symlinks`). On macOS write `/private/tmp/...`, never `/tmp/...`.
 - msb keeps its own image cache. `rc build` does `docker build` then loads into msb; a docker-only build leaves cages booting the old image.
+- A host-tool declaration added or removed recreates a stopped cage on the next `rc up` (the `rc.host-tools` presence label, an ADR-028 D1 instance); a contents change on a running cage needs `rc up --replace`, on a stopped cage plain `rc up` (ADR-032 D6).
 
 ## When a host is denied egress inside the cage
 
