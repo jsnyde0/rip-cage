@@ -49,10 +49,11 @@ T=$(cd "$T" && pwd -P) || { echo "FAIL: cannot create a temp dir"; exit 1; }
 LOG="${T}/calls.log"
 : > "$LOG"
 FAKE_BIN=$(fake_runtime_bin "$LOG")
-# A uname that answers FAKE_UNAME_S / FAKE_UNAME_M when set (the platform stub)
-# and the real one otherwise.
+# A uname that answers Linux / x86_64 unless FAKE_UNAME_S / FAKE_UNAME_M say
+# otherwise, so the suite does not depend on the host it runs on (only D6 and
+# the count helpers override it); any other uname argument goes to the real one.
 # shellcheck disable=SC2016  # the shim expands these at call time
-printf '#!/usr/bin/env bash\ncase "${1:-}" in\n  -s) [[ -n "${FAKE_UNAME_S:-}" ]] && { echo "$FAKE_UNAME_S"; exit 0; } ;;\n  -m) [[ -n "${FAKE_UNAME_M:-}" ]] && { echo "$FAKE_UNAME_M"; exit 0; } ;;\nesac\nexec %q "$@"\n' "$REAL_UNAME" > "${FAKE_BIN}/uname"
+printf '#!/usr/bin/env bash\ncase "${1:-}" in\n  -s) echo "${FAKE_UNAME_S:-Linux}"; exit 0 ;;\n  -m) echo "${FAKE_UNAME_M:-x86_64}"; exit 0 ;;\nesac\nexec %q "$@"\n' "$REAL_UNAME" > "${FAKE_BIN}/uname"
 chmod +x "${FAKE_BIN}/uname"
 cleanup() {
   local _p _c
@@ -196,6 +197,22 @@ run_up FAKE_UNAME_S=Linux FAKE_UNAME_M=aarch64 -- up --conf "$C" "$T/ws"
 if [[ "$EX" -eq 0 && "$OUT" == *"ceiling unmeasured on Linux aarch64"* ]] && has_call "create"; then pass "D6b Linux aarch64, real launch: creates, 'ceiling unmeasured on Linux aarch64'"; else fail "D6b (ex=${EX}): ${OUT}"; fi
 
 # ============================================================================
+echo "=== D4m: a --mount-file cover counts as exactly one device ==="
+# A protected file under the workspace gets an empty read-only --mount-file cover.
+: > "$T/ws/.env"
+mk_conf "$C" 0
+indep_count "$C"
+_mf=$(grep '^Would run: ' <<<"$OUT" | tr ' ' '\n' | grep -cx -e '--mount-file' || true)
+if [[ "$_mf" == 1 && "$INDEP" == $((BASE + 1)) && "$RCPRINT" == "$INDEP" ]]; then pass "D4m the .env cover is one --mount-file token and one device: rc prints ${RCPRINT}, the test counts ${INDEP} (base ${BASE} + 1)"; else fail "D4m mount-file tokens=${_mf} test=${INDEP} base=${BASE} rc=${RCPRINT}: ${OUT}"; fi
+mk_conf "$C" $((104 - INDEP))
+run_up -- up --dry-run --conf "$C" "$T/ws"
+allowed "D4m 104 devices counting the cover: allowed"
+mk_conf "$C" $((105 - INDEP))
+run_up -- up --dry-run --conf "$C" "$T/ws"
+refused "D4m 105 devices counting the cover: refused" 105
+rm -f "$T/ws/.env"
+
+# ============================================================================
 echo "=== D5: attach and resume neither count nor refuse nor prepare mounts ==="
 sha_of() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1; else sha256sum "$1" | cut -d' ' -f1; fi; }
 DIGEST="sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -207,7 +224,7 @@ mk_inspect() { # STATUS -> $T/inspect.json
 tree_state() { find "$HOME" "$T/ws" -printf '%p %y %s %T@\n' 2>/dev/null | sort; }
 mk_conf "$C" $((AT104 + 5))
 export FAKE_MSB_INSPECT_FILE="$T/inspect.json" FAKE_MSB_IMAGE_LIST_FILE="$T/images.json"
-for _mode in "" "--dry-run"; do
+for _mode in "" "--dry-run" "--dry-run --output json"; do
   for _st in Running Stopped; do
     mk_inspect "$_st"
     _before=$(tree_state)
@@ -262,7 +279,7 @@ reset_gitfile() { printf 'sentinel\n' > "$GITFILE"; touch -d '2001-01-01 00:00:0
 WTC="$T/conf/wt.yaml"
 PROJ="$WT"; mk_conf "$WTC" 0; ICONF="$WTC"
 export FAKE_MSB_INSPECT_FILE="$T/inspect.json" FAKE_MSB_IMAGE_LIST_FILE="$T/images.json"
-for _mode in "" "--dry-run"; do
+for _mode in "" "--dry-run" "--dry-run --output json"; do
   for _st in Running Stopped; do
     mk_inspect "$_st"; reset_gitfile
     # shellcheck disable=SC2086  # _mode is one flag or empty
