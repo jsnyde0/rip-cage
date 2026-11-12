@@ -16,6 +16,13 @@
 #   C6  a second commit, then a bare `git push`, lands too (image
 #       push.default=current)
 #   C7  the in-cage safety-stack D11 checks pass
+#   C9  rip-cage-rsh9.17.3.1 (the nested-repo hide, ADR-002 D11): a repo nested in a
+#       rw-mounted folder (/tree/pkg) lists only README.md in the cage
+#   C10 as the agent user, writing under it and `umount` fail
+#   C11 the user-namespace leg: `unshare -Urm` makes a namespace, `umount`
+#       is what fails, README.md is still the only entry -- or SKIP with the
+#       reason when user namespaces are disabled (never a vacuous PASS)
+#   C12 the floor probe passes in the hide cage
 #   C8  `git config --worktree core.fsmonitor` fails in /other, which uses
 #       extensions.worktreeConfig; host config.worktree unchanged
 #
@@ -85,6 +92,11 @@ git -C "$OTHER" config --worktree rc.test host
 WS_CFG_BEFORE=$(cksum < "${WS}/.git/config")
 OTHER_CFG_BEFORE=$(cksum < "${OTHER}/.git/config")
 OTHER_WTCFG_BEFORE=$(cksum < "${OTHER}/.git/config.worktree")
+# A nested repo below a rw-mounted folder: the hide target (C9-C12).
+TREE="${T}/tree"
+mkdir -p "${TREE}/pkg"
+git -C "${TREE}/pkg" init -q -b main
+printf 'host secret\n' > "${TREE}/pkg/secret.txt"
 
 NAME=$(bash -c "source '${RC}' 2>/dev/null; container_name '$WS'")
 [[ -n "$NAME" ]] || { echo "FATAL: could not derive cage name"; exit 1; }
@@ -95,6 +107,7 @@ sed -e "s#<ABSOLUTE_PATH_TO_YOUR_PROJECT>#${WS}#g" \
     -e "s#^image: rip-cage:latest#image: ${IMAGE}#" \
     -e "s#^  - \"${WS}:/workspace\"#&\\
   - \"${OTHER}:/other\"\\
+  - \"${TREE}:/tree\"\\
   - \"${REMOTE}:/remote\"#" \
     "${REPO_ROOT}/share/rip-cage/cage.yaml.template" \
     > "${XDG_CONFIG_HOME}/rip-cage/projects/${NAME}.yaml"
@@ -163,6 +176,40 @@ if grep -q 'read-only: core.fsmonitor and core.hooksPath writes refused' <<<"$ou
   pass "C7 in-cage safety-stack D11 checks pass"
 else
   fail "C7 in-cage safety-stack D11 checks" "$(tr '\n' ' ' <<<"$out")"
+fi
+
+# C9-C12: the nested-repo hide holds (rip-cage-rsh9.17.3.1).
+out=$(g 30 "ls -A /tree/pkg")
+if [[ "$out" == "README.md" ]]; then
+  pass "C9 ls -A /tree/pkg prints only README.md"
+else
+  fail "C9 ls -A /tree/pkg" "out='$(tr '\n' ' ' <<<"$out")'"
+fi
+
+out=$(g 30 "touch /tree/pkg/planted 2>&1; echo touch=\$?; umount /tree/pkg 2>&1; echo umount=\$?; ls -A /tree/pkg")
+if grep -q 'touch=[1-9]' <<<"$out" && grep -q 'umount=[1-9]' <<<"$out" && [[ ! -e "${TREE}/pkg/planted" ]] \
+    && [[ "$(tail -1 <<<"$out")" == "README.md" ]]; then
+  pass "C10 as the agent user, writing under /tree/pkg and umount both fail; README.md still the only entry"
+else
+  fail "C10 write/umount under the hide" "out='$(tr '\n' ' ' <<<"$out")' host planted: $([[ -e "${TREE}/pkg/planted" ]] && echo yes || echo no)"
+fi
+
+if [[ "$(g 30 "unshare -Urm true >/dev/null 2>&1; echo \$?")" != "0" ]]; then
+  echo "SKIP C11 unshare -Urm: could not create a user namespace in this cage ($(g 30 "unshare -Urm true 2>&1 | head -1" | tr '\n' ' '))"
+else
+  out=$(g 30 "unshare -Urm bash -c 'echo ns-created; umount /tree/pkg 2>&1; echo umount=\$?; ls -A /tree/pkg'")
+  if grep -qx 'ns-created' <<<"$out" && grep -q 'umount=[1-9]' <<<"$out" && [[ "$(tail -1 <<<"$out")" == "README.md" ]]; then
+    pass "C11 unshare -Urm: namespace created, umount of /tree/pkg failed, README.md still the only entry"
+  else
+    fail "C11 unshare -Urm leg" "out='$(tr '\n' ' ' <<<"$out")'"
+  fi
+fi
+
+out=$(g 120 "/usr/local/lib/rip-cage/floor-probe.sh > /tmp/fp.out 2>&1; echo floor-rc=\$?; tail -2 /tmp/fp.out")
+if grep -qx 'floor-rc=0' <<<"$out"; then
+  pass "C12 the floor probe passes ($(tail -1 <<<"$out"))"
+else
+  fail "C12 floor probe" "out='$(tr '\n' ' ' <<<"$out")'"
 fi
 
 echo ""

@@ -971,6 +971,50 @@ _up_prepare_docker_mounts() {
   # shipped template declares them and rc generates nothing. `rc destroy` still
   # removes rc-state-<cage> and rc-history-<cage> by name — it owns their
   # lifecycle either way, because msb remove alone orphans them.
+
+  # ADR-002 D11: a mount rc generated above that lands at or inside a hidden
+  # repo is dropped and said so (the operator's own config lines are refused
+  # by the classifier instead).
+  _up_drop_hidden_run_args
+}
+
+# _up_hidden_repo_at GUEST -- print the host dir of the hidden repo GUEST is at
+# or inside (from _UP_REPO_CLASS, the _git_classify_repos result cmd_up holds);
+# non-zero when it is inside none.
+_up_hidden_repo_at() {
+  local _g="$1" _k _h _hg
+  while IFS=$'\t' read -r _k _h _hg; do
+    if [[ "$_k" == hide && ( "$_g" == "$_hg" || "$_g" == "$_hg/"* ) ]]; then
+      printf '%s\n' "$_h"
+      return 0
+    fi
+  done <<< "${_UP_REPO_CLASS:-}"
+  return 1
+}
+
+# _up_drop_hidden_run_args -- remove from _UP_RUN_ARGS every "-v SRC:DST[:mode]"
+# rc generated itself (skills, commands, agents, skill and agent symlink
+# parents, symlink-follow and pi mounts) whose DST is at or inside a hidden
+# repo, and print one line per dropped mount through log. A mount inside a
+# hide would abort boot or defeat it; the cage still boots without it.
+_up_drop_hidden_run_args() {
+  [[ -n "${_UP_REPO_CLASS:-}" ]] || return 0
+  local _i _tok _spec _dst _repo _kept=()
+  for ((_i = 0; _i < ${#_UP_RUN_ARGS[@]}; _i++)); do
+    _tok="${_UP_RUN_ARGS[_i]}"
+    if [[ "$_tok" == "-v" && $((_i + 1)) -lt ${#_UP_RUN_ARGS[@]} ]]; then
+      _spec="${_UP_RUN_ARGS[_i+1]}"
+      _dst="${_spec#*:}"
+      _dst="${_dst%%:*}"
+      if _repo="$(_up_hidden_repo_at "$_dst")"; then
+        log "Dropped rc's own mount of ${_spec%%:*} (it lands inside a hidden repo): mount ${_repo} by its own line; read-only is enough"
+        _i=$((_i + 1))
+        continue
+      fi
+    fi
+    _kept+=("$_tok")
+  done
+  _UP_RUN_ARGS=("${_kept[@]+"${_kept[@]}"}")
 }
 
 
@@ -2856,10 +2900,21 @@ cmd_up() {
   # rip-cage-mxr8: warn-only, before any msb call; see the function header.
   _up_warn_claude_home_mounts "$_UP_CAGE_CONF"
 
+  # ADR-002 D11: classify every repo nested below a read-write mount once (hide
+  # or skip), refuse the mounts that would defeat a hide, and hand the result
+  # to both enforcers below as an argument (they run inside $(...)).
+  local _up_repo_class
+  if ! _up_repo_class="$(_git_classify_repos "$_UP_CAGE_CONF" "$_up_mount_rows")"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Nested-repo check refused the cage config ${_UP_CAGE_CONF}" "NESTED_REPO_REFUSED"
+    exit 1
+  fi
+  # Held for the mounts rc generates itself (_up_drop_hidden_run_args).
+  _UP_REPO_CLASS="$_up_repo_class"
+
   # The covers this produces are appended to the create argv; a refusal here
   # exits non-zero with nothing spawned.
   local _covers_out
-  if ! _covers_out=$(_protected_paths_enforce "$_UP_CAGE_CONF" "$_up_mount_rows"); then
+  if ! _covers_out=$(_protected_paths_enforce "$_UP_CAGE_CONF" "$_up_mount_rows" "$_up_repo_class"); then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Protected-paths check refused the cage config ${_UP_CAGE_CONF}" "PROTECTED_PATH_REFUSED"
     exit 1
   fi
@@ -2886,7 +2941,7 @@ cmd_up() {
   # config, info and hooks read-only, so a guest cannot write a command the
   # host's git runs (rip-cage-rsh9.2). Same before-any-msb-call floor.
   local _git_covers_out
-  if ! _git_covers_out=$(_git_exec_covers "$_UP_CAGE_CONF" "$_up_mount_rows"); then
+  if ! _git_covers_out=$(_git_exec_covers "$_UP_CAGE_CONF" "$_up_mount_rows" "$_up_repo_class"); then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Git config cover refused the cage config ${_UP_CAGE_CONF}" "GIT_COVER_REFUSED"
     exit 1
   fi
@@ -3311,6 +3366,7 @@ cmd_up() {
           if _mount_src_authority_warn "skill symlink mount" "$_dry_tdir" "${_UP_CONF_DIR:-}"; then
             continue
           fi
+          _up_hidden_repo_at "${_dry_tdir}" >/dev/null && continue  # dropped; the argv replay says so
           echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       fi
@@ -3336,6 +3392,7 @@ cmd_up() {
           if _mount_src_authority_warn "agent symlink mount" "$_dry_agent_tdir" "${_UP_CONF_DIR:-}"; then
             continue
           fi
+          _up_hidden_repo_at "${_dry_agent_tdir}" >/dev/null && continue  # dropped; the argv replay says so
           echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/agents")
       fi
@@ -3374,10 +3431,14 @@ cmd_up() {
         # nothing extra. The trap fires while the call's 2>> is still in
         # effect, so it writes to fd 7, the real stderr saved here.
         _UP_DRY_PREP_ERR=$(mktemp "${TMPDIR:-/tmp}/rc-dry-prep.XXXXXX")
+        # The mount preparation's stdout is held too; only the lines naming a
+        # mount it dropped (_up_drop_hidden_run_args) are replayed below.
+        local _UP_DRY_PREP_OUT _dry_drop_line
+        _UP_DRY_PREP_OUT=$(mktemp "${TMPDIR:-/tmp}/rc-dry-out.XXXXXX")
         exec 7>&2
         _rc_dry_status=0
-        trap '_rc_dry_status=$?; if [[ $_rc_dry_status -ne 0 ]]; then cat "$_UP_DRY_PREP_ERR" >&7 || true; fi; rm -f "$_UP_DRY_PREP_ERR"; exit $_rc_dry_status' EXIT
-        if _up_prepare_docker_mounts "$path" "$name" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
+        trap '_rc_dry_status=$?; if [[ $_rc_dry_status -ne 0 ]]; then cat "$_UP_DRY_PREP_ERR" >&7 || true; fi; rm -f "$_UP_DRY_PREP_ERR" "$_UP_DRY_PREP_OUT"; exit $_rc_dry_status' EXIT
+        if _up_prepare_docker_mounts "$path" "$name" >"$_UP_DRY_PREP_OUT" 2>>"$_UP_DRY_PREP_ERR" \
             && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
             && _up_build_msb_create_argv "$name"; then
           # Check site 2 on the same final argv the real create runs; a
@@ -3386,6 +3447,9 @@ cmd_up() {
             [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool check refused the msb create argv for $name (see stderr)" "HOST_TOOLS_SITE2_REFUSED"
             exit 1
           fi
+          while IFS= read -r _dry_drop_line; do
+            [[ -n "$_dry_drop_line" ]] && log "$_dry_drop_line"
+          done < <(grep '^Dropped rc' "$_UP_DRY_PREP_OUT" || true)
           echo "Would run: ${_UP_MSB_ARGV[*]}"
           # Drops that the human preview above does not mirror (symlink-follow,
           # pi substrate, worktree auto-redirect) are visible only in the held
@@ -3396,7 +3460,7 @@ cmd_up() {
         fi
         trap - EXIT
         exec 7>&-
-        rm -f "$_UP_DRY_PREP_ERR"
+        rm -f "$_UP_DRY_PREP_ERR" "$_UP_DRY_PREP_OUT"
       fi
     fi
     return 0

@@ -270,6 +270,14 @@ if [[ $_e1_rc -eq 0 ]]; then pass "E1 rc up --dry-run accepts the ro mount holdi
 if grep -qF "Would cover /mnt/p/$S in-guest" <<<"$_e1"; then pass "E1 the preview names the in-guest cover"; else fail "E1 no in-guest cover line: $_e1"; fi
 if grep -qF "PROTECTED_PATH_REFUSED" <<<"$_e1"; then fail "E1 still refused"; else pass "E1 not refused"; fi
 
+# E2: a config that mounts a protected dir directly still reports the
+# protected-paths code in --output json (the nested-repo classifier that runs
+# first must not take over this refusal).
+mkdir -p "$T/direct/$S"
+printf 'image: rip-cage:latest\nnetwork:\n  policy: none\n  allow:\n    - "api.anthropic.com:tcp:443"\nmounts:\n  - "%s:/workspace"\n  - "%s:/mnt/d"\n' "$T/ws" "$T/direct/$S" > "$T/e2.yaml"
+_e2=$(PATH="${_FAKE_RT}:${PATH}" XDG_CONFIG_HOME="$T/xdg" RC_CAGE_CONF="$T/e2.yaml" "${REPO_ROOT}/rc" up --dry-run --output json "$T/ws" 2>&1); _e2_rc=$?
+if [[ $_e2_rc -ne 0 ]] && grep -qF '"code":"PROTECTED_PATH_REFUSED"' <<<"$_e2"; then pass "E2 a direct protected-dir mount reports code PROTECTED_PATH_REFUSED in json"; else fail "E2 json refusal code (exit $_e2_rc): $(grep -o "\"code\":\"[A-Z_]*\"" <<<"$_e2")"; fi
+
 # --- I1/I2: the in-guest cover runs as root BEFORE init, fail closed --------
 # _up_init_container with _msb_exec stubbed: each call is logged; the root
 # call fails when STUB_COVER_FAIL is set.

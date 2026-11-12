@@ -29,6 +29,17 @@
 # stated rather than papered over -- this layer stops the accident and the
 # injected instruction, not the motivated attacker.
 #
+# NESTED REPOS ARE HIDDEN (ADR-002 D11, rip-cage-rsh9.17.3.1). A git repo found
+# below a read-write mount's root is not covered: rc up lays one read-only
+# mount of an rc-owned README directory over it (_git_classify_repos picks the
+# repos once, _git_exec_covers emits the line), so the guest sees only
+# README.md. A hide outranks everything beneath it -- no pin, no pointer-file
+# mount, no protected-name cover -- and rc up REFUSES a config mount targeted
+# strictly inside a hidden repo, or a read-write mount whose source is, or lies
+# inside, a .git directory. A hide, like every cover, is removable by guest
+# root (see WHAT THIS IS NOT); it holds because the agent's sudo is scoped
+# (ADR-002 D12, cage/Dockerfile).
+#
 # Bash 3.2 compatible (ADR-008 D5): no bash-4-only builtins or array types.
 
 # --------------------------------------------------------------------------
@@ -786,6 +797,24 @@ _protected_paths_enforce() {
   local _list
   _list="$(_protected_paths_resolve 2>/dev/null)" || _list=""
 
+  # Classified repos (_git_classify_repos), passed in by rc up as the third
+  # argument: nothing at or under a hidden repo gets a cover, and nothing
+  # strictly under a skipped one (a --tmpfs inside the read-only README bind,
+  # or a bind inside a tmpfs, aborts boot; a skipped repo's own tmpfs is the
+  # cover the skip leaves it to). Called with two arguments it behaves as before.
+  # A third argument of --tmpfs-only is _git_classify_repos asking which
+  # directories get a tmpfs: it prints only those --tmpfs lines and never
+  # refuses for what it finds (no direct-mount refusal, no file cover, no
+  # unplaceable or non-regular finding), so content a hide makes invisible
+  # cannot stop the launch. The real call refuses under its own code.
+  local _hide_g="" _skip_g="" _tmpfs_only=false
+  if [[ "${3:-}" == "--tmpfs-only" ]]; then
+    _tmpfs_only=true
+  elif [[ $# -ge 3 ]]; then
+    _hide_g="$(_git_class_guests hide "$3")"
+    _skip_g="$(_git_class_guests skip "$3")"
+  fi
+
   local _mounts
   _mounts="$(_protected_paths_conf_rows "$@")" || return 1
   [[ -z "${_mounts}" ]] && return 0
@@ -825,7 +854,7 @@ _protected_paths_enforce() {
 
   local _breadcrumb=""
   local _host _guest _mode _real _component _found _rel _guest_target
-  local _targets="" _shadow _t
+  local _targets="" _shadow _t _skipped_here
   local -a _covers=()
 
   # THE DEEPEST MOUNT OWNS ITS SUBTREE (rip-cage-npbb round 3). When one mount
@@ -856,7 +885,7 @@ _protected_paths_enforce() {
     # at ~/.ssh is caught as surely as the literal path. rc refuses before any
     # msb call, and the message never echoes the mount's contents.
     _real="$(cd "$(dirname "${_host}")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "${_host}")")" || _real="${_host}"
-    if _entry="$(_protected_paths_path_match "${_real}")"; then
+    if [[ "${_tmpfs_only}" != true ]] && _entry="$(_protected_paths_path_match "${_real}")"; then
       echo "Error: the cage config ${_conf} mounts ${_host}, which is a protected path ('${_entry}'). Refusing to launch before any msb call: rip-cage does not show a credential store into a cage (ADR-031 D2a). Remove that mount line from ${_conf}, or — if you have decided '${_entry}' is not a secret — remove that line from the protected-paths list this run read: ${_list:-\$RC_PROTECTED_PATHS, \$XDG_CONFIG_HOME/rip-cage/protected-paths, or the copy shipped beside rc}" >&2
       return 1
     fi
@@ -876,6 +905,7 @@ _protected_paths_enforce() {
       [[ -z "${_found}" ]] && continue
       _rel="${_found#"${_prefix}"}"
       if [[ "${_rel}" == "${_found}" ]]; then
+        [[ "${_tmpfs_only}" == true ]] && continue
         # find walked ${_host}, so every finding is under it. A strip failure
         # means the cover target is unknown: refuse, never skip (fail closed).
         echo "Error: the cage config ${_conf} mounts ${_host}, and rc found the protected path ${_found} but could not place it under that mount to cover it. Refusing to launch rather than leaving it exposed (ADR-031 D2, fail closed). Check that mount line's source path." >&2
@@ -896,9 +926,18 @@ _protected_paths_enforce() {
       fi
 
       _guest_target="${_guest%/}/${_rel}"
+      _git_under_ro_target "${_guest_target}" "${_hide_g}" && continue
+      _skipped_here=false
+      while IFS= read -r _t; do
+        [[ -n "${_t}" && "${_guest_target}" == "${_t}/"* ]] && _skipped_here=true
+      done <<< "${_skip_g}"
+      [[ "${_skipped_here}" == true ]] && continue
       # Under a deeper mount's target: that mount's own scan covers it.
       [[ -n "${_shadow}" ]] && _git_under_ro_target "${_guest_target}" "${_shadow}" && continue
 
+      # Only directories get a tmpfs; the file covers and the refusal that
+      # follow are not this mode's business.
+      [[ "${_tmpfs_only}" == true && ! -d "${_found}" ]] && continue
       if [[ -d "${_found}" ]]; then
         # A directory reads empty under a tmpfs; siblings stay visible.
         _covers+=(--tmpfs "${_guest_target}")
@@ -943,6 +982,221 @@ _protected_paths_enforce() {
 }
 
 # --------------------------------------------------------------------------
+# _protected_paths_hidden_repo_dir / _protected_paths_hidden_repo_ensure
+#
+# The rc-owned host directory every hide mounts read-only over a nested repo:
+# <rc-cache>/hidden-repo/, holding one README.md with fixed text. It lives
+# beside protected-cover.empty. _ensure creates it only when missing, and never
+# under --dry-run (a running cage's mount source is never rewritten, and the
+# hide adds no dry-run write).
+# --------------------------------------------------------------------------
+_protected_paths_hidden_repo_dir() {
+  printf '%s\n' "${HOME}/.cache/rc/hidden-repo"
+}
+
+_protected_paths_hidden_repo_ensure() {
+  local _dir
+  _dir="$(_protected_paths_hidden_repo_dir)"
+  [[ "${DRY_RUN:-}" == "true" ]] && return 0
+  [[ -f "${_dir}/README.md" ]] && return 0
+  mkdir -p "${_dir}" || {
+    echo "Error: could not create ${_dir} for the hidden-repo README (ADR-002 D11)." >&2
+    return 1
+  }
+  printf '%s\n' \
+    '# This directory is a git repo that rip-cage hides' \
+    '' \
+    'This is a host git repo rip-cage hides: clone it onto your volume instead. See the cage-config skill.' \
+    > "${_dir}/README.md" || {
+    echo "Error: could not write the hidden-repo README at ${_dir}/README.md (ADR-002 D11)." >&2
+    return 1
+  }
+  chmod 0755 "${_dir}" 2>/dev/null || true
+  chmod 0444 "${_dir}/README.md" 2>/dev/null || true
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# _git_class_guests KIND CLASSIFICATION -- the guest paths of the KIND ("hide"
+# or "skip") lines of a _git_classify_repos result, one per line.
+# --------------------------------------------------------------------------
+_git_class_guests() {
+  printf '%s\n' "$2" | awk -F'\t' -v k="$1" '$1 == k { print $3 }'
+}
+
+# --------------------------------------------------------------------------
+# _protected_paths_conf_targets CONF_FILE
+#
+# Echo one line per entry of the config's mounts list, whatever its kind (bind,
+# named volume, tmpfs): SOURCE-LABEL<TAB>GUEST_TARGET. _protected_paths_conf_
+# bind_mounts keeps only binds; the nested-repo rules need every target, since
+# a volume or tmpfs laid over or inside a nested repo defeats a hide as surely
+# as a bind does. Non-zero when the list cannot be parsed.
+# --------------------------------------------------------------------------
+_protected_paths_conf_targets() {
+  local _json
+  _json="$(yq -o=json '.mounts // []' "$1" 2>/dev/null)" || return 1
+  printf '%s\n' "${_json}" | jq -r '
+    .[]?
+    | if type == "string" then
+        split(":") as $f | [ $f[0], ($f[1] // "") ]
+      elif type == "object" then
+        [ ((.bind // .named // "tmpfs") | tostring),
+          ((.target // (.tmpfs | strings | select(startswith("/"))) // "") | tostring) ]
+      else empty end
+    | select(.[1] != "")
+    | @tsv
+  '
+}
+
+# --------------------------------------------------------------------------
+# _git_classify_repos CONF_FILE [ROWS]
+#
+# ADR-002 D11 (evolved 2026-11-11, rip-cage-rsh9.17). Classify every repo
+# nested below a read-write mount ONCE, before either enforcer runs; rc up
+# passes the result to both as an argument (the enforcers run inside $(...),
+# so data handed in crosses it and a temp file would not need to). Prints one
+# line per entry, TAB-separated:
+#
+#   hide<TAB>HOST_REPO_DIR<TAB>GUEST_REPO_PATH   hidden: one ro README mount
+#   skip<TAB>HOST_REPO_DIR<TAB>GUEST_REPO_PATH   under (or on) a directory that
+#                                                gets a protected-name tmpfs:
+#                                                both enforcers emit nothing
+#                                                at or under it
+#
+# The hide lines are the hidden set the converge label hashes and `rc up`
+# prints (rip-cage-rsh9.17.3.3); no caller needs to scan again.
+#
+# For a repo at relative path r of a read-write view (host root H, guest G):
+# the guest path is P = G/r.
+#   - r empty: the view's mount root, D11 treatment, not classified here.
+#   - another mount's target lies strictly between G and P, or equals P, from
+#     any source: that deeper mount owns it -- nothing for this view.
+#   - P under a tmpfs the protected-paths pass places: skip.
+#   - some read-write config line has the repo's directory as its source: a
+#     mount root everywhere, covered by _git_exec_covers, never hidden.
+#   - otherwise hidden at P. A hide outranks everything beneath it.
+# Refuses, before any msb call, naming the mount, the repo and the two fixes:
+#   (a) a config mount whose target lies strictly inside a hidden repo;
+#   (b) a read-write config mount whose source is, or lies inside, a .git
+#       directory (any repo, whatever its target).
+#
+# debt: runs _protected_paths_enforce once more (no sets) to learn which
+# directories get a tmpfs, and walks each view for .git beside the later
+# covers walk. Ceiling: a tree whose walk takes seconds pays it three times;
+# upgrade when one scan can feed all three.
+# --------------------------------------------------------------------------
+_git_classify_repos() {
+  local _conf="$1"
+  local -a _depth_args=()
+  if [[ -n "${RC_PROTECTED_SCAN_DEPTH:-}" ]]; then
+    if [[ ! "${RC_PROTECTED_SCAN_DEPTH}" =~ ^[1-9][0-9]*$ ]]; then
+      # The enforcers refuse this, under their own JSON codes; the classifier
+      # only ever refuses for the two nested-repo rules below.
+      return 0
+    fi
+    _depth_args=(-maxdepth "${RC_PROTECTED_SCAN_DEPTH}")
+  fi
+  local _mounts
+  _mounts="$(_protected_paths_conf_rows "$@")" || return 1
+  [[ -z "${_mounts}" ]] && return 0
+
+  local _host _guest _mode _t _c _label
+  local _targets="" _rw_phys=$'\n' _tmpfs="" _hidden="" _skipped=""
+
+  # (b) a read-write source with a .git path component.
+  while IFS=$'\t' read -r _host _guest _mode; do
+    [[ -n "${_host}" && "${_mode}" != "ro" ]] || continue
+    case "/${_host}/" in
+      */.git/*)
+        echo "Error: the cage config ${_conf} mounts ${_host} read-write at ${_guest}, and that source is, or lies inside, a .git directory. A guest could write the repo's config or hooks through it, which the host's git runs. Refusing to launch before any msb call (ADR-002 D11). Fix: mount it read-only, or drop the line." >&2
+        return 1 ;;
+    esac
+  done <<< "${_mounts}"
+
+  # Every config mount target, whatever its kind, owns its subtree.
+  local _all_targets
+  _all_targets="$(_protected_paths_conf_targets "${_conf}")" || return 1
+  while IFS=$'\t' read -r _label _guest; do
+    [[ -n "${_guest}" ]] && _targets+="${_guest%/}"$'\n'
+  done <<< "${_all_targets}"
+  while IFS=$'\t' read -r _host _guest _mode; do
+    if [[ -n "${_host}" && "${_mode}" != "ro" && -d "${_host}" ]]; then
+      _rw_phys+="$(cd -P "${_host}" 2>/dev/null && pwd -P)"$'\n'
+    fi
+  done <<< "${_mounts}"
+
+  # Which directories get a tmpfs (the skip set's source of truth), asked of
+  # the protected-paths pass in a mode that cannot refuse: content a hide makes
+  # invisible must not stop the launch, and a real refusal belongs to the
+  # enforcer's own call under its own JSON code.
+  _c="$(_protected_paths_enforce "${_conf}" "${_mounts}" --tmpfs-only 2>/dev/null)" || return 0
+  _tmpfs="$(printf '%s\n' "${_c}" | awk '$0 == "--tmpfs" { getline; print }')"
+
+  local _entry _rel _rdir _p _phys _deeper
+  while IFS=$'\t' read -r _host _guest _mode; do
+    [[ -z "${_host}" || "${_mode}" == "ro" ]] && continue
+    while [[ "${_host}" == */ && "${_host}" != "/" ]]; do _host="${_host%/}"; done
+    [[ -d "${_host}" ]] || continue
+    while IFS= read -r _entry; do
+      [[ -z "${_entry}" ]] && continue
+      _rel="${_entry#"${_host}/"}"
+      # Unplaceable: _git_exec_covers refuses it under its own code.
+      [[ "${_rel}" == "${_entry}" ]] && continue
+      [[ "${_rel}" == ".git" ]] && continue
+      _rdir="$(dirname "${_rel}")"
+      _p="${_guest%/}/${_rdir}"
+      # The deepest mount owns its subtree.
+      _deeper=false
+      while IFS= read -r _t; do
+        [[ -n "${_t}" && "${_t}" == "${_guest%/}/"* ]] && _git_under_ro_target "${_p}" "${_t}" && { _deeper=true; break; }
+      done <<< "${_targets}"
+      [[ "${_deeper}" == true ]] && continue
+      if _git_under_ro_target "${_p}" "${_tmpfs}"; then
+        _skipped+="skip"$'\t'"${_host}/${_rdir}"$'\t'"${_p}"$'\n'
+        continue
+      fi
+      # A .git pointer FILE (submodule, --separate-git-dir) is never hidden:
+      # _git_exec_covers keeps its ro line unless the skip set above applies.
+      [[ -d "${_entry}" ]] || continue
+      # A repo some read-write line mounts by its own directory is a mount
+      # root everywhere: _git_exec_covers covers it, nothing hides it.
+      _phys="$(cd -P "${_host}/${_rdir}" 2>/dev/null && pwd -P)"
+      [[ -n "${_phys}" && "${_rw_phys}" == *$'\n'"${_phys}"$'\n'* ]] && continue
+      _hidden+="hide"$'\t'"${_host}/${_rdir}"$'\t'"${_p}"$'\n'
+    done < <(find "${_host}" ${_depth_args[@]+"${_depth_args[@]}"} -name .git -print -prune 2>/dev/null | LC_ALL=C sort)
+  done <<< "${_mounts}"
+
+  # A hide outranks everything beneath it: drop a hidden entry under another.
+  local _line _hg _kept="" _other
+  while IFS= read -r _line; do
+    [[ -z "${_line}" ]] && continue
+    _hg="${_line##*$'\t'}"
+    _other=""
+    while IFS= read -r _c; do
+      [[ -n "${_c}" && "${_c}" != "${_hg}" && "${_hg}" == "${_c}/"* ]] && { _other=1; break; }
+    done < <(_git_class_guests hide "${_hidden}")
+    [[ -z "${_other}" ]] && _kept+="${_line}"$'\n'
+  done <<< "${_hidden}"
+  _hidden="${_kept}"
+
+  # (a) a config mount targeted strictly inside a hidden repo.
+  local _hh _hg2
+  while IFS=$'\t' read -r _label _guest; do
+    [[ -n "${_guest}" ]] || continue
+    while IFS=$'\t' read -r _c _hh _hg2; do
+      [[ -n "${_hg2}" && "${_guest%/}" == "${_hg2}/"* ]] || continue
+      echo "Error: the cage config ${_conf} mounts ${_label} at ${_guest}, inside ${_hg2}, which rc hides (the repo ${_hh}, ADR-002 D11): a mount inside a hidden repo would defeat the hide. Refusing to launch before any msb call. Fix: mount that repo by its own read-write line, or drop the inner line." >&2
+      return 1
+    done <<< "${_hidden}"
+  done <<< "${_all_targets}"
+
+  printf '%s' "${_hidden}" | LC_ALL=C sort -u
+  printf '%s' "${_skipped}" | LC_ALL=C sort -u
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # _git_exec_covers CONF_FILE [ROWS]
 #
 # ADR-002 D11 (evolved 2026-10-16, rip-cage-rsh9.2). A guest that can write a
@@ -970,6 +1224,13 @@ _protected_paths_enforce() {
 # under a read-only mount mounted on top of this rw one (its target deeper than
 # this mount's): a rw pin there would re-expose it. A ro mount BENEATH a rw one
 # shadows nothing -- the guest sees the rw mount's repos, so they are covered.
+#
+# Called with a third argument -- the _git_classify_repos result rc up passes
+# in -- a repo nested below the view's root is not covered: a hidden one gets
+# one -v <rc-cache>/hidden-repo:<guest path>:ro line and nothing beneath it, a
+# skipped one (under a protected-name tmpfs) gets nothing, and every deeper
+# mount of ANY mode owns its subtree. Without it, behaviour is as described
+# above (G19/G21).
 #
 # Prints msb argv tokens, one per line, for _UP_PROTECTED_COVERS.
 #
@@ -1010,7 +1271,26 @@ _git_exec_covers() {
     [[ "${_mode}" == "ro" && -n "${_guest}" ]] && _ro_targets+="${_guest%/}"$'\n'
   done <<< "${_mounts}"
 
-  local _entry _rel _g _sub _gitfiles _root _p _queue _shadow _t
+  # Classified repos (_git_classify_repos), passed in by rc up as the third
+  # argument. Given them, the deepest mount of ANY mode owns its subtree, a
+  # hidden repo gets exactly one hide line and nothing beneath it, and a
+  # skipped repo gets nothing. Called with two arguments it behaves as D11 did
+  # before the hide.
+  local _sets=false _hide_g="" _skip_g="" _all_targets="" _hide_done=""
+  if [[ $# -ge 3 ]]; then
+    _sets=true
+    _hide_g="$(_git_class_guests hide "$3")"
+    _skip_g="$(_git_class_guests skip "$3")"
+    # Every config mount target, whatever its kind (a named volume or tmpfs
+    # laid on a nested repo owns it as a bind would).
+    local _tlabel _tlist
+    _tlist="$(_protected_paths_conf_targets "${_conf}")" || return 1
+    while IFS=$'\t' read -r _tlabel _guest; do
+      [[ -n "${_guest}" ]] && _all_targets+="${_guest%/}"$'\n'
+    done <<< "${_tlist}"
+  fi
+
+  local _entry _rel _g _sub _gitfiles _root _p _pg _queue _shadow _t
   while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
     [[ "${_mode}" == "ro" ]] && continue
@@ -1019,7 +1299,7 @@ _git_exec_covers() {
     _shadow=""
     while IFS= read -r _t; do
       [[ -n "${_t}" && "${_t}" == "${_guest%/}/"* ]] && _shadow+="${_t}"$'\n'
-    done <<< "${_ro_targets}"
+    done <<< "$(if [[ "${_sets}" == true ]]; then printf '%s' "${_all_targets}"; else printf '%s' "${_ro_targets}"; fi)"
     while [[ "${_host}" == */ && "${_host}" != "/" ]]; do _host="${_host%/}"; done
     [[ -d "${_host}" ]] || continue
 
@@ -1034,6 +1314,20 @@ _git_exec_covers() {
       fi
       _g="${_guest%/}/${_rel}"
       _git_under_ro_target "${_g}" "${_shadow}" && continue
+      if [[ "${_sets}" == true ]]; then
+        _pg="${_g%/.git}"
+        if [[ -d "${_entry}" ]] && _git_set_has "${_pg}" "${_hide_g}"; then
+          # One hide per (repo, guest path); nothing else for it.
+          if [[ "${_hide_done}" != *$'\n'"${_pg}"$'\n'* ]]; then
+            _protected_paths_hidden_repo_ensure || return 1
+            printf '%s\n' -v "$(_protected_paths_hidden_repo_dir):${_pg}:ro"
+            _hide_done+=$'\n'"${_pg}"$'\n'
+          fi
+          continue
+        fi
+        _git_under_ro_target "${_pg}" "${_hide_g}" && continue
+        _git_under_ro_target "${_pg}" "${_skip_g}" && continue
+      fi
       _queue+="$(dirname "${_entry}")"$'\n'
       if [[ -f "${_entry}" ]]; then
         _gitfiles+="${_entry}"$'\t'"${_g}"$'\n'
@@ -1068,6 +1362,10 @@ _git_exec_covers() {
         [[ "${_rel}" == "${_entry}" ]] && continue
         _g="${_guest%/}/${_rel}"
         _git_under_ro_target "${_g}" "${_shadow}" && continue
+        if [[ "${_sets}" == true ]]; then
+          _git_under_ro_target "${_g%/.git}" "${_hide_g}" && continue
+          _git_under_ro_target "${_g%/.git}" "${_skip_g}" && continue
+        fi
         _gitfiles+="${_entry}"$'\t'"${_g}"$'\n'
         _queue+="${_root}/${_p}"$'\n'
       done < <(git config -f "${_root}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null | cut -d' ' -f2-)
@@ -1078,6 +1376,16 @@ _git_exec_covers() {
     done < <(printf '%s' "${_gitfiles}" | LC_ALL=C sort -u)
   done <<< "${_mounts}"
   return 0
+}
+
+# _git_set_has GUEST SET -- true when GUEST is exactly one of SET (newline-separated
+# guest paths).
+_git_set_has() {
+  local _t
+  while IFS= read -r _t; do
+    [[ -n "${_t}" && "$1" == "${_t}" ]] && return 0
+  done <<< "$2"
+  return 1
 }
 
 # _git_under_ro_target GUEST_PATH RO_TARGETS -- true when GUEST_PATH is at or
