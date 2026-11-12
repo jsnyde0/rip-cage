@@ -122,9 +122,13 @@ _msb_inspect_json() {
 # (msb's Running/Stopped, translated onto the docker.State.Status vocabulary
 # cli/up.sh's existing state-branch logic already reads, so that logic keeps
 # working unchanged), or "" with a non-zero return when the sandbox is
-# absent. Any other reported status prints "unknown" (defensive — msb has no
-# paused/restarting/removing/dead concept observed live, but a future msb
-# release adding one must not silently be misread as running/exited).
+# absent. msb's Crashed (the VM died without a stop) also reads "exited"
+# (rip-cage-4ev0): every resume is a fresh kernel boot, and `msb start`
+# resumes a Crashed sandbox exactly like a Stopped one (measured live on msb
+# 0.7.8), so plain rc up resumes it and --replace recreates it. Any other
+# reported status prints "unknown" (defensive — e.g. msb's user Paused, or a
+# status a future release adds, must not silently be misread as
+# running/exited).
 _msb_sandbox_state() {
   local name="$1"
   local raw
@@ -133,7 +137,7 @@ _msb_sandbox_state() {
   status=$(jq -r '.status // empty' <<<"$raw" 2>/dev/null)
   case "$status" in
     Running) echo "running" ;;
-    Stopped) echo "exited" ;;
+    Stopped|Crashed) echo "exited" ;;
     "") echo ""; return 1 ;;
     *) echo "unknown" ;;
   esac
