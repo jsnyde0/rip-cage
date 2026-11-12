@@ -77,7 +77,7 @@ Retiring, as a consequence: the rip-cage config schema, the three-layer merge, t
 One **protected-paths** rule, shipped as default *configuration*, not as code. `rc up` reads the list file and:
 
 - (a) **refuses to launch** a config that mounts any listed path directly;
-- (b) **auto-covers** any listed path found inside a mounted tree — a file gets an empty read-only file mount, a directory gets an empty tmpfs mount;
+- (b) **auto-covers** any listed path found inside a mounted tree — a file gets an empty read-only file mount, a directory gets an empty tmpfs mount; *(noted 2026-11-11, [ADR-002](ADR-002-rip-cage-containers.md) D11: these file and directory covers apply to listed names on visible paths — a file or directory under a repo rc hides (ADR-002 D11) is covered by the hide and gets no cover of its own)*
 - (c) **aborts before any msb call** if the list file is unreadable.
 
 If msb cannot express the cover for a given entry, `rc up` refuses rather than proceeding — fail closed, never fail open. Same list, one rule. The list is an operator-editable default, not a hardcoded constant (human-ratified 2026-09-15).
@@ -107,6 +107,8 @@ If msb cannot express the cover for a given entry, `rc up` refuses rather than p
 **The set, FLEXIBLE:** `rc up`, `rc auth`, `rc doctor`, `rc build`, `rc test`, `rc destroy`.
 
 - **`rc up`** — the `--secret` credential bootstrap (reads the host CCTOK secrets file; refuses before msb when it is missing or malformed), the flags and create-time labels no config file holds (`--name`, `--log-level trace`, `--replace`, the `rc.host-tools=present|absent` label on every cage, `--vsock` and the `rc.state-dir` label when a host-tool declaration exists, the symlink-parent read-only mounts computed from the host filesystem, the protected-paths check), then `msb create`, then attach. **`rc reload` folds into `rc up`**: a *stopped* cage is recreated against the current config on a plain `rc up` (today's converge-on-up behavior); a *running* cage is never recreated implicitly, because that kills the live session (rip-cage ADR-029 D4) — `rc up --replace` is the explicit graceful-stop-then-recreate.
+
+  **Noted 2026-11-11 — [ADR-002](ADR-002-rip-cage-containers.md) D11 (`rip-cage-rsh9.17.1`):** the hidden-set label, the hide mounts and the device-ceiling refusal (ADR-002 D11) join what `rc up` adds at create — a label rc computes from the host filesystem, mounts rc computes from it, and a refusal before `msb create` — the kind this bullet's carve-out already names. The six-verb set is unchanged.
 
   **Evolved in place 2026-11-06 — [ADR-032](ADR-032-host-tool-line.md) D6 (human ruling "sure update ADR-031 then", recorded as a comment on `rip-cage-mgp6`, applied by `rip-cage-jdl2.7`).** The enumeration above gains `--vsock <state>/host-tool.sock:7700` and the create-time labels `rc.host-tools=present|absent` and `rc.state-dir=<path>`: all three are the kind this bullet's carve-out already names, because msb's `--conf` loader has no key for a vsock route and no config file can hold a label rc computes. The six-verb set is unchanged; `rc.host-tools` is stamped on every cage (a missing label reads `absent`); `--vsock` and `rc.state-dir` appear only when a declaration exists; `rc up` merges nothing from the declaration into the msb config.
 - **`rc auth`** — checks the credential the Claude login rides on (the CCTOK secrets file: present, mode 0600, setup-token shaped) with the same function `rc up` gates on, and fails loud with the one-time human step. No prompt, no browser, no keychain.
