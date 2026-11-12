@@ -76,6 +76,16 @@ boot-descriptor entry: `start`, `health`, optional `state_dir`.
 
 ---
 
+## Workflow recipes
+
+Config-only recipes: no Dockerfile, no image change.
+
+| Recipe | What it provides |
+|---|---|
+| [examples/workbench/](workbench/) | Repos cloned onto an agent-owned named volume instead of mounted, with a scoped GitHub token and a git credential helper, so commits and pushes are the bridge. Also the rule for repos inside a mounted folder (hidden by rc) and mixed folders. See [workbench/README.md](workbench/README.md). |
+
+---
+
 ## Mediator recipes — DROPPED
 
 > **There is no manifest-declared MEDIATOR archetype, and no `rc`-side mediator

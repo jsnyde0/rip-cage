@@ -1,0 +1,38 @@
+# examples/workbench/cage.yaml.fragment -- lines to merge BY HAND into your
+# project config (share/rip-cage/cage.yaml.template is the whole file). rc
+# merges nothing: each block below goes under the top-level key named in its
+# first comment, beside the entries that key already holds. Substitute the
+# <PLACEHOLDERS>.
+
+# --- merges into the top-level `mounts:` list (map form) ------------------
+mounts:
+  - named: "<VOLUME_NAME>"
+    target: "<VOLUME_PATH>"
+    create: ensure-exists
+    uid: 1000
+    gid: 1000
+
+# --- merges into the top-level `secrets:` map ------------------------------
+# No `value:`: msb reads the host env var GH_TOKEN, which rc fills from
+# the host secrets directory (docs/reference/egress.md, Worked example).
+secrets:
+  GH_TOKEN:
+    allow:
+      - "github.com"
+
+# --- merges into the top-level `env:` map ----------------------------------
+# GH_TOKEN hands the placeholder to gh ("\x24" is YAML for the dollar sign,
+# see the template's env: comment). The three GIT_CONFIG_* entries declare
+# the credential helper; the value is quoted because a bare ! is a YAML tag.
+env:
+  GH_TOKEN: "\x24MSB_GH_TOKEN"
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: credential.helper
+  GIT_CONFIG_VALUE_0: "!gh auth git-credential"
+
+# --- merges into `network.allow` (the list under the top-level `network:`) --
+# github.com carries clone and push; api.github.com only gh API calls.
+network:
+  allow:
+    - "github.com:tcp:443"
+    - "api.github.com:tcp:443"

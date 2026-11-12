@@ -275,6 +275,18 @@ one.
 error, every path in the file is absolute and outside every mount you declared,
 and each verb's `timeout` covers its slowest expected run.
 
+## Many repos: clone, do not mount
+
+A cage that works across many repos mounts none of them: it clones each onto an
+agent-owned named volume and pushes back. Follow
+[`examples/workbench/`](../../../examples/workbench/README.md) (README plus
+`cage.yaml.fragment`). rc hides every git repo inside a read-write mounted
+folder; the remedy is to clone it onto your volume.
+
+*Done when:* `rc up --dry-run <project>` exits 0, and in the cage
+`ls -ld <VOLUME_PATH>` shows `agent` as owner and
+`git clone <https-url> <VOLUME_PATH>/<name>` exits 0.
+
 ## What rc adds that no config file can hold
 
 `--name`, `--log-level trace`, `--replace`, reading and exporting the CCTOK
