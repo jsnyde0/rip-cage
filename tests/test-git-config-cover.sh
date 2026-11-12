@@ -447,10 +447,12 @@ _hide_at /tree/pkg/deep/inner || _miss+=" inner-hidden-in-outer-view"
 if [[ -z "$_miss" ]]; then pass "H2 a nested repo with its own rw line is a mount root everywhere: pin and covers at both guest paths, no hide of it"; else fail "H2 own-line repo --${_miss}: $(tail -3 <<<"$OUT")"; fi
 
 _run h3 "${FX}:/tree" "${FX}/pkg:/ref:ro"
-if [[ $RCODE -eq 0 ]] && _hide_at /tree/pkg && [[ "$(_under /tree/pkg)" -eq 1 && "$(_git_under /ref)" -eq 0 ]]; then
-  pass "H3 a read-only own line leaves the hide at /tree/pkg and emits nothing under /ref"
+# The read-only view shows the repo, so it keeps its protected-name cover (brain stamp review R4).
+_tmpfs_at() { grep -qxF -- "$1" < <(tr ' ' '\n' <<<"$ARGV"); }
+if [[ $RCODE -eq 0 ]] && _hide_at /tree/pkg && [[ "$(_under /tree/pkg)" -eq 1 && "$(_git_under /ref)" -eq 0 ]] && _tmpfs_at /ref/.aws; then
+  pass "H3 a read-only own line leaves the hide at /tree/pkg, emits no git line under /ref, and keeps /ref's protected-name tmpfs"
 else
-  fail "H3 ro own line (rc ${RCODE}): hide $(_hide_at /tree/pkg && echo yes || echo no), under /tree/pkg $(_under /tree/pkg), under /ref $(_git_under /ref)"
+  fail "H3 ro own line (rc ${RCODE}): hide $(_hide_at /tree/pkg && echo yes || echo no), under /tree/pkg $(_under /tree/pkg), under /ref $(_git_under /ref), tmpfs /ref/.aws $(_tmpfs_at /ref/.aws && echo yes || echo no)"
 fi
 
 for _v in "ro:${FX}/pkg:/tree/pkg:ro" "other:${ALT}:/tree/pkg"; do
@@ -496,6 +498,9 @@ _miss=""
 _has "${HIDE_SRC}:/t2/credentials/rep:ro" || _miss+=" file-named-dir-repo-not-hidden"
 grep -qxF -- "/tree/pkg/.aws" < <(tr ' ' '\n' <<<"$ARGV") && _miss+=" tmpfs-under-hidden-repo"
 grep -qxF -- "/t2/.aws" < <(tr ' ' '\n' <<<"$ARGV") || _miss+=" no-tmpfs-for-/t2/.aws(sanity)"
+# The skipped repo's own directory must still get its tmpfs: skip means "the tmpfs
+# hides it", so a skip with no tmpfs fails open (brain stamp review B1).
+_tmpfs_at /t2/.kube || _miss+=" no-tmpfs-for-skipped-repo-own-dir-/t2/.kube"
 if [[ -z "$_miss" ]]; then pass "H7 repos under or on a protected-name tmpfs get no rc line; one under a file:-named dir is hidden; no tmpfs under a hidden repo"; else fail "H7 tmpfs skip set --${_miss}: $(tail -3 <<<"$OUT")"; fi
 
 _run h8 "${FX}:/tree" "${FX}/pkg/deep/inner:/w"
