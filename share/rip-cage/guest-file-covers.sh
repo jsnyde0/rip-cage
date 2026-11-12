@@ -26,8 +26,9 @@
 # empty record, so a stale one from an earlier run never survives.
 #
 # STRENGTH. Same as every other cover: a visibility default, not a boundary. In-
-# guest root can umount it, and the agent's sudo grant includes apt-get/dpkg,
-# which is root. See cli/lib/protected_paths.sh's header.
+# guest root (an exploit, or an operator's own sudo rule) can umount it; the
+# agent's shipped sudo grant reaches no root (ADR-002 D12). See
+# cli/lib/protected_paths.sh's header.
 #
 # RC_GUEST_COVER_RUN_DIR relocates the record for the host test only; rc never
 # sets it.
