@@ -129,6 +129,9 @@ _up_json_output() {
   if [[ -n "$_dry_run" ]]; then
     jq_args+=(--argjson dry_run true)
     jq_filter+=', dry_run: $dry_run'
+    # The current scan of hidden repos, whatever the action (ADR-002 D11).
+    jq_args+=(--argjson hidden_repos "$(_up_hidden_repos_json)")
+    jq_filter+=', hidden_repos: $hidden_repos'
   fi
   if [[ -n "$_status" ]]; then
     jq_args+=(--arg status "$_status")
@@ -1478,6 +1481,107 @@ _up_host_tools_running_branch() {
 }
 
 
+# ---------------------------------------------------------------------------
+# Hidden-repo set (ADR-002 D11, "A changed hidden set is a changed config";
+# rip-cage-rsh9.17.3.3). The set is the hide lines of _UP_REPO_CLASS, the
+# _git_classify_repos result cmd_up holds: nothing here scans again.
+# ---------------------------------------------------------------------------
+
+# _up_hidden_set_sha -- sha256 of the hidden set: the hide<TAB>host<TAB>guest
+# lines of _UP_REPO_CLASS, sorted. The empty set has a hash too (the hash of
+# nothing), so a create always stamps rc.hidden-repos-sha.
+_up_hidden_set_sha() {
+  printf '%s\n' "${_UP_REPO_CLASS:-}" | awk -F'\t' '$1 == "hide"' | LC_ALL=C sort | _up_sha256
+}
+
+# _up_add_hidden_repos_label -- append the rc.hidden-repos-sha label row to
+# _UP_RUN_ARGS: the ONE producer for the real create and the --dry-run preview.
+_up_add_hidden_repos_label() {
+  _UP_RUN_ARGS+=(--label "rc.hidden-repos-sha=$(_up_hidden_set_sha)")
+}
+
+# _up_hidden_set_change_kind NAME -- print and return 0 when the cage's
+# recorded hidden set differs from the current scan: "changed" (label differs)
+# or "unrecorded" (no label, and the current set is non-empty: fail closed).
+# Return 1, printing nothing, when they agree, or when there is no label and
+# nothing to hide (a pre-epic cage with nothing to hide is not churned).
+_up_hidden_set_change_kind() {
+  local _stored
+  _stored=$(_msb_label "$1" "rc.hidden-repos-sha" 2>/dev/null || true)
+  if [[ -z "$_stored" ]]; then
+    [[ -n "$(_git_class_guests hide "${_UP_REPO_CLASS:-}")" ]] || return 1
+    echo unrecorded
+    return 0
+  fi
+  [[ "$_stored" != "$(_up_hidden_set_sha)" ]] || return 1
+  echo changed
+}
+
+# _up_hidden_set_reason NAME KIND -- the one reason line a recreate on a hidden-set change prints.
+_up_hidden_set_reason() {
+  if [[ "$2" == unrecorded ]]; then
+    log "Hidden repos: cage $1 has no record of the set it was created with (it predates rc.hidden-repos-sha) and rc now hides some; recreating it (ADR-002 D11)."
+  else
+    log "Hidden repos changed since cage $1 was created: the set rc hides now differs from the one recorded at create; recreating it (ADR-002 D11)."
+  fi
+}
+
+# _up_check_no_reload_hidden NAME -- --no-reload cannot honour a changed hidden
+# set (the hide is a create-time mount): one Error: line and return 1; 0 when
+# the set is unchanged. Same shape as _up_check_no_reload_presence. JSON mode
+# exits through json_error.
+_up_check_no_reload_hidden() {
+  local _name="$1" _kind
+  _kind=$(_up_hidden_set_change_kind "$_name") || return 0
+  [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "--no-reload cannot apply a change in the hidden repos to cage ${_name}" "HIDDEN_REPOS_NO_RELOAD"
+  if [[ "$_kind" == unrecorded ]]; then
+    echo "Error: --no-reload was given, but cage ${_name} has no record of the git repos it hides (rc.hidden-repos-sha) and rc now hides some; a mount cannot be added without a recreate. Drop --no-reload to recreate it, or run rc up --replace." >&2
+  else
+    echo "Error: --no-reload was given, but the set of git repos rc hides changed since cage ${_name} was created (rc.hidden-repos-sha); a mount cannot be added or removed without a recreate. Drop --no-reload to recreate it, or run rc up --replace." >&2
+  fi
+  return 1
+}
+
+# _up_hidden_repos_json -- the current scan as a JSON array of {host, guest}.
+_up_hidden_repos_json() {
+  printf '%s\n' "${_UP_REPO_CLASS:-}" | jq -R -s -c '
+    split("\n") | map(select(startswith("hide\t")) | split("\t") | {host: .[1], guest: .[2]})'
+}
+
+# _up_print_hidden_repos [would] -- one line per (hidden repo, guest path) of
+# the current scan through log: "Hiding ..." on a real create, "Would hide ..."
+# on a dry-run (stdout, beside "Would run:").
+_up_print_hidden_repos() {
+  local _k _h _g
+  while IFS=$'\t' read -r _k _h _g; do
+    [[ "$_k" == hide ]] || continue
+    if [[ "${1:-}" == would ]]; then
+      log "Would hide host repo ${_h} at ${_g} (clone it onto your volume; cage-config skill)"
+    else
+      log "Hiding git repo ${_h} at ${_g}: clone it onto your volume (cage-config skill)"
+    fi
+  done <<< "${_UP_REPO_CLASS:-}"
+}
+
+# _up_report_hidden_repos NAME -- on resume or attach (human mode), one line
+# naming the guest paths the cage was created with: the guest of every
+# .config.mounts[] entry of msb inspect whose host is the README dir. No host
+# path, no stored state. When the current scan differs from the cage's label,
+# one more line says rc up --replace applies the change (a running cage keeps
+# its mounts). Runs no mount preparation and no device count.
+_up_report_hidden_repos() {
+  local _name="$1" _raw _guests _kind
+  _raw="$(_msb_inspect_json "$_name" 2>/dev/null)" || return 0
+  _guests=$(jq -r --arg d "$(_protected_paths_hidden_repo_dir)" '[.config.mounts[]? | select(.host == $d) | .guest] | join(" ")' <<<"$_raw" 2>/dev/null || true)
+  if [[ -n "$_guests" ]]; then
+    log "Cage ${_name} hides git repos at (as created with): ${_guests}; clone them onto your volume (cage-config skill)."
+  fi
+  if _kind=$(_up_hidden_set_change_kind "$_name"); then
+    log "The git repos rc would hide now differ from those cage ${_name} was created with; rc up --replace applies the change."
+  fi
+}
+
+
 # _up_converge_needed NAME CONF
 #
 # True when a STOPPED cage's config file differs from the one it was created
@@ -1505,6 +1609,15 @@ _up_converge_needed() {
   # matter what any label says.
   if [[ "${_UP_CONVERGE_DONE:-false}" == "true" ]]; then
     return 1
+  fi
+
+  # A changed hidden-repo set is a changed config (ADR-002 D11): the hide is a
+  # create-time mount. Say why before the recreate,
+  # whichever other key (presence, config hash) also differs.
+  local _hidden_kind
+  if _hidden_kind=$(_up_hidden_set_change_kind "$_name"); then
+    _up_hidden_set_reason "$_name" "$_hidden_kind"
+    return 0
   fi
 
   # A host-tool declaration added or removed since the cage was created
@@ -2061,6 +2174,7 @@ _up_dry_run_argv() {
   local _UP_RUN_ARGS=()
   local _UP_DRY_RUN_NO_SIDE_EFFECTS=1
   local _UP_MSB_ARGV=()
+  _up_add_hidden_repos_label
   _up_add_host_tools_labels "$name"
   # The preparation's stderr is held back (the "Would mount" lines above
   # already preview it), but a refusal inside it `exit 1`s rc itself, so
@@ -3402,6 +3516,7 @@ cmd_up() {
       # host-tool presence change: that refuses.
       if [[ -n "$rc_up_no_reload" ]]; then
         _up_check_no_reload_presence "$name" || exit 1
+        _up_check_no_reload_hidden "$name" || exit 1
       fi
       if [[ -z "$rc_up_no_reload" ]] && _up_converge_needed "$name" "$_UP_CAGE_CONF"; then
         # A recreate fixes a STALE image but cannot fix an ABSENT one, so the
@@ -3444,10 +3559,11 @@ cmd_up() {
         # Image absent on new-container path — emit pull/build intent in old format
         # so test-pull-first.sh assertions (would_pull / would_build fields) stay green.
         if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
-          jq -nc --arg image "${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}" \
-            '{dry_run: true, would_pull: true, would_build_on_fail: true, image: $image, action: "would_pull_and_create"}'
+          jq -nc --arg image "${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}" --argjson hidden_repos "$(_up_hidden_repos_json)" \
+            '{dry_run: true, would_pull: true, would_build_on_fail: true, image: $image, action: "would_pull_and_create", hidden_repos: $hidden_repos}'
         else
-          jq -nc '{dry_run: true, would_build: true, action: "would_build_and_create", message: "would build rip-cage image, then create container"}'
+          jq -nc --argjson hidden_repos "$(_up_hidden_repos_json)" \
+            '{dry_run: true, would_build: true, action: "would_build_and_create", message: "would build rip-cage image, then create container", hidden_repos: $hidden_repos}'
         fi
       else
         _up_json_output "$name" "$would_action" "$path" "" "" "true"
@@ -3564,6 +3680,7 @@ cmd_up() {
       # running under --dry-run (fail-closed default) rather than silently
       # start running under the dry-run preview.
       if [[ "$would_action" == "would_create" || "$would_action" == "would_converge" ]]; then
+        _up_print_hidden_repos would
         _up_dry_run_argv "$name" "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
       fi
     fi
@@ -3617,6 +3734,9 @@ cmd_up() {
         log "  To apply the drift to this running cage now, cold-recreate explicitly: rc up --replace ${path}"
       fi
     fi
+    # ADR-002 D11: which repos this cage was created hiding; the scan may have
+    # moved on. log keeps it off stdout under --output json.
+    _up_report_hidden_repos "$name"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "attached" "$path" "running"
       return
@@ -3643,6 +3763,7 @@ cmd_up() {
     # back (the reload verb forced json because it must NOT attach; up must).
     if [[ -n "$rc_up_no_reload" ]]; then
       _up_check_no_reload_presence "$name" || exit 1
+      _up_check_no_reload_hidden "$name" || exit 1
     fi
     if [[ -z "$rc_up_no_reload" ]] && _up_converge_needed "$name" "$_UP_CAGE_CONF"; then
         # Same split as the dry-run mirror above: stale is converge-able,
@@ -3701,6 +3822,7 @@ cmd_up() {
     # operator passed --no-reload) -> plain resume. This is the branch that
     # makes `rc up` on a stopped cage cheap: start it, do not rebuild it.
     log "Resuming stopped container $name..."
+    _up_report_hidden_repos "$name"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED BEGIN (mirrored by the
     # dry-run stopped sub-branch above — see RESUME-GUARDS-DRY-RUN-STOPPED)
     # rip-cage-jnvb / D-b, D-f: image-ID drift guard — FIRST, before any other
@@ -3870,6 +3992,9 @@ cmd_up() {
   # the reason a stopped cage with an unchanged config is RESUMED rather than
   # recreated.
   _UP_RUN_ARGS+=(--label "rc.cage-conf-sha=$(_up_cage_conf_sha "${_UP_CAGE_CONF}")")
+  # The hidden-repo set's hash (ADR-002 D11): a stopped cage whose label differs
+  # from the current scan is recreated (_up_converge_needed).
+  _up_add_hidden_repos_label
   # The host-tool presence (and, when present, state directory) labels: the
   # same producer the --dry-run preview uses.
   _up_add_host_tools_labels "$name"
@@ -3949,6 +4074,7 @@ cmd_up() {
   # confirmed live). The image comes from the config's own `image:` key,
   # not from any argv positional.
 
+  _up_print_hidden_repos
   if ! _up_start_container "$name"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "created" "$path" "stopped" "failed"

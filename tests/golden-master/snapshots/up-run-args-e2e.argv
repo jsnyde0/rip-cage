@@ -17,6 +17,8 @@ rc.cage-conf=<TEST_HOME>/.rc-test-cage-workspace.yaml
 --label
 rc.cage-conf-sha=<SHA256>
 --label
+rc.hidden-repos-sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+--label
 rc.host-tools=absent
 --label
 rc.symlink-follow-fingerprint=ec6a1aac36ef0b705629fbe9627f6ce080c0b1b1335b5dacdd544333b2c6e8f4

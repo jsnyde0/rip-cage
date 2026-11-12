@@ -109,6 +109,12 @@ mounts:
 
 `create: ensure-exists` makes the volume during `msb create`, so a fresh machine needs no setup step. All three volumes carry the cage name; no writable cache is shared between cages ([ADR-015](../decisions/ADR-015-mise-toolchain-provisioning.md) D2). They survive a recreate. `rc destroy` removes exactly these three, `rc-state-<cage-name>`, `rc-history-<cage-name>` and `rc-mise-cache-<cage-name>` (`msb remove` alone would orphan them); every other named volume your config adds outlives it: list with `msb volume list`, remove with `msb volume remove <name>`. An older config naming one shared `rc-mise-cache`: rename the line, then `msb volume remove rc-mise-cache`.
 
+### Repos inside a mounted folder are hidden
+
+A git repo that sits inside a folder you mount read-write is hidden: at its guest path the cage sees one read-only directory holding a `README.md`, not the repo ([ADR-002](../decisions/ADR-002-rip-cage-containers.md) D11). `rc up` prints one line per hidden repo and guest path (`Hiding git repo /Users/you/code/tree/pkg at /tree/pkg: clone it onto your volume (cage-config skill)`); `rc up --dry-run` prints the same as `Would hide ...`, and `--dry-run --output json` carries them under `hidden_repos` as `{host, guest}` entries. To work on a repo in place, mount the repo itself read-write on its own line. To work on a copy, clone it onto an agent-owned named volume ([`examples/workbench`](../../examples/workbench/), forthcoming).
+
+The hidden set is fixed when the cage is created, as a label (`rc.hidden-repos-sha`). When it changes (a repo added to or removed from the folder), the next `rc up` recreates a stopped cage and says why; `--no-reload` refuses. A running cage keeps its mounts: `rc up` attaches, reports the guest paths the cage was created with, and says `rc up --replace` applies the change. A cage created before the label existed is recreated only if the config now hides something.
+
 ### Secret covers
 
 An empty read-only file mounted over a secret the cage has no business reading. The cage sees the name and zero bytes.

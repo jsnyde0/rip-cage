@@ -2,4 +2,4 @@ Would create container rc-golden-master-root-workspace for <GM_ROOT>/workspace
 Would mount <GM_ROOT>/workspace -> /workspace
 Would set RC_HOST_PROJECT_KEY=<GM_ROOT_SLUG>-workspace (unifies -workspace sessions with host project key)
 Would run init script
-Would run: msb create --conf <GM_ROOT>/home/.config/rip-cage/projects/rc-golden-master-root-workspace.yaml --name rc-golden-master-root-workspace --log-level trace --label rc.host-tools=absent --workdir /workspace -e PI_CODING_AGENT_DIR=/home/agent/.pi/agent -e CAGE_HOST_ADDR=host.microsandbox.internal -e RC_HOST_PROJECT_KEY=<GM_ROOT_SLUG>-workspace
+Would run: msb create --conf <GM_ROOT>/home/.config/rip-cage/projects/rc-golden-master-root-workspace.yaml --name rc-golden-master-root-workspace --log-level trace --label rc.hidden-repos-sha=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 --label rc.host-tools=absent --workdir /workspace -e PI_CODING_AGENT_DIR=/home/agent/.pi/agent -e CAGE_HOST_ADDR=host.microsandbox.internal -e RC_HOST_PROJECT_KEY=<GM_ROOT_SLUG>-workspace

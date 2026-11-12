@@ -23,6 +23,11 @@
 #       is what fails, README.md is still the only entry -- or SKIP with the
 #       reason when user namespaces are disabled (never a vacuous PASS)
 #   C12 the floor probe passes in the hide cage
+#   C13 rip-cage-rsh9.17.3.3: rc up on create printed one line per (hidden repo, guest path)
+#   C14 after `msb stop`, a second repo added to the folder and rc up: rc says the hidden
+#       repos changed, recreates, and /tree/pkg2 lists only README.md
+#   C15 with the cage running and a third repo added: rc up attaches, reports the two
+#       created-with guest paths and says rc up --replace applies the change
 #   C8  `git config --worktree core.fsmonitor` fails in /other, which uses
 #       extensions.worktreeConfig; host config.worktree unchanged
 #
@@ -210,6 +215,45 @@ if grep -qx 'floor-rc=0' <<<"$out"; then
   pass "C12 the floor probe passes ($(tail -1 <<<"$out"))"
 else
   fail "C12 floor probe" "out='$(tr '\n' ' ' <<<"$out")'"
+fi
+
+# C13-C15: the hidden set round-trips through msb (rip-cage-rsh9.17.3.3). The
+# cage was created hiding one repo, /tree/pkg.
+if [[ "$(grep -c '^Hiding git repo' "${T}/up.log")" -eq 1 ]] \
+    && grep -qF "Hiding git repo ${TREE}/pkg at /tree/pkg: clone it onto your volume (cage-config skill)" "${T}/up.log"; then
+  pass "C13 rc up on create printed one line per (hidden repo, guest path): $(grep '^Hiding git repo' "${T}/up.log")"
+else
+  fail "C13 create print" "up.log: $(grep -i 'hid' "${T}/up.log" | tr '\n' '|')"
+fi
+
+# C14: stop the cage, add a second repo to the host folder, rc up: the label
+# differs, so rc recreates and the new repo is hidden too.
+mkdir -p "${TREE}/pkg2"
+git -C "${TREE}/pkg2" init -q -b main
+printf 'host secret two\n' > "${TREE}/pkg2/secret.txt"
+msb stop "$NAME" > "${T}/stop.log" 2>&1 < /dev/null || true
+if perl -e 'alarm shift; exec @ARGV' 600 "$RC" up "$WS" < /dev/null > "${T}/up2.log" 2>&1; then _up2=0; else _up2=$?; fi
+out=$(g 30 "ls -A /tree/pkg2")
+if [[ "$_up2" -eq 0 && "$out" == "README.md" ]] && grep -qE '^Hidden repos changed since cage' "${T}/up2.log" \
+    && [[ "$(grep -c '^Hiding git repo' "${T}/up2.log")" -eq 2 ]]; then
+  pass "C14 after msb stop and a second repo: rc up recreated (\"$(grep -E '^Hidden repos changed' "${T}/up2.log" | cut -c1-70)...\") and /tree/pkg2 lists only README.md"
+else
+  fail "C14 recreate on a changed hidden set" "exit=${_up2} ls='$(tr '\n' ' ' <<<"$out")' up2.log: $(grep -iE 'hid|error' "${T}/up2.log" | tr '\n' '|' | cut -c1-400)"
+fi
+
+# C15: the cage is running; a third repo appears. rc up attaches (no
+# recreate), reports the two created-with guest paths (no host path, no third)
+# and says rc up --replace applies the change.
+mkdir -p "${TREE}/pkg3"
+git -C "${TREE}/pkg3" init -q -b main
+if perl -e 'alarm shift; exec @ARGV' 300 "$RC" up "$WS" < /dev/null > "${T}/up3.log" 2>&1; then _up3=0; else _up3=$?; fi
+_rep=$(grep 'as created with' "${T}/up3.log" | head -1)
+if [[ "$_up3" -eq 0 && "$_rep" == *"/tree/pkg"* && "$_rep" == *"/tree/pkg2"* && "$_rep" != *"pkg3"* && "$_rep" != *"${TREE}"* ]] \
+    && grep -qF 'rc up --replace applies the change' "${T}/up3.log" \
+    && ! grep -qE 'Converging|Recreating|Creating container' "${T}/up3.log"; then
+  pass "C15 attach to the running cage: reports the two created-with guest paths and says rc up --replace applies the change: ${_rep}"
+else
+  fail "C15 attach report" "exit=${_up3} report='${_rep}' up3.log: $(tr '\n' '|' < "${T}/up3.log" | cut -c1-500)"
 fi
 
 echo ""
