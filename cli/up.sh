@@ -1982,6 +1982,136 @@ _up_build_msb_create_argv() {
 }
 
 
+
+# The measured device ceiling (ADR-002 D11 "Device ceiling"). Linux x86_64,
+# msb 0.7.8: the last cage that boots has this many virtiofs devices, one more
+# fails libkrun's boot with IrqsExhausted. Source: the "Step 0 -- measured
+# device ceiling" note on rip-cage-rsh9.17.3.2 (`bd show` it). Other platforms
+# have no measured ceiling; rc prints the count and proceeds there.
+_RC_DEVICE_CEILING_LINUX_X86_64=104
+
+# _up_device_count CONF -- print the cage's device count: the config file's bind
+# mounts and named volumes (its tmpfs lines cost none; the config's own mounts
+# never reach the argv) plus every -v / --mount-file share and every --vsock
+# endpoint on _UP_MSB_ARGV, the final `msb create` argv after every drop. The
+# count reads the assembled argv, never a list of the functions that fed it.
+# Non-zero when the config's mounts cannot be read.
+_up_device_count() {
+  local _conf="$1" _conf_n _i=0 _n=${#_UP_MSB_ARGV[@]} _a _argv_n=0
+  _conf_n=$(yq -o=json '.mounts // []' "$_conf" 2>/dev/null \
+    | jq '[.[]? | select(type == "string" or (type == "object" and ((.bind // .named) != null)))] | length' 2>/dev/null) || return 1
+  [[ "$_conf_n" =~ ^[0-9]+$ ]] || return 1
+  while [[ "$_i" -lt "$_n" ]]; do
+    _a="${_UP_MSB_ARGV[$_i]}"
+    case "$_a" in
+      -v|--mount-file|--vsock) _argv_n=$((_argv_n + 1)); _i=$((_i + 2)) ;;
+      --replace|--*=*) _i=$((_i + 1)) ;;
+      -*) _i=$((_i + 2)) ;;
+      *) _i=$((_i + 1)) ;;
+    esac
+  done
+  printf '%s\n' "$((_conf_n + _argv_n))"
+}
+
+# _up_device_ceiling_check -- on create and converge only (the callers; attach
+# and resume never get here). Count the devices of _UP_MSB_ARGV and
+# _UP_CAGE_CONF; past the platform's ceiling, print one Error: line naming the
+# count as devices, the ceiling and the platform (and ADR-002 D11's two shapes),
+# keep it in _UP_DEVICE_CEILING_MSG for the JSON error, and return 1. On a
+# platform with no measured ceiling, print the count with "ceiling unmeasured
+# on <platform>" and return 0.
+_up_device_ceiling_check() {
+  local _count _platform _ceiling=""
+  _UP_DEVICE_CEILING_MSG=""
+  if ! _count=$(_up_device_count "$_UP_CAGE_CONF"); then
+    _UP_DEVICE_CEILING_MSG="could not count the devices of ${_UP_CAGE_CONF}: its mounts list is unreadable"
+    echo "Error: ${_UP_DEVICE_CEILING_MSG}" >&2
+    return 1
+  fi
+  _platform="$(uname -s) $(uname -m)"
+  case "$_platform" in
+    "Linux x86_64") _ceiling="$_RC_DEVICE_CEILING_LINUX_X86_64" ;;
+  esac
+  if [[ -z "$_ceiling" ]]; then
+    echo "Note: this cage has ${_count} devices; ceiling unmeasured on ${_platform}, proceeding." >&2
+    return 0
+  fi
+  [[ "$_count" -le "$_ceiling" ]] && return 0
+  _UP_DEVICE_CEILING_MSG="this cage would have ${_count} devices, past the ceiling of ${_ceiling} on ${_platform}: libkrun fails the boot (IrqsExhausted) past it. Each mount, named volume, hidden repo and the host-tool route is one device. Mount fewer folders: either mount only the wanted sub-folders, one line each, or mount the folder and let rc hide each repo in it, whichever needs fewer lines (ADR-002 D11)."
+  echo "Error: ${_UP_DEVICE_CEILING_MSG}" >&2
+  return 1
+}
+
+
+# _up_dry_run_argv NAME PATH PORT ENV_FILE CPUS MEMORY PIDS_LIMIT [quiet]
+#
+# With a trailing "quiet" (the real --replace / converge preflight) it prints
+# nothing on success: it only refuses, before the old cage is stopped or removed.
+#
+# The --dry-run assembly of a create or converge's `msb create` argv: the same
+# mount preparation, environment, builder and check sites the real create runs,
+# with the preparation's output held back. Human mode then prints the "Would
+# run:" line; JSON mode prints nothing here, and cmd_up emits its object once
+# this has returned, so a refusal (check site 2, the device ceiling) ends the
+# run the same way in both modes (rip-cage-rsh9.17.3.2). Declares the
+# _UP_RUN_ARGS / _UP_MSB_ARGV the callees fill; reads cmd_up's locals
+# (wt_detected and the like) by dynamic scope, as the inline block it replaces did.
+_up_dry_run_argv() {
+  local name="$1" path="$2" port="$3" env_file="$4" rc_cpus="$5" rc_memory="$6" rc_pids_limit="$7" _quiet="${8:-}"
+  local _UP_RUN_ARGS=()
+  local _UP_DRY_RUN_NO_SIDE_EFFECTS=1
+  local _UP_MSB_ARGV=()
+  _up_add_host_tools_labels "$name"
+  # The preparation's stderr is held back (the "Would mount" lines above
+  # already preview it), but a refusal inside it `exit 1`s rc itself, so
+  # the EXIT trap replays the held stderr: the operator sees the refusal's
+  # Error line, not a bare exit 1 (rip-cage-otj1). A clean run prints
+  # nothing extra. The trap fires while the call's 2>> is still in
+  # effect, so it writes to fd 7, the real stderr saved here.
+  _UP_DRY_PREP_ERR=$(mktemp "${TMPDIR:-/tmp}/rc-dry-prep.XXXXXX")
+  # The mount preparation's stdout is held too; only the lines naming a
+  # mount it dropped (_up_drop_hidden_run_args) are replayed below.
+  local _UP_DRY_PREP_OUT _dry_drop_line
+  _UP_DRY_PREP_OUT=$(mktemp "${TMPDIR:-/tmp}/rc-dry-out.XXXXXX")
+  exec 7>&2
+  _rc_dry_status=0
+  trap '_rc_dry_status=$?; if [[ $_rc_dry_status -ne 0 ]]; then cat "$_UP_DRY_PREP_ERR" >&7 || true; fi; rm -f "$_UP_DRY_PREP_ERR" "$_UP_DRY_PREP_OUT"; exit $_rc_dry_status' EXIT
+  if _up_prepare_docker_mounts "$path" "$name" >"$_UP_DRY_PREP_OUT" 2>>"$_UP_DRY_PREP_ERR" \
+      && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
+      && _up_build_msb_create_argv "$name"; then
+    # Check site 2 on the same final argv the real create runs; a
+    # refusal exits here (the EXIT trap replays the held stderr).
+    # The quiet preflight skips it: the real create keeps its own site-2 timing
+    # (after the removal, ADR-032 D6).
+    if [[ "$_quiet" != "quiet" ]] && ! _up_host_tools_site2 "$name"; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool check refused the msb create argv for $name (see stderr)" "HOST_TOOLS_SITE2_REFUSED"
+      exit 1
+    fi
+    # The device ceiling, on the same final argv (ADR-002 D11): a refusal
+    # exits here in every mode, before the JSON object or the "Would run:" line.
+    if ! _up_device_ceiling_check; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "$_UP_DEVICE_CEILING_MSG" "DEVICE_CEILING_EXCEEDED"
+      exit 1
+    fi
+    if [[ "$_quiet" != "quiet" ]]; then
+      while IFS= read -r _dry_drop_line; do
+        [[ -n "$_dry_drop_line" ]] && log "$_dry_drop_line"
+      done < <(grep '^Dropped rc' "$_UP_DRY_PREP_OUT" || true)
+      [[ "$OUTPUT_FORMAT" == "json" ]] || echo "Would run: ${_UP_MSB_ARGV[*]}"
+    fi
+    # Drops that the human preview above does not mirror (symlink-follow,
+    # pi substrate, worktree auto-redirect) are visible only in the held
+    # stderr; replay those Warning: lines, keep everything else held.
+    [[ "$_quiet" == "quiet" ]] || grep -E '^Warning: (skipping (symlink-follow|pi substrate) mount|worktree auto-redirect)' "$_UP_DRY_PREP_ERR" >&7 || true
+  elif [[ "$OUTPUT_FORMAT" != "json" && "$_quiet" != "quiet" ]]; then
+    echo "Would run: msb create --conf ${_UP_CAGE_CONF} --name ${name} --log-level trace [mounts]"
+  fi
+  trap - EXIT
+  exec 7>&-
+  rm -f "$_UP_DRY_PREP_ERR" "$_UP_DRY_PREP_OUT"
+}
+
+
 # _up_start_container NAME — create the msb sandbox with the prepared
 # _UP_RUN_ARGS (rip-cage-rj68, S6 — REWRITTEN onto msb; was `docker run`).
 #
@@ -2026,6 +2156,12 @@ _up_start_container() {
   # Check site 2: the FINAL argv, immediately before it executes.
   if ! _up_host_tools_site2 "$_name"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool check refused the msb create argv for $_name (see stderr)" "HOST_TOOLS_SITE2_REFUSED"
+    return 1
+  fi
+
+  # The device ceiling, on the same final argv (ADR-002 D11), before msb create.
+  if ! _up_device_ceiling_check; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "$_UP_DEVICE_CEILING_MSG" "DEVICE_CEILING_EXCEEDED"
     return 1
   fi
 
@@ -3189,6 +3325,8 @@ cmd_up() {
       # The stop precondition runs BEFORE the announcement and the stop, so a
       # refusal leaves the running cage and its session untouched.
       _up_host_tools_stop_precheck "$name" || exit 1
+      # The device ceiling refuses here, before any stop or remove (ADR-002 D11).
+      _up_dry_run_argv "$name" "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" quiet
       log "Recreating ${_replace_state_word} cage ${name} (--replace): graceful stop, remove, create against the current config."
       _msb_stop_graceful "$name"
       _up_host_tools_stop "$name" || exit 1
@@ -3293,6 +3431,12 @@ cmd_up() {
       # Reachable under msb (_msb_sandbox_state's "unknown" fallback).
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
       echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" >&2; return 1
+    fi
+
+    # A create or converge assembles the same argv the human dry-run does, so
+    # the device ceiling refuses here too, before any JSON object is emitted.
+    if [[ "$OUTPUT_FORMAT" == "json" ]] && [[ "$would_action" == "would_create" || "$would_action" == "would_converge" ]]; then
+      _up_dry_run_argv "$name" "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -3420,47 +3564,7 @@ cmd_up() {
       # running under --dry-run (fail-closed default) rather than silently
       # start running under the dry-run preview.
       if [[ "$would_action" == "would_create" || "$would_action" == "would_converge" ]]; then
-        local _UP_RUN_ARGS=()
-        local _UP_DRY_RUN_NO_SIDE_EFFECTS=1
-        local _UP_MSB_ARGV=()
-        _up_add_host_tools_labels "$name"
-        # The preparation's stderr is held back (the "Would mount" lines above
-        # already preview it), but a refusal inside it `exit 1`s rc itself, so
-        # the EXIT trap replays the held stderr: the operator sees the refusal's
-        # Error line, not a bare exit 1 (rip-cage-otj1). A clean run prints
-        # nothing extra. The trap fires while the call's 2>> is still in
-        # effect, so it writes to fd 7, the real stderr saved here.
-        _UP_DRY_PREP_ERR=$(mktemp "${TMPDIR:-/tmp}/rc-dry-prep.XXXXXX")
-        # The mount preparation's stdout is held too; only the lines naming a
-        # mount it dropped (_up_drop_hidden_run_args) are replayed below.
-        local _UP_DRY_PREP_OUT _dry_drop_line
-        _UP_DRY_PREP_OUT=$(mktemp "${TMPDIR:-/tmp}/rc-dry-out.XXXXXX")
-        exec 7>&2
-        _rc_dry_status=0
-        trap '_rc_dry_status=$?; if [[ $_rc_dry_status -ne 0 ]]; then cat "$_UP_DRY_PREP_ERR" >&7 || true; fi; rm -f "$_UP_DRY_PREP_ERR" "$_UP_DRY_PREP_OUT"; exit $_rc_dry_status' EXIT
-        if _up_prepare_docker_mounts "$path" "$name" >"$_UP_DRY_PREP_OUT" 2>>"$_UP_DRY_PREP_ERR" \
-            && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>>"$_UP_DRY_PREP_ERR" \
-            && _up_build_msb_create_argv "$name"; then
-          # Check site 2 on the same final argv the real create runs; a
-          # refusal exits here (the EXIT trap replays the held stderr).
-          if ! _up_host_tools_site2 "$name"; then
-            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Host-tool check refused the msb create argv for $name (see stderr)" "HOST_TOOLS_SITE2_REFUSED"
-            exit 1
-          fi
-          while IFS= read -r _dry_drop_line; do
-            [[ -n "$_dry_drop_line" ]] && log "$_dry_drop_line"
-          done < <(grep '^Dropped rc' "$_UP_DRY_PREP_OUT" || true)
-          echo "Would run: ${_UP_MSB_ARGV[*]}"
-          # Drops that the human preview above does not mirror (symlink-follow,
-          # pi substrate, worktree auto-redirect) are visible only in the held
-          # stderr; replay those Warning: lines, keep everything else held.
-          grep -E '^Warning: (skipping (symlink-follow|pi substrate) mount|worktree auto-redirect)' "$_UP_DRY_PREP_ERR" >&7 || true
-        else
-          echo "Would run: msb create --conf ${_UP_CAGE_CONF} --name ${name} --log-level trace [mounts]"
-        fi
-        trap - EXIT
-        exec 7>&-
-        rm -f "$_UP_DRY_PREP_ERR" "$_UP_DRY_PREP_OUT"
+        _up_dry_run_argv "$name" "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
       fi
     fi
     return 0
@@ -3555,6 +3659,8 @@ cmd_up() {
         fi
         log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
         _up_host_tools_stop_precheck "$name" || exit 1
+        # The device ceiling refuses here, before any stop or remove (ADR-002 D11).
+        _up_dry_run_argv "$name" "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" quiet
         _msb_stop_graceful "$name" 2>/dev/null || true
         _up_host_tools_stop "$name" || exit 1
         _msb_remove "$name"
