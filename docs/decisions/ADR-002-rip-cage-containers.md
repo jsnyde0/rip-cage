@@ -299,8 +299,6 @@ The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking i
 
 ### D11: The mount-root repo's git exec surface is read-only; every repo nested below it is hidden
 
-> **Status 2026-11-12:** Mechanism lands with `rip-cage-rsh9.17.3.1`–`.3.3`; until they close, `rc up` still applies the pre-2026-11-11 covers to nested repos and has no ceiling refusal.
-
 > [ADR-029 D2: EVOLVED — the rationale holds unchanged; the `:ro` sub-mount enforcement mechanism re-implements in msb mount syntax (scoped macOS/HVF per ADR-029 D6 until Linux/KVM reconfirmation). This is a named surviving floor item in ADR-029 D2's new welded-containment-floor enumeration (the `.git/hooks` read-only weld).]
 >
 > **Evolved 2026-10-16 (rip-cage-rsh9.2, human ruling via brain:rip-cage, option 1).** This decision used to cover `.git/hooks` only, for the `rc up` argument only, and listed `core.hooksPath` as an accepted "multi-step, deliberate" risk. The composed-posture review (`docs/2026-10-03-composed-posture-review.md`) showed the writable `.git/config` is wider than that and single-step: `git config core.fsmonitor <cmd>` makes the host's next `git status` or IDE refresh run `<cmd>` on the host, and filter drivers, `!` aliases, `core.sshCommand` and `core.hooksPath` do the same on other verbs. Under ADR-024's steered-agent threat model, one injected line does it. A second repo mounted by the config got no cover at all. The fallback — a launch-time scan for exec-bearing keys — was rejected: it leaves the window open for the whole session.
